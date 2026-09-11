@@ -13,7 +13,7 @@ authors = [{name = "Rick Broderick"}]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-benchmark>=4"]
+dev = ["pytest>=8", "pytest-benchmark>=4", "lupa>=2.8,<3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
