@@ -82,6 +82,59 @@ local function loop(n, acc)
 end
 return loop(500,0)
 ''',
+    '''
+local i = 0
+::again::
+i = i + 1
+if i < 3 then goto again end
+return i
+''',
+    'local x <const> = 42; return x',
+    '''
+local log = ""
+local mt = {__close = function(self) log = log .. self.name end}
+do
+  local a <close> = setmetatable({name="a"}, mt)
+  local b <close> = setmetatable({name="b"}, mt)
+end
+return log
+''',
+    '''
+local log = ""
+local mt = {__close = function(self) log = log .. self.name end}
+do
+  local x <close> = setmetatable({name="x"}, mt)
+  goto done
+end
+::done::
+return log
+''',
+    '''
+global x
+global<const> *
+x = 42
+return x, type(x)
+''',
+    '''
+global function fact(n)
+  if n <= 1 then return 1 end
+  return n * fact(n - 1)
+end
+return fact(6)
+''',
+]
+
+
+ERROR_CASES = [
+    '''
+goto target
+local x = 1
+::target::
+return x
+''',
+    "local x <const> = 1; x = 2",
+    "global x; return y",
+    "x = 1; global x = 2",
 ]
 
 
@@ -117,3 +170,13 @@ def _run_reference(source):
 @pytest.mark.parametrize("source", CASES)
 def test_selected_semantics_match_lua_55(source):
     assert _run_luapyre(source) == _run_reference(source)
+
+
+@pytest.mark.parametrize("source", ERROR_CASES)
+def test_selected_compile_and_runtime_errors_match_lua_55(source):
+    with pytest.raises(Exception):
+        LuaRuntime().execute(source)
+    lua = ReferenceLuaRuntime(encoding=None)
+    assert lua.eval("_VERSION") == b"Lua 5.5"
+    with pytest.raises(Exception):
+        lua.execute(source)
