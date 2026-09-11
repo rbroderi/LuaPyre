@@ -47,6 +47,41 @@ x = x + 2
 return x
 ''',
     'return "hello" .. " " .. "world"',
+    '''
+local backing = {x = 40}
+local proxy = {}
+setmetatable(proxy, {
+  __index = function(t, k) return backing[k] end,
+  __newindex = function(t, k, v) backing[k] = v end
+})
+proxy.x = proxy.x + 2
+return proxy.x, rawget(proxy, "x"), backing.x
+''',
+    '''
+local mt = {__add = function(a,b) return a.n + b.n end}
+local a = setmetatable({n=20}, mt)
+local b = setmetatable({n=22}, mt)
+return a + b
+''',
+    '''
+local x = 0
+repeat
+  x = x + 1
+  if x == 5 then break end
+until false
+return x
+''',
+    'local s=0; for i=1,10 do s=s+i end; return s',
+    'local s=0; for k,v in pairs({a=20,b=22}) do s=s+v end; return s',
+    'local f=function(x) return x+2 end; return f(40)',
+    'local t={n=40}; function t:add(x) return self.n+x end; return t:add(2)',
+    '''
+local function loop(n, acc)
+  if n == 0 then return acc end
+  return loop(n-1, acc+1)
+end
+return loop(500,0)
+''',
 ]
 
 

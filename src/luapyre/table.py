@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 from .errors import LuaRuntimeError
 
-
 _ABSENT = object()
 _BOOL = object()
 _NUM = object()
@@ -21,21 +20,14 @@ def _hash_key(key):
     if type(key) is float:
         if math.isnan(key):
             raise LuaRuntimeError("table index is NaN")
-        if key.is_integer():
-            return (_NUM, int(key))
-        return (_NUM, key)
+        return (_NUM, int(key) if key.is_integer() else key)
     if isinstance(key, bytes):
         return (_STR, key)
     return (_OBJ, id(key))
 
 
 class LuaTable:
-    """Lua table with a dense array part and tagged hash keys.
-
-    Tagged keys are required because Python considers True == 1, while Lua
-    boolean and numeric keys are distinct. Integral floats intentionally share
-    keys with integers, matching Lua.
-    """
+    """Lua table with dense array storage, tagged hash keys, and a metatable."""
 
     __slots__ = ("array", "hash", "metatable", "version")
 
@@ -56,6 +48,17 @@ class LuaTable:
         item = self.hash.get(h, _ABSENT)
         return None if item is _ABSENT else item[1]
 
+    def rawhas(self, key) -> bool:
+        """Whether a non-nil raw key exists, without invoking metamethods."""
+        h = _hash_key(key)
+        if h is None:
+            return False
+        if h[0] is _NUM and type(h[1]) is int and h[1] >= 1:
+            idx = h[1] - 1
+            if idx < len(self.array) and self.array[idx] is not None:
+                return True
+        return h in self.hash
+
     def rawset(self, key, value):
         h = _hash_key(key)
         if h is None:
@@ -72,8 +75,7 @@ class LuaTable:
             if index == len(self.array) + 1 and value is not None:
                 self.array.append(value)
                 while True:
-                    next_index = len(self.array) + 1
-                    next_h = (_NUM, next_index)
+                    next_h = (_NUM, len(self.array) + 1)
                     item = self.hash.pop(next_h, _ABSENT)
                     if item is _ABSENT:
                         break
@@ -104,7 +106,7 @@ class LuaTable:
     def __contains__(self, key):
         if isinstance(key, str):
             key = key.encode("utf-8")
-        return self.rawget(key) is not None
+        return self.rawhas(key)
 
     def __getitem__(self, key):
         if isinstance(key, str):
