@@ -94,14 +94,14 @@ local function __enc(v)
 end
 local function __case()
     local _ENV = _ENV
-%s
+__SOURCE__
 end
 local __r = table.pack(__case())
 io.write(tostring(__r.n), "\n")
 for i = 1, __r.n do
     io.write(__enc(__r[i]), "\n")
 end
-''' % source
+'''.replace("__SOURCE__", source)
     proc = subprocess.run(
         [LUA55, "-"],
         input=wrapper,
