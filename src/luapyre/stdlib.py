@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from .errors import LuaRuntimeError
 from .table import LuaTable
 from .values import MultiValue, i64, lua_equal, lua_type_name, truthy
@@ -22,7 +21,9 @@ def _tostring(value):
 
 def install_safe_stdlib(globals_table: LuaTable):
     def put(name, fn):
-        globals_table.rawset(name.encode(), HostFunction(fn, name))
+        host = HostFunction(fn, name)
+        globals_table.rawset(name.encode(), host)
+        return host
 
     globals_table.rawset(b"_G", globals_table)
     globals_table.rawset(b"_VERSION", b"Lua 5.5")
@@ -76,3 +77,57 @@ def install_safe_stdlib(globals_table: LuaTable):
             return len(value)
         raise LuaRuntimeError("bad argument #1 to 'rawlen' (table or string expected)")
     put("rawlen", rawlen)
+
+    def getmetatable(value):
+        if not isinstance(value, LuaTable):
+            return None
+        mt = value.metatable
+        if mt is None:
+            return None
+        protected = mt.rawget(b"__metatable")
+        return protected if protected is not None else mt
+    put("getmetatable", getmetatable)
+
+    def setmetatable(table, mt):
+        if not isinstance(table, LuaTable):
+            raise LuaRuntimeError("bad argument #1 to 'setmetatable' (table expected)")
+        if mt is not None and not isinstance(mt, LuaTable):
+            raise LuaRuntimeError("bad argument #2 to 'setmetatable' (nil or table expected)")
+        if table.metatable is not None and table.metatable.rawget(b"__metatable") is not None:
+            raise LuaRuntimeError("cannot change a protected metatable")
+        table.metatable = mt
+        table.version += 1
+        return table
+    put("setmetatable", setmetatable)
+
+    def next_fn(table, key=None):
+        if not isinstance(table, LuaTable):
+            raise LuaRuntimeError("bad argument #1 to 'next' (table expected)")
+        items = list(table.items())
+        if key is None:
+            return MultiValue(items[0]) if items else None
+        for i, (current, value) in enumerate(items):
+            if lua_equal(current, key):
+                return MultiValue(items[i + 1]) if i + 1 < len(items) else None
+        raise LuaRuntimeError("invalid key to 'next'")
+
+    next_host = put("next", next_fn)
+
+    def pairs(table):
+        if not isinstance(table, LuaTable):
+            raise LuaRuntimeError("bad argument #1 to 'pairs' (table expected)")
+        return MultiValue((next_host, table, None))
+    put("pairs", pairs)
+
+    def ipairs_iter(table, index):
+        index = i64(index + 1)
+        value = table.rawget(index)
+        return None if value is None else MultiValue((index, value))
+
+    ipairs_host = HostFunction(ipairs_iter, "ipairsaux")
+
+    def ipairs(table):
+        if not isinstance(table, LuaTable):
+            raise LuaRuntimeError("bad argument #1 to 'ipairs' (table expected)")
+        return MultiValue((ipairs_host, table, 0))
+    put("ipairs", ipairs)
