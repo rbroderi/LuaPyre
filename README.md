@@ -65,11 +65,13 @@ Implemented in the current tranche:
 - safe in-memory base helpers (`type`, `tostring`, `tonumber`, `assert`, `rawequal`, `rawget`, `rawset`, `rawlen`)
 - capability-only Python host functions
 - fuel and frame limits
-- selected differential tests against the official Lua 5.5.1 reference interpreter
+- selected differential tests against the PUC-Lua 5.5 runtime embedded by Lupa
 
 ## Compatibility testing
 
-CI targets Python 3.14, downloads the official Lua 5.5.1 source archive from lua.org, verifies its published SHA-256 checksum, builds it, and runs selected programs through both PUC-Lua and LuaPyre. The repository also has direct unit tests for the extended typing syntax.
+CI targets Python 3.14 and installs Lupa 2.8+, then explicitly imports `lupa.lua55`. This gives the differential suite an in-process PUC-Lua 5.5 oracle without compiling or launching a separate Lua executable. CI verifies that the selected backend reports `_VERSION == "Lua 5.5"` before running tests.
+
+For exact micro-release conformance, LuaPyre still targets Lua 5.5.1 and the official 5.5.1 tests/reference implementation remain the final authority. Lupa's in-process backend is the fast per-commit differential oracle; release-level conformance can additionally be checked against the exact 5.5.1 distribution when needed.
 
 The full official Lua test suite is **not** expected to pass yet. Remaining language/runtime work includes the rest of the grammar (`for`, `repeat`, `goto`, labels, anonymous functions, method syntax, global declarations and attributes), complete metamethod semantics, coroutines, weak tables/finalization/GC-visible behavior, to-be-closed variables, the remaining safe standard libraries, binary chunks, and detailed error/debug compatibility.
 
