@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum, auto
 from .typesys import LuaType, ANY
 
+
 class Op(IntEnum):
     LOADK = auto(); MOVE = auto(); LOCAL = auto()
     GETGLOBAL = auto(); SETGLOBAL = auto(); GETUPVAL = auto(); SETUPVAL = auto(); GETCELL = auto(); SETCELL = auto(); CLOSURE = auto()
@@ -11,7 +12,9 @@ class Op(IntEnum):
     BAND = auto(); BOR = auto(); BXOR = auto(); SHL = auto(); SHR = auto(); BNOT = auto(); CONCAT = auto(); NEG = auto(); NOT = auto(); TOBOOL = auto(); EQ = auto(); LT = auto(); LE = auto()
     JMP = auto(); JMPIF = auto(); JMPIFNOT = auto(); JMPIFNIL = auto(); FORPREP = auto(); FORLOOP = auto()
     CALL = auto(); CALLV = auto(); TAILCALL = auto(); TAILCALLV = auto(); VARARG = auto(); UNPACK = auto()
+    TBC = auto(); CLOSE = auto(); CHECKNIL = auto()
     RETURN = auto(); RETURNV = auto(); GUARD = auto(); HALT = auto()
+
 
 @dataclass(frozen=True, slots=True)
 class Ins:
@@ -22,11 +25,13 @@ class Ins:
     d: int = 0
     e: int = 0
 
+
 @dataclass(frozen=True, slots=True)
 class UpvalueDesc:
     kind: str
     index: int
     name: str
+
 
 @dataclass(slots=True)
 class Proto:
@@ -57,9 +62,11 @@ class Proto:
             for i, ins in enumerate(self.code)
         )
 
+
 @dataclass(slots=True)
 class Cell:
     value: object = None
+
 
 @dataclass(slots=True)
 class Closure:
