@@ -1,5 +1,6 @@
 from __future__ import annotations
-from .errors import LuaRuntimeError
+
+from .errors import LuaRuntimeError, LuaRaisedError
 from .table import LuaTable
 from .values import MultiValue, i64, lua_equal, lua_type_name, truthy
 from .vm import HostFunction
@@ -49,11 +50,15 @@ def install_safe_stdlib(globals_table: LuaTable):
         value = args[0] if args else None
         if not truthy(value):
             message = args[1] if len(args) > 1 else b"assertion failed!"
-            if isinstance(message, bytes):
-                message = message.decode("utf-8", "replace")
-            raise LuaRuntimeError(str(message))
+            raise LuaRaisedError(message)
         return MultiValue(tuple(args))
     put("assert", lua_assert)
+
+    def lua_error(value=None, _level=1):
+        if value is None:
+            value = b"error object is nil"
+        raise LuaRaisedError(value)
+    put("error", lua_error)
 
     put("rawequal", lua_equal)
 
