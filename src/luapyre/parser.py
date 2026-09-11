@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 from .lexer import Lexer
 from .errors import LuaSyntaxError
 from . import astnodes as A
 from .typesys import ANY, NIL, FUNCTION, LuaType, parse_simple_type, union_of
+
 
 PRECEDENCE = {
     "or": 1, "and": 2,
@@ -11,6 +13,8 @@ PRECEDENCE = {
     "..": 8, "+": 9, "-": 9, "*": 10, "/": 10, "//": 10, "%": 10, "^": 12,
 }
 RIGHT_ASSOC = {"^", ".."}
+_VALID_ATTRIBUTES = {"const", "close"}
+
 
 class Parser:
     def __init__(self, source: str):
@@ -37,6 +41,8 @@ class Parser:
     def block(self, stops):
         out = []
         while self.t.kind not in stops:
+            if self.accept(";"):
+                continue
             out.append(self.statement())
             self.accept(";")
         return out
@@ -45,8 +51,18 @@ class Parser:
         kind = self.t.kind
         if kind == "local":
             return self.local_stmt()
+        if kind == "global":
+            return self.global_stmt()
         if kind == "function":
             return self.function_stmt(False)
+        if kind == "goto":
+            line = self.take().line
+            return A.GotoStmt(line, self.take("NAME").value)
+        if kind == "::":
+            line = self.take().line
+            name = self.take("NAME").value
+            self.take("::")
+            return A.LabelStmt(line, name)
         if kind == "return":
             line = self.take().line
             if self.t.kind in ("EOF", "end", "else", "elseif", "until", ";"):
@@ -93,6 +109,39 @@ class Parser:
             if not isinstance(target, (A.Name, A.Index, A.Field)):
                 raise LuaSyntaxError(f"line {target.line}: invalid assignment target")
 
+    def _attribute(self):
+        if not self.accept("<"):
+            return None
+        token = self.take("NAME")
+        self.take(">")
+        if token.value not in _VALID_ATTRIBUTES:
+            raise LuaSyntaxError(f"line {token.line}: unknown variable attribute '{token.value}'")
+        return token.value
+
+    def _declared_names(self, *, allow_close: bool):
+        prefix = self._attribute()
+        if prefix == "close" and not allow_close:
+            raise LuaSyntaxError(f"line {self.t.line}: global variables cannot be to-be-closed")
+        names = []
+        close_count = 0
+        while True:
+            token = self.take("NAME")
+            typ = self.type_annotation() if self.accept(":") else ANY
+            postfix = self._attribute()
+            if postfix == "close" and not allow_close:
+                raise LuaSyntaxError(f"line {token.line}: global variables cannot be to-be-closed")
+            if prefix is not None and postfix is not None and prefix != postfix:
+                raise LuaSyntaxError(f"line {token.line}: conflicting variable attributes")
+            attribute = postfix or prefix
+            if attribute == "close":
+                close_count += 1
+            names.append(A.DeclaredName(token.value, typ, attribute))
+            if not self.accept(","):
+                break
+        if close_count > 1:
+            raise LuaSyntaxError("a declaration can contain at most one to-be-closed variable")
+        return names
+
     def if_stmt(self):
         line = self.take("if").line
         clauses = []
@@ -135,15 +184,40 @@ class Parser:
         line = self.take("local").line
         if self.t.kind == "function":
             return self.function_stmt(True, line_override=line)
+        names = self._declared_names(allow_close=True)
+        values = self.expr_list() if self.accept("=") else []
+        return A.LocalDecl(line, names, values)
+
+    def global_stmt(self):
+        line = self.take("global").line
+        if self.t.kind == "function":
+            self.take("function")
+            name = self.take("NAME").value
+            params, returns, body, vararg_name, vararg_type = self.function_body()
+            return A.GlobalFunctionDef(
+                line, name, params, returns, body, vararg_name, vararg_type
+            )
+
+        prefix = self._attribute()
+        if prefix == "close":
+            raise LuaSyntaxError(f"line {line}: global variables cannot be to-be-closed")
+        if self.accept("*"):
+            return A.GlobalDecl(line, [], [], True, prefix)
+
         names = []
         while True:
-            name = self.take("NAME").value
-            annotation = self.type_annotation() if self.accept(":") else ANY
-            names.append((name, annotation))
+            token = self.take("NAME")
+            typ = self.type_annotation() if self.accept(":") else ANY
+            postfix = self._attribute()
+            if postfix == "close":
+                raise LuaSyntaxError(f"line {token.line}: global variables cannot be to-be-closed")
+            if prefix is not None and postfix is not None and prefix != postfix:
+                raise LuaSyntaxError(f"line {token.line}: conflicting variable attributes")
+            names.append(A.DeclaredName(token.value, typ, postfix or prefix))
             if not self.accept(","):
                 break
         values = self.expr_list() if self.accept("=") else []
-        return A.LocalDecl(line, names, values)
+        return A.GlobalDecl(line, names, values)
 
     def function_stmt(self, local, line_override=None):
         if local:
