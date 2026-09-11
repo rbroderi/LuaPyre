@@ -18,8 +18,14 @@ INTEGER = LuaType("integer")
 FLOAT = LuaType("float")
 NUMBER = LuaType("number")
 STRING = LuaType("string")
+TABLE = LuaType("table")
+FUNCTION = LuaType("function")
+THREAD = LuaType("thread")
+USERDATA = LuaType("userdata")
 
-_SIMPLE = {t.name: t for t in (ANY, NIL, BOOLEAN, INTEGER, FLOAT, NUMBER, STRING)}
+_SIMPLE = {t.name: t for t in (
+    ANY, NIL, BOOLEAN, INTEGER, FLOAT, NUMBER, STRING, TABLE, FUNCTION, THREAD, USERDATA
+)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,17 +71,3 @@ def accepts(expected: LuaType, actual: LuaType) -> bool:
     if isinstance(expected, UnionType):
         return any(accepts(member, actual) for member in expected.members)
     return False
-
-
-def python_value_type(value) -> LuaType:
-    if value is None:
-        return NIL
-    if type(value) is bool:
-        return BOOLEAN
-    if type(value) is int:
-        return INTEGER
-    if type(value) is float:
-        return FLOAT
-    if isinstance(value, (bytes, str)):
-        return STRING
-    return ANY

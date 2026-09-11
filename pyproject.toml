@@ -4,16 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "luapyre"
-version = "0.1.0a1"
+version = "0.2.0a1"
 description = "A high-performance, sandboxed Lua 5.5 runtime for Python with optional gradual typing"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = {text = "AGPL-3.0-or-later"}
 authors = [{name = "Rick Broderick"}]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-benchmark>=4"]
+dev = ["pytest>=8", "pytest-benchmark>=4", "lupa>=2.8,<3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

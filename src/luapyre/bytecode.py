@@ -6,11 +6,17 @@ from .typesys import LuaType, ANY
 
 
 class Op(IntEnum):
-    LOADK = auto(); MOVE = auto(); GETGLOBAL = auto(); SETGLOBAL = auto()
+    LOADK = auto(); MOVE = auto(); LOCAL = auto()
+    GETGLOBAL = auto(); SETGLOBAL = auto(); GETUPVAL = auto(); SETUPVAL = auto()
+    GETCELL = auto(); SETCELL = auto(); CLOSURE = auto()
+    NEWTABLE = auto(); GETTABLE = auto(); SETTABLE = auto(); SETLISTV = auto(); LEN = auto()
     ADD = auto(); ADD_I = auto(); ADD_F = auto(); SUB = auto(); SUB_I = auto(); SUB_F = auto()
     MUL = auto(); MUL_I = auto(); MUL_F = auto(); DIV = auto(); IDIV = auto(); MOD = auto(); POW = auto()
-    NEG = auto(); NOT = auto(); EQ = auto(); LT = auto(); LE = auto()
-    JMP = auto(); JMPIFNOT = auto(); CALL = auto(); RETURN = auto(); GUARD = auto(); HALT = auto()
+    BAND = auto(); BOR = auto(); BXOR = auto(); SHL = auto(); SHR = auto(); BNOT = auto()
+    CONCAT = auto(); NEG = auto(); NOT = auto(); EQ = auto(); LT = auto(); LE = auto()
+    JMP = auto(); JMPIF = auto(); JMPIFNOT = auto()
+    CALL = auto(); CALLV = auto(); VARARG = auto(); UNPACK = auto()
+    RETURN = auto(); RETURNV = auto(); GUARD = auto(); HALT = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +25,15 @@ class Ins:
     a: int = 0
     b: int = 0
     c: int = 0
+    d: int = 0
+    e: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class UpvalueDesc:
+    kind: str  # "local" or "upvalue"
+    index: int
+    name: str
 
 
 @dataclass(slots=True)
@@ -27,25 +42,39 @@ class Proto:
     code: list[Ins] = field(default_factory=list)
     constants: list[object] = field(default_factory=list)
     children: list[Proto] = field(default_factory=list)
+    upvalues: list[UpvalueDesc] = field(default_factory=list)
     register_count: int = 0
     param_count: int = 0
     param_types: list[LuaType] = field(default_factory=list)
-    return_type: LuaType = ANY
+    return_types: list[LuaType] = field(default_factory=lambda: [ANY])
+    is_vararg: bool = False
+    vararg_name_reg: int = -1
+    vararg_type: LuaType = ANY
+    env_reg: int = -1
 
     def add_const(self, value):
-        try:
-            return self.constants.index(value)
-        except ValueError:
-            self.constants.append(value)
-            return len(self.constants) - 1
+        # bool and int compare equal in Python, so constants need type-aware
+        # identity/equality to preserve Lua values.
+        for i, current in enumerate(self.constants):
+            if type(current) is type(value) and current == value:
+                return i
+        self.constants.append(value)
+        return len(self.constants) - 1
 
     def disassemble(self) -> str:
         return "\n".join(
-            f"{i:04d} {ins.op.name:<10} {ins.a:>3} {ins.b:>3} {ins.c:>3}"
+            f"{i:04d} {ins.op.name:<11} {ins.a:>3} {ins.b:>3} {ins.c:>3} {ins.d:>3} {ins.e:>3}"
             for i, ins in enumerate(self.code)
         )
 
 
 @dataclass(slots=True)
+class Cell:
+    value: object = None
+
+
+@dataclass(slots=True)
 class Closure:
     proto: Proto
+    upvalues: list[Cell] = field(default_factory=list)
+    env: object = None

@@ -7,13 +7,18 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14"
       - run: python -m pip install -e .[dev]
+      - name: Verify Lupa Lua 5.5 backend
+        run: |
+          python - <<'PY'
+          from lupa.lua55 import LuaRuntime
+          lua = LuaRuntime(encoding=None)
+          assert lua.eval("_VERSION") == b"Lua 5.5"
+          print("Reference backend:", lua.lua_implementation)
+          PY
       - run: pytest

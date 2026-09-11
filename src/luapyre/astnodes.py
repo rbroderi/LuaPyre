@@ -24,20 +24,19 @@ class Expr(Node):
 
 @dataclass(slots=True)
 class LocalDecl(Stmt):
-    name: str
-    annotation: LuaType
-    value: Expr | None
+    names: list[tuple[str, LuaType]]
+    values: list[Expr]
 
 
 @dataclass(slots=True)
 class Assign(Stmt):
-    name: str
-    value: Expr
+    targets: list[Expr]
+    values: list[Expr]
 
 
 @dataclass(slots=True)
 class Return(Stmt):
-    value: Expr | None
+    values: list[Expr]
 
 
 @dataclass(slots=True)
@@ -53,8 +52,7 @@ class WhileStmt(Stmt):
 
 @dataclass(slots=True)
 class IfStmt(Stmt):
-    condition: Expr
-    then_body: list[Stmt]
+    clauses: list[tuple[Expr, list[Stmt]]]
     else_body: list[Stmt]
 
 
@@ -62,9 +60,11 @@ class IfStmt(Stmt):
 class FunctionDef(Stmt):
     name: str
     params: list[tuple[str, LuaType]]
-    return_type: LuaType
+    return_types: list[LuaType]
     body: list[Stmt]
     local: bool = False
+    vararg_name: str | None = None
+    vararg_type: LuaType = ANY
 
 
 @dataclass(slots=True)
@@ -76,6 +76,11 @@ class Literal(Expr):
 @dataclass(slots=True)
 class Name(Expr):
     value: str
+    inferred_type: LuaType = field(default=ANY)
+
+
+@dataclass(slots=True)
+class VarArg(Expr):
     inferred_type: LuaType = field(default=ANY)
 
 
@@ -98,4 +103,30 @@ class Binary(Expr):
 class Call(Expr):
     func: Expr
     args: list[Expr]
+    inferred_type: LuaType = field(default=ANY)
+
+
+@dataclass(slots=True)
+class Index(Expr):
+    table: Expr
+    key: Expr
+    inferred_type: LuaType = field(default=ANY)
+
+
+@dataclass(slots=True)
+class Field(Expr):
+    table: Expr
+    name: str
+    inferred_type: LuaType = field(default=ANY)
+
+
+@dataclass(slots=True)
+class TableField:
+    key: Expr | str | None
+    value: Expr
+
+
+@dataclass(slots=True)
+class TableCtor(Expr):
+    fields: list[TableField]
     inferred_type: LuaType = field(default=ANY)
