@@ -1,19 +1,15 @@
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 import math
-
 from .bytecode import Op, Proto, Closure, Cell
 from .errors import LuaRuntimeError, LuaQuotaError
 from .table import LuaTable
 from .values import MultiValue, i64, lua_equal, static_value_type, truthy, type_matches
 
-
 @dataclass(slots=True)
 class HostFunction:
     fn: object
     name: str = "?"
-
 
 @dataclass(slots=True)
 class Frame:
@@ -51,7 +47,8 @@ def _to_int(value):
 
 
 def _float_div(a, b):
-    a = float(a); b = float(b)
+    a = float(a)
+    b = float(b)
     if b != 0.0:
         return a / b
     if a == 0.0:
@@ -90,10 +87,209 @@ def _to_lua_string(value):
 
 
 class VM:
+    MAXTAGLOOP = 2000
+    ARITH_TM = {
+        Op.ADD: b"__add", Op.SUB: b"__sub", Op.MUL: b"__mul",
+        Op.DIV: b"__div", Op.IDIV: b"__idiv", Op.MOD: b"__mod", Op.POW: b"__pow",
+        Op.BAND: b"__band", Op.BOR: b"__bor", Op.BXOR: b"__bxor",
+        Op.SHL: b"__shl", Op.SHR: b"__shr",
+    }
+
     def __init__(self, globals: LuaTable | None = None, fuel=1_000_000, max_frames=1000):
         self.globals = LuaTable() if globals is None else globals
         self.default_fuel = fuel
         self.max_frames = max_frames
+
+    def _tm(self, value, name):
+        if isinstance(value, LuaTable) and isinstance(value.metatable, LuaTable):
+            return value.metatable.rawget(name)
+        return None
+
+    def _first_tm(self, left, right, name):
+        return self._tm(left, name) or self._tm(right, name)
+
+    def _host_values(self, fn, args):
+        try:
+            result = fn.fn(*args)
+        except LuaRuntimeError:
+            raise
+        except Exception as exc:
+            raise LuaRuntimeError(str(exc)) from None
+        return result.values if isinstance(result, MultiValue) else (result,)
+
+    def _invoke(self, frames, parent, fn, args, dest, want, tail=False):
+        args = list(args)
+        for _ in range(self.MAXTAGLOOP):
+            if isinstance(fn, HostFunction):
+                values = self._host_values(fn, args)
+                if tail:
+                    return self._return(frames, parent, values)
+                self._write_results(parent.regs, dest, want, values)
+                return None
+            if isinstance(fn, Closure):
+                if tail:
+                    frames[-1] = self._new_frame(fn, args, parent.return_reg, parent.return_want)
+                    return None
+                if len(frames) >= self.max_frames:
+                    raise LuaRuntimeError("stack overflow")
+                frames.append(self._new_frame(fn, args, dest, want))
+                return None
+            tm = self._tm(fn, b"__call")
+            if tm is None:
+                raise LuaRuntimeError(f"attempt to call a {static_value_type(fn).name} value")
+            args.insert(0, fn)
+            fn = tm
+        raise LuaRuntimeError("'__call' chain too long; possible loop")
+
+    def _gettable(self, frames, frame, obj, key, dest):
+        for _ in range(self.MAXTAGLOOP):
+            if isinstance(obj, LuaTable):
+                if obj.rawhas(key):
+                    frame.regs[dest] = obj.rawget(key)
+                    return
+                tm = self._tm(obj, b"__index")
+                if tm is None:
+                    frame.regs[dest] = None
+                    return
+            else:
+                tm = self._tm(obj, b"__index")
+                if tm is None:
+                    raise LuaRuntimeError(f"attempt to index a {static_value_type(obj).name} value")
+            if isinstance(tm, (Closure, HostFunction)) or self._tm(tm, b"__call") is not None:
+                self._invoke(frames, frame, tm, [obj, key], dest, 1)
+                return
+            obj = tm
+        raise LuaRuntimeError("'__index' chain too long; possible loop")
+
+    def _settable(self, frames, frame, obj, key, value):
+        for _ in range(self.MAXTAGLOOP):
+            if isinstance(obj, LuaTable):
+                if obj.rawhas(key):
+                    obj.rawset(key, value)
+                    return
+                tm = self._tm(obj, b"__newindex")
+                if tm is None:
+                    obj.rawset(key, value)
+                    return
+            else:
+                tm = self._tm(obj, b"__newindex")
+                if tm is None:
+                    raise LuaRuntimeError(f"attempt to index a {static_value_type(obj).name} value")
+            if isinstance(tm, (Closure, HostFunction)) or self._tm(tm, b"__call") is not None:
+                self._invoke(frames, frame, tm, [obj, key, value], 0, 0)
+                return
+            obj = tm
+        raise LuaRuntimeError("'__newindex' chain too long; possible loop")
+
+    def _arith_primitive(self, op, a, b):
+        if op in (Op.ADD, Op.SUB, Op.MUL):
+            if not (_is_number(a) and _is_number(b)):
+                return False, None
+            value = a + b if op is Op.ADD else a - b if op is Op.SUB else a * b
+            return True, i64(value) if type(a) is int and type(b) is int else value
+        if op is Op.DIV:
+            if not (_is_number(a) and _is_number(b)):
+                return False, None
+            return True, _float_div(a, b)
+        if op is Op.IDIV:
+            if not (_is_number(a) and _is_number(b)):
+                return False, None
+            if b == 0:
+                raise LuaRuntimeError("attempt to divide by zero")
+            q = math.floor(a / b)
+            return True, i64(q) if type(a) is int and type(b) is int else float(q)
+        if op is Op.MOD:
+            if not (_is_number(a) and _is_number(b)):
+                return False, None
+            if b == 0:
+                raise LuaRuntimeError("attempt to perform 'n%0'")
+            value = a % b
+            return True, i64(value) if type(a) is int and type(b) is int else float(value)
+        if op is Op.POW:
+            if not (_is_number(a) and _is_number(b)):
+                return False, None
+            return True, float(a) ** float(b)
+        if op in (Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR):
+            try:
+                ai = _to_int(a)
+                bi = _to_int(b)
+            except LuaRuntimeError:
+                return False, None
+            if op is Op.BAND:
+                value = i64(ai & bi)
+            elif op is Op.BOR:
+                value = i64(ai | bi)
+            elif op is Op.BXOR:
+                value = i64(ai ^ bi)
+            elif op is Op.SHL:
+                value = _shift_left(ai, bi)
+            else:
+                value = _shift_right(ai, bi)
+            return True, value
+        return False, None
+
+    def _generic_binary(self, frames, frame, op, a, b, dest):
+        ok, value = self._arith_primitive(op, a, b)
+        if ok:
+            frame.regs[dest] = value
+            return
+        tm = self._first_tm(a, b, self.ARITH_TM[op])
+        if tm is None:
+            raise LuaRuntimeError(f"attempt to perform arithmetic on a {static_value_type(a).name} value")
+        self._invoke(frames, frame, tm, [a, b], dest, 1)
+
+    def _compare(self, frames, frame, op, a, b, dest):
+        if op is Op.EQ:
+            raw = lua_equal(a, b)
+            if raw:
+                frame.regs[dest] = True
+                return
+            if not (isinstance(a, LuaTable) and isinstance(b, LuaTable)):
+                frame.regs[dest] = False
+                return
+            tm = self._first_tm(a, b, b"__eq")
+            if tm is None:
+                frame.regs[dest] = False
+                return
+            self._invoke(frames, frame, tm, [a, b], dest, 1)
+            return
+        if _is_number(a) and _is_number(b):
+            frame.regs[dest] = a < b if op is Op.LT else a <= b
+            return
+        if isinstance(a, bytes) and isinstance(b, bytes):
+            frame.regs[dest] = a < b if op is Op.LT else a <= b
+            return
+        tm = self._first_tm(a, b, b"__lt" if op is Op.LT else b"__le")
+        if tm is None:
+            raise LuaRuntimeError("attempt to compare incompatible values")
+        self._invoke(frames, frame, tm, [a, b], dest, 1)
+
+    def _forprep(self, regs, ins):
+        idx, limit, step = regs[ins.a], regs[ins.b], regs[ins.c]
+        if not all(_is_number(value) for value in (idx, limit, step)):
+            raise LuaRuntimeError("'for' limit must be a number")
+        if step == 0:
+            raise LuaRuntimeError("'for' step is zero")
+        if any(type(value) is float for value in (idx, limit, step)):
+            idx, limit, step = float(idx), float(limit), float(step)
+            regs[ins.a], regs[ins.b], regs[ins.c] = idx, limit, step
+        return idx <= limit if step > 0 else idx >= limit
+
+    def _forloop(self, regs, ins):
+        idx, limit, step = regs[ins.a], regs[ins.b], regs[ins.c]
+        if type(idx) is int and type(limit) is int and type(step) is int:
+            nxt = idx + step
+            if nxt < -(1 << 63) or nxt > (1 << 63) - 1:
+                return False
+            if (step > 0 and nxt > limit) or (step < 0 and nxt < limit):
+                return False
+            regs[ins.a] = nxt
+            return True
+        nxt = float(idx) + float(step)
+        if (step > 0 and nxt > limit) or (step < 0 and nxt < limit):
+            return False
+        regs[ins.a] = nxt
+        return True
 
     def run(self, proto: Proto, fuel=None):
         remaining = self.default_fuel if fuel is None else fuel
@@ -102,18 +298,16 @@ class VM:
         if proto.env_reg >= 0:
             root_regs[proto.env_reg] = self.globals
         frames = [Frame(root, root_regs)]
-        final_values: tuple[object, ...] = ()
+        final_values = ()
 
         while frames:
             remaining -= 1
             if remaining < 0:
                 raise LuaQuotaError("execution quota exceeded")
-
             frame = frames[-1]
             if frame.pc >= len(frame.proto.code):
                 final_values = self._return(frames, frame, ())
                 continue
-
             ins = frame.proto.code[frame.pc]
             frame.pc += 1
             op = ins.op
@@ -161,15 +355,9 @@ class VM:
             elif op is Op.NEWTABLE:
                 regs[ins.a] = LuaTable()
             elif op is Op.GETTABLE:
-                table = regs[ins.b]
-                if not isinstance(table, LuaTable):
-                    raise LuaRuntimeError(f"attempt to index a {static_value_type(table).name} value")
-                regs[ins.a] = table.rawget(regs[ins.c])
+                self._gettable(frames, frame, regs[ins.b], regs[ins.c], ins.a)
             elif op is Op.SETTABLE:
-                table = regs[ins.a]
-                if not isinstance(table, LuaTable):
-                    raise LuaRuntimeError(f"attempt to index a {static_value_type(table).name} value")
-                table.rawset(regs[ins.b], regs[ins.c])
+                self._settable(frames, frame, regs[ins.a], regs[ins.b], regs[ins.c])
             elif op is Op.SETLISTV:
                 table = regs[ins.a]
                 mv = regs[ins.c]
@@ -177,74 +365,64 @@ class VM:
                     raise LuaRuntimeError("invalid table list expansion")
                 for offset, value in enumerate(mv.values):
                     table.rawset(ins.b + offset, value)
-            elif op in (Op.ADD, Op.ADD_I, Op.ADD_F, Op.SUB, Op.SUB_I, Op.SUB_F, Op.MUL, Op.MUL_I, Op.MUL_F):
-                a, b = regs[ins.b], regs[ins.c]
-                _need_number(a); _need_number(b)
-                if op in (Op.ADD, Op.ADD_I, Op.ADD_F):
-                    value = a + b
-                elif op in (Op.SUB, Op.SUB_I, Op.SUB_F):
-                    value = a - b
-                else:
-                    value = a * b
-                if op in (Op.ADD_I, Op.SUB_I, Op.MUL_I) or (op in (Op.ADD, Op.SUB, Op.MUL) and type(a) is int and type(b) is int):
-                    value = i64(value)
-                elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
-                    value = float(value)
-                regs[ins.a] = value
-            elif op is Op.DIV:
-                regs[ins.a] = _float_div(_need_number(regs[ins.b]), _need_number(regs[ins.c]))
-            elif op is Op.IDIV:
+            elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
-                if b == 0:
-                    raise LuaRuntimeError("attempt to divide by zero")
-                q = math.floor(a / b)
-                regs[ins.a] = i64(q) if type(a) is int and type(b) is int else float(q)
-            elif op is Op.MOD:
+                value = a + b if op is Op.ADD_I else a - b if op is Op.SUB_I else a * b
+                regs[ins.a] = i64(value)
+            elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
-                if b == 0:
-                    raise LuaRuntimeError("attempt to perform 'n%0'")
-                value = a % b
-                regs[ins.a] = i64(value) if type(a) is int and type(b) is int else float(value)
-            elif op is Op.POW:
-                regs[ins.a] = float(_need_number(regs[ins.b])) ** float(_need_number(regs[ins.c]))
+                value = a + b if op is Op.ADD_F else a - b if op is Op.SUB_F else a * b
+                regs[ins.a] = float(value)
+            elif op in self.ARITH_TM:
+                self._generic_binary(frames, frame, op, regs[ins.b], regs[ins.c], ins.a)
             elif op is Op.NEG:
-                value = _need_number(regs[ins.b])
-                regs[ins.a] = i64(-value) if type(value) is int else -value
-            elif op is Op.BAND:
-                regs[ins.a] = i64(_to_int(regs[ins.b]) & _to_int(regs[ins.c]))
-            elif op is Op.BOR:
-                regs[ins.a] = i64(_to_int(regs[ins.b]) | _to_int(regs[ins.c]))
-            elif op is Op.BXOR:
-                regs[ins.a] = i64(_to_int(regs[ins.b]) ^ _to_int(regs[ins.c]))
+                value = regs[ins.b]
+                if _is_number(value):
+                    regs[ins.a] = i64(-value) if type(value) is int else -value
+                else:
+                    tm = self._tm(value, b"__unm")
+                    if tm is None:
+                        raise LuaRuntimeError(f"attempt to perform arithmetic on a {static_value_type(value).name} value")
+                    self._invoke(frames, frame, tm, [value], ins.a, 1)
             elif op is Op.BNOT:
-                regs[ins.a] = i64(~_to_int(regs[ins.b]))
-            elif op is Op.SHL:
-                regs[ins.a] = _shift_left(regs[ins.b], regs[ins.c])
-            elif op is Op.SHR:
-                regs[ins.a] = _shift_right(regs[ins.b], regs[ins.c])
+                value = regs[ins.b]
+                try:
+                    regs[ins.a] = i64(~_to_int(value))
+                except LuaRuntimeError:
+                    tm = self._tm(value, b"__bnot")
+                    if tm is None:
+                        raise
+                    self._invoke(frames, frame, tm, [value], ins.a, 1)
             elif op is Op.CONCAT:
-                regs[ins.a] = _to_lua_string(regs[ins.b]) + _to_lua_string(regs[ins.c])
+                a, b = regs[ins.b], regs[ins.c]
+                try:
+                    regs[ins.a] = _to_lua_string(a) + _to_lua_string(b)
+                except LuaRuntimeError:
+                    tm = self._first_tm(a, b, b"__concat")
+                    if tm is None:
+                        raise
+                    self._invoke(frames, frame, tm, [a, b], ins.a, 1)
             elif op is Op.LEN:
                 value = regs[ins.b]
                 if isinstance(value, bytes):
                     regs[ins.a] = len(value)
                 elif isinstance(value, LuaTable):
-                    regs[ins.a] = value.rawlen()
+                    tm = self._tm(value, b"__len")
+                    if tm is None:
+                        regs[ins.a] = value.rawlen()
+                    else:
+                        self._invoke(frames, frame, tm, [value], ins.a, 1)
                 else:
-                    raise LuaRuntimeError(f"attempt to get length of a {static_value_type(value).name} value")
+                    tm = self._tm(value, b"__len")
+                    if tm is None:
+                        raise LuaRuntimeError(f"attempt to get length of a {static_value_type(value).name} value")
+                    self._invoke(frames, frame, tm, [value], ins.a, 1)
             elif op is Op.NOT:
                 regs[ins.a] = not truthy(regs[ins.b])
-            elif op is Op.EQ:
-                regs[ins.a] = lua_equal(regs[ins.b], regs[ins.c])
-            elif op in (Op.LT, Op.LE):
-                a, b = regs[ins.b], regs[ins.c]
-                if _is_number(a) and _is_number(b):
-                    result = a < b if op is Op.LT else a <= b
-                elif isinstance(a, bytes) and isinstance(b, bytes):
-                    result = a < b if op is Op.LT else a <= b
-                else:
-                    raise LuaRuntimeError("attempt to compare incompatible values")
-                regs[ins.a] = result
+            elif op is Op.TOBOOL:
+                regs[ins.a] = truthy(regs[ins.b])
+            elif op in (Op.EQ, Op.LT, Op.LE):
+                self._compare(frames, frame, op, regs[ins.b], regs[ins.c], ins.a)
             elif op is Op.JMP:
                 frame.pc = ins.a
             elif op is Op.JMPIF:
@@ -253,11 +431,19 @@ class VM:
             elif op is Op.JMPIFNOT:
                 if not truthy(regs[ins.b]):
                     frame.pc = ins.a
+            elif op is Op.JMPIFNIL:
+                if regs[ins.b] is None:
+                    frame.pc = ins.a
+            elif op is Op.FORPREP:
+                if not self._forprep(regs, ins):
+                    frame.pc = ins.d
+            elif op is Op.FORLOOP:
+                if self._forloop(regs, ins):
+                    frame.pc = ins.d
             elif op is Op.GUARD:
                 expected = constants[ins.b]
                 if not type_matches(expected, regs[ins.a]):
-                    actual = static_value_type(regs[ins.a]).name
-                    raise LuaRuntimeError(f"expected {expected}, got {actual}")
+                    raise LuaRuntimeError(f"expected {expected}, got {static_value_type(regs[ins.a]).name}")
             elif op is Op.VARARG:
                 if ins.b == -1:
                     regs[ins.a] = MultiValue(frame.varargs)
@@ -269,41 +455,23 @@ class VM:
                 values = mv.values if isinstance(mv, MultiValue) else (mv,)
                 for i in range(ins.c):
                     regs[ins.a + i] = values[i] if i < len(values) else None
-            elif op in (Op.CALL, Op.CALLV):
+            elif op in (Op.CALL, Op.CALLV, Op.TAILCALL, Op.TAILCALLV):
+                tail = op in (Op.TAILCALL, Op.TAILCALLV)
                 fn = regs[ins.b]
                 args = [regs[ins.c + i] for i in range(ins.d)]
                 want = ins.e if op is Op.CALL else -1
-                if op is Op.CALLV:
+                if op in (Op.CALLV, Op.TAILCALLV):
                     mv = regs[ins.e]
-                    if isinstance(mv, MultiValue):
-                        args.extend(mv.values)
-                    else:
-                        args.append(mv)
-                if isinstance(fn, HostFunction):
-                    try:
-                        result = fn.fn(*args)
-                    except LuaRuntimeError:
-                        raise
-                    except Exception as exc:
-                        raise LuaRuntimeError(str(exc)) from None
-                    values = result.values if isinstance(result, MultiValue) else (result,)
-                    self._write_results(regs, ins.a, want, values)
-                elif isinstance(fn, Closure):
-                    if len(frames) >= self.max_frames:
-                        raise LuaRuntimeError("stack overflow")
-                    frames.append(self._new_frame(fn, args, ins.a, want))
-                else:
-                    raise LuaRuntimeError(f"attempt to call a {static_value_type(fn).name} value")
+                    args.extend(mv.values if isinstance(mv, MultiValue) else (mv,))
+                returned = self._invoke(frames, frame, fn, args, ins.a, want, tail=tail)
+                if tail and returned is not None:
+                    final_values = returned
             elif op is Op.RETURN:
-                values = tuple(regs[ins.a + i] for i in range(ins.b))
-                final_values = self._return(frames, frame, values)
+                final_values = self._return(frames, frame, tuple(regs[ins.a + i] for i in range(ins.b)))
             elif op is Op.RETURNV:
                 values = [regs[ins.a + i] for i in range(ins.b)]
                 mv = regs[ins.c]
-                if isinstance(mv, MultiValue):
-                    values.extend(mv.values)
-                else:
-                    values.append(mv)
+                values.extend(mv.values if isinstance(mv, MultiValue) else (mv,))
                 final_values = self._return(frames, frame, tuple(values))
             elif op is Op.HALT:
                 final_values = self._return(frames, frame, ())
@@ -316,7 +484,7 @@ class VM:
             return final_values[0]
         return final_values
 
-    def _new_frame(self, closure: Closure, args, return_reg, return_want):
+    def _new_frame(self, closure, args, return_reg, return_want):
         proto = closure.proto
         regs = [None] * max(1, proto.register_count)
         for i in range(proto.param_count):
