@@ -1,10 +1,8 @@
 from __future__ import annotations
-
 from .lexer import Lexer
 from .errors import LuaSyntaxError
 from . import astnodes as A
-from .typesys import ANY, NIL, LuaType, parse_simple_type, union_of
-
+from .typesys import ANY, NIL, FUNCTION, LuaType, parse_simple_type, union_of
 
 PRECEDENCE = {
     "or": 1, "and": 2,
@@ -13,7 +11,6 @@ PRECEDENCE = {
     "..": 8, "+": 9, "-": 9, "*": 10, "/": 10, "//": 10, "%": 10, "^": 12,
 }
 RIGHT_ASSOC = {"^", ".."}
-
 
 class Parser:
     def __init__(self, source: str):
@@ -32,9 +29,7 @@ class Parser:
         return t
 
     def accept(self, kind):
-        if self.t.kind == kind:
-            return self.take()
-        return None
+        return self.take() if self.t.kind == kind else None
 
     def parse(self):
         return A.Chunk(1, self.block({"EOF"}))
@@ -47,23 +42,38 @@ class Parser:
         return out
 
     def statement(self):
-        if self.t.kind == "local":
+        kind = self.t.kind
+        if kind == "local":
             return self.local_stmt()
-        if self.t.kind == "function":
+        if kind == "function":
             return self.function_stmt(False)
-        if self.t.kind == "return":
+        if kind == "return":
             line = self.take().line
-            if self.t.kind in ("EOF", "end", "else", "elseif", ";"):
+            if self.t.kind in ("EOF", "end", "else", "elseif", "until", ";"):
                 return A.Return(line, [])
             return A.Return(line, self.expr_list())
-        if self.t.kind == "while":
+        if kind == "break":
+            return A.BreakStmt(self.take().line)
+        if kind == "do":
+            line = self.take().line
+            body = self.block({"end"})
+            self.take("end")
+            return A.DoStmt(line, body)
+        if kind == "while":
             line = self.take().line
             cond = self.expr()
             self.take("do")
             body = self.block({"end"})
             self.take("end")
             return A.WhileStmt(line, cond, body)
-        if self.t.kind == "if":
+        if kind == "repeat":
+            line = self.take().line
+            body = self.block({"until"})
+            self.take("until")
+            return A.RepeatStmt(line, body, self.expr())
+        if kind == "for":
+            return self.for_stmt()
+        if kind == "if":
             return self.if_stmt()
 
         first = self.expr()
@@ -74,7 +84,7 @@ class Parser:
             self.take("=")
             self._check_targets(targets)
             return A.Assign(first.line, targets, self.expr_list())
-        if not isinstance(first, A.Call):
+        if not isinstance(first, (A.Call, A.MethodCall)):
             raise LuaSyntaxError(f"line {first.line}: statement is neither assignment nor function call")
         return A.ExprStmt(first.line, first)
 
@@ -99,6 +109,28 @@ class Parser:
         self.take("end")
         return A.IfStmt(line, clauses, else_body)
 
+    def for_stmt(self):
+        line = self.take("for").line
+        name = self.take("NAME").value
+        if self.accept("="):
+            start = self.expr()
+            self.take(",")
+            limit = self.expr()
+            step = self.expr() if self.accept(",") else None
+            self.take("do")
+            body = self.block({"end"})
+            self.take("end")
+            return A.NumericForStmt(line, name, start, limit, step, body)
+        names = [name]
+        while self.accept(","):
+            names.append(self.take("NAME").value)
+        self.take("in")
+        values = self.expr_list()
+        self.take("do")
+        body = self.block({"end"})
+        self.take("end")
+        return A.GenericForStmt(line, names, values, body)
+
     def local_stmt(self):
         line = self.take("local").line
         if self.t.kind == "function":
@@ -117,13 +149,34 @@ class Parser:
         if local:
             line = line_override or self.t.line
             self.take("function")
-        else:
-            line = self.take("function").line
-        name = self.take("NAME").value
+            name = self.take("NAME").value
+            params, returns, body, vararg_name, vararg_type = self.function_body()
+            return A.FunctionDef(line, name, params, returns, body, True, vararg_name, vararg_type)
+
+        line = self.take("function").line
+        target = A.Name(line, self.take("NAME").value)
+        complex_target = False
+        method = False
+        while self.accept("."):
+            target = A.Field(line, target, self.take("NAME").value)
+            complex_target = True
+        if self.accept(":"):
+            target = A.Field(line, target, self.take("NAME").value)
+            complex_target = True
+            method = True
+        params, returns, body, vararg_name, vararg_type = self.function_body(prepend_self=method)
+        if not complex_target and isinstance(target, A.Name):
+            return A.FunctionDef(line, target.value, params, returns, body, False, vararg_name, vararg_type)
+        fn = A.FunctionExpr(line, params, returns, body, vararg_name, vararg_type, FUNCTION)
+        return A.Assign(line, [target], [fn])
+
+    def function_body(self, prepend_self=False):
         self.take("(")
         params = []
         vararg_name = None
         vararg_type = ANY
+        if prepend_self:
+            params.append(("self", ANY))
         if self.t.kind != ")":
             while True:
                 if self.accept("..."):
@@ -147,7 +200,7 @@ class Parser:
                 return_types.append(self.type_annotation())
         body = self.block({"end"})
         self.take("end")
-        return A.FunctionDef(line, name, params, return_types, body, local, vararg_name, vararg_type)
+        return params, return_types, body, vararg_name, vararg_type
 
     def type_annotation(self) -> LuaType:
         parts = [parse_simple_type(self.take("NAME").value)]
@@ -187,29 +240,35 @@ class Parser:
                 self.take("]")
                 node = A.Index(node.line, node, key)
             elif self.accept("."):
+                node = A.Field(node.line, node, self.take("NAME").value)
+            elif self.accept(":"):
                 name = self.take("NAME").value
-                node = A.Field(node.line, node, name)
-            elif self.accept("("):
-                args = [] if self.t.kind == ")" else self.expr_list()
-                self.take(")")
-                node = A.Call(node.line, node, args)
-            elif self.t.kind == "STRING":
-                s = self.take()
-                from .typesys import STRING
-                node = A.Call(node.line, node, [A.Literal(s.line, s.value, STRING)])
-            elif self.t.kind == "{":
-                node = A.Call(node.line, node, [self.table_ctor()])
+                node = A.MethodCall(node.line, node, name, self.call_args())
+            elif self.t.kind in ("(", "STRING", "{"):
+                node = A.Call(node.line, node, self.call_args())
             else:
                 break
         return node
+
+    def call_args(self):
+        if self.accept("("):
+            args = [] if self.t.kind == ")" else self.expr_list()
+            self.take(")")
+            return args
+        if self.t.kind == "STRING":
+            s = self.take()
+            from .typesys import STRING
+            return [A.Literal(s.line, s.value, STRING)]
+        if self.t.kind == "{":
+            return [self.table_ctor()]
+        raise LuaSyntaxError(f"expected function arguments at line {self.t.line}")
 
     def primary(self):
         t = self.t
         if t.kind == "NUMBER":
             self.take()
             from .typesys import INTEGER, FLOAT
-            typ = INTEGER if type(t.value) is int else FLOAT
-            return A.Literal(t.line, t.value, typ)
+            return A.Literal(t.line, t.value, INTEGER if type(t.value) is int else FLOAT)
         if t.kind == "STRING":
             self.take()
             from .typesys import STRING
@@ -224,7 +283,6 @@ class Parser:
             return A.Literal(t.line, False, BOOLEAN)
         if t.kind == "nil":
             self.take()
-            from .typesys import NIL
             return A.Literal(t.line, None, NIL)
         if t.kind == "...":
             self.take()
@@ -232,6 +290,10 @@ class Parser:
         if t.kind == "NAME":
             self.take()
             return A.Name(t.line, t.value)
+        if t.kind == "function":
+            line = self.take().line
+            params, returns, body, vararg_name, vararg_type = self.function_body()
+            return A.FunctionExpr(line, params, returns, body, vararg_name, vararg_type, FUNCTION)
         if t.kind == "{":
             return self.table_ctor()
         if self.accept("("):
