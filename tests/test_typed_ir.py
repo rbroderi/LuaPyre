@@ -154,7 +154,8 @@ local function sum_global(n: integer): integer
     end
     return total
 end
-return sum_global(2000)
+local result: integer = sum_global(2000)
+return result
 """
     assert runtime.execute(source) == 10000
     assert "<luapyre-ir-function>" in _compiled_function_filenames(runtime)
@@ -175,7 +176,8 @@ local function sum_field(t: table): integer
     return total
 end
 local t = {value = 1}
-return sum_field(t)
+local result: integer = sum_field(t)
+return result
 """
     assert runtime.execute(source) == 400
     assert "<luapyre-ir-function>" in _compiled_function_filenames(runtime)
