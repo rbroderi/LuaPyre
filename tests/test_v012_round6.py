@@ -46,3 +46,18 @@ def test_tonumber_long_hexadecimal_float_overflow_returns_infinity():
     assert run("return tonumber('0x' .. string.rep('f', 300) .. '.0') == math.huge") is True
     assert run("return tonumber('-0x' .. string.rep('f', 300) .. '.0') == -math.huge") is True
     assert run("return tonumber('0xe03' .. string.rep('0', 1000) .. 'p-4000')") == 3587.0
+
+
+def test_float_modulo_matches_lua_nan_and_infinity_edges():
+    assert run("local x = 0.0 % 0; return x ~= x") is True
+    assert run("local x = 1.3 % 0; return x ~= x") is True
+    assert run("local x = math.huge % 1; return x ~= x") is True
+    assert run("return 1 % math.huge") == 1.0
+    assert run("return 1e30 % math.huge") == 1e30
+    assert run("return 1e30 % -math.huge") == float("-inf")
+    assert run("return -1 % math.huge") == float("inf")
+    assert run("return -1 % -math.huge") == -1.0
+
+
+def test_integer_modulo_by_zero_still_errors():
+    assert run("local ok = pcall(function () return 1 % 0 end); return ok") is False
