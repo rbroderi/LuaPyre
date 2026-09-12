@@ -4,10 +4,28 @@ from .errors import LuaRuntimeError
 from .table import LuaTable
 from .values import MultiValue
 from .vm import HostFunction
-from .stdlib_support import need_bytes, need_integer, normalize_index
+from .stdlib_support import need_bytes, need_integer
 
 
 CHARPATTERN = b"[\x00-\x7f\xc2-\xfd][\x80-\xbf]*"
+
+
+def _is_cont(byte: int) -> bool:
+    return (byte & 0xC0) == 0x80
+
+
+def _byte_at(data: bytes, index: int) -> int:
+    """Return Lua's implicit trailing NUL when indexing at string end."""
+    return data[index] if 0 <= index < len(data) else 0
+
+
+def _u_posrelat(value: int, length: int) -> int:
+    """Mirror Lua 5.5's utf8-library relative-position helper."""
+    if value >= 0:
+        return value
+    if -value > length:
+        return 0
+    return length + value + 1
 
 
 def _encode(codepoint: int) -> bytes:
@@ -58,7 +76,7 @@ def _decode(data: bytes, start: int, lax: bool = False) -> tuple[int, int]:
         raise LuaRuntimeError("invalid UTF-8 code")
     for pos in range(start + 1, start + count):
         byte = data[pos]
-        if byte < 0x80 or byte > 0xBF:
+        if not _is_cont(byte):
             raise LuaRuntimeError("invalid UTF-8 code")
         value = (value << 6) | (byte & 0x3F)
     minimum = (0, 0, 0x80, 0x800, 0x10000, 0x200000, 0x4000000)[count]
@@ -67,14 +85,6 @@ def _decode(data: bytes, start: int, lax: bool = False) -> tuple[int, int]:
     if not lax and (value > 0x10FFFF or 0xD800 <= value <= 0xDFFF):
         raise LuaRuntimeError("invalid UTF-8 code")
     return value, start + count
-
-
-def _position(value: int, length: int, *, allow_end=True) -> int:
-    value = normalize_index(value, length)
-    maximum = length + 1 if allow_end else length
-    if value < 1 or value > maximum:
-        raise LuaRuntimeError("position out of bounds")
-    return value
 
 
 def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
@@ -88,119 +98,110 @@ def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
 
     def codepoint(s, i=1, j=None, lax=False):
         s = need_bytes(s, 1, "codepoint")
-        i = _position(need_integer(i, 2, "codepoint"), len(s), allow_end=False)
-        j = i if j is None else _position(need_integer(j, 3, "codepoint"), len(s), allow_end=False)
-        if i > j:
+        length = len(s)
+        posi = _u_posrelat(need_integer(i, 2, "codepoint"), length)
+        raw_j = posi if j is None else need_integer(j, 3, "codepoint")
+        pose = _u_posrelat(raw_j, length)
+        if posi < 1:
+            raise LuaRuntimeError("initial position out of bounds")
+        if pose > length:
+            raise LuaRuntimeError("final position out of bounds")
+        if posi > pose:
             return MultiValue(())
         values = []
-        pos = i - 1
-        limit = j - 1
-        while pos <= limit and pos < len(s):
-            cp, end = _decode(s, pos, bool(lax))
+        pos = posi - 1
+        limit = pose
+        while pos < limit:
+            cp, pos = _decode(s, pos, bool(lax))
             values.append(cp)
-            pos = end
         return MultiValue(tuple(values))
 
     def length_fn(s, i=1, j=-1, lax=False):
         s = need_bytes(s, 1, "len")
-        i = _position(need_integer(i, 2, "len"), len(s), allow_end=True)
-        raw_j = need_integer(j, 3, "len")
-        j = normalize_index(raw_j, len(s))
-        if len(s) == 0 and raw_j == -1:
-            j = 0
-        if j < 1 or j > len(s):
-            if i == len(s) + 1 and j == len(s):
-                return 0
-            if len(s) == 0 and j == 0:
-                return 0
-            raise LuaRuntimeError("position out of bounds")
-        if i > j:
-            return 0
-        pos = i - 1
-        limit = j - 1
+        length = len(s)
+        posi = _u_posrelat(need_integer(i, 2, "len"), length)
+        posj = _u_posrelat(need_integer(j, 3, "len"), length)
+        if posi < 1:
+            raise LuaRuntimeError("initial position out of bounds")
+        posi -= 1
+        if posi > length:
+            raise LuaRuntimeError("initial position out of bounds")
+        posj -= 1
+        if posj >= length:
+            raise LuaRuntimeError("final position out of bounds")
         count = 0
-        while pos <= limit and pos < len(s):
+        while posi <= posj:
             try:
-                _cp, end = _decode(s, pos, bool(lax))
+                _cp, posi = _decode(s, posi, bool(lax))
             except LuaRuntimeError:
-                return MultiValue((None, pos + 1))
+                return MultiValue((None, posi + 1))
             count += 1
-            pos = end
         return count
 
     def offset(s, n, i=None):
         s = need_bytes(s, 1, "offset")
         n = need_integer(n, 2, "offset")
-        if i is None:
-            i = 1 if n >= 0 else len(s) + 1
-        else:
-            i = _position(need_integer(i, 3, "offset"), len(s), allow_end=True)
+        length = len(s)
+        default_i = 1 if n >= 0 else length + 1
+        raw_i = default_i if i is None else need_integer(i, 3, "offset")
+        posi = _u_posrelat(raw_i, length)
+        if posi < 1:
+            raise LuaRuntimeError("position out of bounds")
+        pos = posi - 1
+        if pos > length:
+            raise LuaRuntimeError("position out of bounds")
 
         if n == 0:
-            if i == len(s) + 1:
-                return MultiValue((i, i))
-            pos = i - 1
-            while pos > 0 and 0x80 <= s[pos] <= 0xBF:
+            while pos > 0 and _is_cont(_byte_at(s, pos)):
                 pos -= 1
-            end = pos + 1
-            while end < len(s) and 0x80 <= s[end] <= 0xBF:
-                end += 1
-            return MultiValue((pos + 1, end))
-
-        if i <= len(s) and 0x80 <= s[i - 1] <= 0xBF:
-            raise LuaRuntimeError("initial position is a continuation byte")
-
-        if n > 0:
-            pos = i - 1
-            remaining = n
-            while remaining > 1:
-                if pos >= len(s):
-                    return None
-                pos += 1
-                while pos < len(s) and 0x80 <= s[pos] <= 0xBF:
-                    pos += 1
-                remaining -= 1
-            if pos > len(s):
-                return None
-            if pos == len(s):
-                return MultiValue((len(s) + 1, len(s) + 1))
-            end = pos + 1
-            while end < len(s) and 0x80 <= s[end] <= 0xBF:
-                end += 1
-            return MultiValue((pos + 1, end))
-
-        pos = i - 1
-        remaining = -n
-        while remaining > 0:
-            if pos <= 0:
-                return None
-            pos -= 1
-            while pos > 0 and 0x80 <= s[pos] <= 0xBF:
-                pos -= 1
-            if 0x80 <= s[pos] <= 0xBF:
+        else:
+            if _is_cont(_byte_at(s, pos)):
                 raise LuaRuntimeError("initial position is a continuation byte")
-            remaining -= 1
-        end = pos + 1
-        while end < len(s) and 0x80 <= s[end] <= 0xBF:
-            end += 1
-        return MultiValue((pos + 1, end))
+            if n < 0:
+                while n < 0 and pos > 0:
+                    pos -= 1
+                    while pos > 0 and _is_cont(_byte_at(s, pos)):
+                        pos -= 1
+                    n += 1
+            else:
+                n -= 1
+                while n > 0 and pos < length:
+                    pos += 1
+                    while _is_cont(_byte_at(s, pos)):
+                        pos += 1
+                    n -= 1
+
+        if n != 0:
+            return None
+
+        initial = pos + 1
+        byte = _byte_at(s, pos)
+        if byte & 0x80:
+            if _is_cont(byte):
+                raise LuaRuntimeError("initial position is a continuation byte")
+            while _is_cont(_byte_at(s, pos + 1)):
+                pos += 1
+        return MultiValue((initial, pos + 1))
 
     def codes(s, lax=False):
         s = need_bytes(s, 1, "codes")
         lax = bool(lax)
+        if s and _is_cont(s[0]):
+            raise LuaRuntimeError("invalid UTF-8 code")
 
         def iterator(state, control):
             control = need_integer(control, 2, "codes iterator")
-            if control == 0:
-                pos = 0
-            else:
-                previous_start = control - 1
-                if previous_start < 0 or previous_start >= len(state):
-                    return None
-                _previous_cp, pos = _decode(state, previous_start, lax)
+            if control < 0:
+                return None
+            pos = control
+            if pos < len(state):
+                while pos < len(state) and _is_cont(state[pos]):
+                    pos += 1
             if pos >= len(state):
                 return None
-            cp, _end = _decode(state, pos, lax)
+            cp, end = _decode(state, pos, lax)
+            if end < len(state) and _is_cont(state[end]):
+                raise LuaRuntimeError("invalid UTF-8 code")
             return MultiValue((pos + 1, cp))
 
         return MultiValue((HostFunction(iterator, "utf8.codes iterator"), s, 0))
