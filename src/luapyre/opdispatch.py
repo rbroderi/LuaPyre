@@ -90,7 +90,7 @@ def _local(vm, frames, frame, ins, regs, constants):
     value = regs[ins.b]
     regs[ins.a] = value
     if ins.a in frame.cells:
-        frame.cells[ins.a] = Cell(value)
+        frame.cells[ins.a] = vm._new_cell(value, frames)
 
 
 def _getcell(vm, frames, frame, ins, regs, constants):
@@ -101,7 +101,8 @@ def _getcell(vm, frames, frame, ins, regs, constants):
 def _setcell(vm, frames, frame, ins, regs, constants):
     cell = frame.cells.get(ins.a)
     if cell is None:
-        cell = frame.cells[ins.a] = Cell(regs[ins.a])
+        cell = frame.cells[ins.a] = vm._new_cell(regs[ins.a], frames)
+    vm.gc.write_barrier(cell, regs[ins.b])
     cell.value = regs[ins.b]
     regs[ins.a] = regs[ins.b]
 
@@ -111,7 +112,9 @@ def _getupval(vm, frames, frame, ins, regs, constants):
 
 
 def _setupval(vm, frames, frame, ins, regs, constants):
-    frame.closure.upvalues[ins.a].value = regs[ins.b]
+    cell = frame.closure.upvalues[ins.a]
+    vm.gc.write_barrier(cell, regs[ins.b])
+    cell.value = regs[ins.b]
 
 
 def _closure(vm, frames, frame, ins, regs, constants):
@@ -121,11 +124,11 @@ def _closure(vm, frames, frame, ins, regs, constants):
         if desc.kind == "local":
             cell = frame.cells.get(desc.index)
             if cell is None:
-                cell = frame.cells[desc.index] = Cell(regs[desc.index])
+                cell = frame.cells[desc.index] = vm._new_cell(regs[desc.index], frames)
             upvalues.append(cell)
         else:
             upvalues.append(frame.closure.upvalues[desc.index])
-    regs[ins.a] = Closure(child, upvalues, frame.closure.env)
+    regs[ins.a] = vm._new_closure(child, upvalues, frame.closure.env, frames)
 
 
 def _getglobal(vm, frames, frame, ins, regs, constants):
@@ -137,7 +140,7 @@ def _setglobal(vm, frames, frame, ins, regs, constants):
 
 
 def _newtable(vm, frames, frame, ins, regs, constants):
-    regs[ins.a] = LuaTable()
+    regs[ins.a] = vm._new_table(frames)
 
 
 def _gettable(vm, frames, frame, ins, regs, constants):

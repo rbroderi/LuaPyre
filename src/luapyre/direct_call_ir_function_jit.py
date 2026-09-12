@@ -195,7 +195,8 @@ class DirectCallIRFunctionJITMixin:
                 lines.extend(
                     [
                         "    used += 1",
-                        f"    {a} = _Closure(frame.proto.children[{ins.b}], [], frame.closure.env)",
+                        *spill("    "),
+                        f"    {a} = vm._new_closure(frame.proto.children[{ins.b}], [], frame.closure.env)",
                     ]
                 )
             elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):

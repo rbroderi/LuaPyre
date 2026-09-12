@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.23.0a1**
+**Python 3.13+** · **current pre-alpha: 0.24.0a1**
 
 LuaPyre is not yet a complete Lua 5.5.1 implementation. Correct semantics come first; the runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
@@ -91,7 +91,7 @@ lua = LuaRuntime()
 
 Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default hotness threshold is 32 loop entries/calls and can be changed with `jit_threshold=`. Live counters are available through `lua.jit_stats`; `lua.jit_feedback` snapshots adaptive call/table cache states and deoptimization reasons.
 
-0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, and 0.22 added hot trace-shaped CFG compilation and exact OSR. **0.23 adds backend-neutral escape analysis, virtual child Frames, virtual open-result MultiValues, and allocation sinking at suspension/error boundaries.** Eligible branchy lexical calls now run from scalar locals; open results consumed by `UNPACK`/`RETURNV` avoid their wrapper allocation. Source-bytecode fuel, stack limits, diagnostics, and Tier-0 resumption remain authoritative. See [`docs/escape-analysis-0.23.md`](docs/escape-analysis-0.23.md), [`docs/trace-osr-0.22.md`](docs/trace-osr-0.22.md), and the earlier design notes in [`docs/`](docs/).
+0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, and 0.23 added escape analysis and virtual Frames/MultiValues. **0.24 adds automatic allocation-debt pacing, young/old object ages, remembered-set barriers, and generational minor/major semantic collection.** Ordinary table churn takes a cheap CPython young-generation path until weak tables or finalizers make Lua reachability observable. See [`docs/gc-pacing-0.24.md`](docs/gc-pacing-0.24.md) and the earlier design notes in [`docs/`](docs/).
 
 ### Output and warnings
 
@@ -206,7 +206,7 @@ This separation preserves the custom optimizer/JIT architecture while allowing c
 
 Python remains responsible for physical memory reclamation, but LuaPyre maintains a separate Lua-level reachability model for observable GC behavior. It traces Lua roots, uses bytecode liveness rather than stale physical register contents, implements weak values/keys/all-weak tables and ephemerons, and models finalization/resurrection ordering.
 
-Collection is currently explicit/deterministic at `collectgarbage` or `LuaRuntime.collect()` safe points. Automatic byte-debt pacing for Lua's incremental/generational collectors is not yet modeled; `collectgarbage("count")` is an approximate Lua-reachable-memory estimate.
+Allocation debt now triggers automatic safe-point collection. Generational mode is the default: minor cycles scan young objects plus remembered old-to-young edges, and allocation growth periodically requests a full major cycle. Programs without weak tables or finalizers use CPython generation-0 steps because no Lua code can observe a semantic trace. `collectgarbage("count")` remains an approximate Lua-reachable-memory estimate.
 
 ## Lua 5.5.1 conformance
 
@@ -256,7 +256,6 @@ Major remaining work includes:
 
 - broader official Lua 5.5.1 suite coverage
 - additional exact runtime-error / `getobjname` categories
-- automatic incremental/generational GC pacing
 - yieldable native-library / C-API continuation semantics
 - fuller userdata/C-API behavior beyond the current sandbox value model
 - host-facing `io`, `os`, and `debug` capabilities where an embedding explicitly wants them

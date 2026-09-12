@@ -30,6 +30,8 @@ class LuaThread:
     yield_target: tuple[Frame, int, int, bool] | None = None
     pending_tail_resume: tuple[object, ...] | None = None
     is_main: bool = False
+    _gc_owner: object = None
+    _gc_age: int = 0
 
     def __repr__(self):
         return f"thread: 0x{id(self):x}"
@@ -100,7 +102,12 @@ class CoroutineVM(BaseVM):
     def create_thread(self, fn):
         if not isinstance(fn, (Closure, HostFunction)):
             raise LuaRuntimeError("bad argument #1 to 'create' (function expected)")
-        return LuaThread(fn)
+        thread = LuaThread(fn)
+        gc = getattr(self, "gc", None)
+        if gc is not None:
+            gc.safepoint(self._active_frames or ())
+            gc.adopt(thread)
+        return thread
 
     def running_thread(self):
         thread = self.current_thread or self.main_thread

@@ -159,9 +159,9 @@ class RegionPythonJIT(PythonJIT):
             lines.append(f"{indent}_v = regs[{ins.b}]")
             lines.append(f"{indent}regs[{ins.a}] = _v")
             lines.append(f"{indent}if {ins.a} in cells:")
-            lines.append(f"{indent}    cells[{ins.a}] = _Cell(_v)")
+            lines.append(f"{indent}    cells[{ins.a}] = vm._new_cell(_v)")
         elif op is Op.NEWTABLE:
-            lines.append(f"{indent}regs[{ins.a}] = _LuaTable()")
+            lines.append(f"{indent}regs[{ins.a}] = vm._new_table()")
         elif op is Op.GETTABLE:
             self._guard(
                 lines,

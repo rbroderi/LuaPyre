@@ -172,7 +172,7 @@ class TieredJITVM(GarbageCollectedVM):
                 if len(frames) >= self.max_frames:
                     raise LuaRuntimeError("stack overflow")
                 leaf_frame = self._new_frame(fn, list(args), dest, want)
-                values = compiled.runner(leaf_frame)
+                values = compiled.runner(self, leaf_frame)
                 if values is not DEOPT:
                     self._jit_consume(compiled.instruction_cost)
                     self._write_results(parent.regs, dest, want, values)
@@ -306,7 +306,7 @@ class TieredJITVM(GarbageCollectedVM):
             compiled = self.jit.maybe_leaf(fn.proto)
             if compiled is not None and self._jit_budget() >= compiled.instruction_cost:
                 leaf_frame = self._new_frame(fn, list(args), dest, want)
-                values = compiled.runner(leaf_frame)
+                values = compiled.runner(self, leaf_frame)
                 if values is not DEOPT:
                     self._jit_consume(compiled.instruction_cost)
                     self._write_results(parent.regs, dest, want, values)
@@ -321,12 +321,15 @@ class TieredJITVM(GarbageCollectedVM):
         self.main_thread.status = "running"
         remaining = self.default_fuel if fuel is None else fuel
         self._jit_main_fuel = remaining
+        previous_frames = self._active_frames
         try:
             root = Closure(proto, [], self.globals)
+            self.gc.adopt(root)
             root_regs = [None] * max(1, proto.register_count)
             if proto.env_reg >= 0:
                 root_regs[proto.env_reg] = self.globals
             frames = [Frame(root, root_regs)]
+            self._active_frames = frames
             final_values = ()
 
             # Only these three handlers need to see/mutate the JIT-visible main
@@ -390,6 +393,7 @@ class TieredJITVM(GarbageCollectedVM):
                     capture_error(exc, frames)
                     frames[-1].pending_error = exc
 
+            self.gc.safepoint(final_values)
             if len(final_values) == 0:
                 return None
             if len(final_values) == 1:
@@ -397,6 +401,7 @@ class TieredJITVM(GarbageCollectedVM):
             return final_values
         finally:
             self._jit_main_leaf_allowed = False
+            self._active_frames = previous_frames
             self.current_thread = previous_thread
 
     def _execute_thread(self, thread, stop_depth: int | None = None):
