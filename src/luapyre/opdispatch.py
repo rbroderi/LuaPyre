@@ -8,6 +8,11 @@ from .table import LuaTable
 from .values import MultiValue, i64, static_value_type, truthy, type_matches
 
 
+_UINT_MASK = (1 << 64) - 1
+_INT_MIN = -(1 << 63)
+_INT_MAX = (1 << 63) - 1
+
+
 def _is_number(value):
     return type(value) in (int, float)
 
@@ -25,7 +30,7 @@ def _to_int(value):
         return i64(value)
     if type(value) is float and math.isfinite(value) and value.is_integer():
         iv = int(value)
-        if -(1 << 63) <= iv <= (1 << 63) - 1:
+        if _INT_MIN <= iv <= _INT_MAX:
             return iv
     raise LuaRuntimeError("number has no integer representation")
 
@@ -241,6 +246,86 @@ def _forloop(vm, frames, frame, ins, regs, constants):
         frame.pc = ins.d
 
 
+def _pforprep(vm, frames, frame, ins, regs, constants):
+    init, limit, step = regs[ins.a], regs[ins.a + 1], regs[ins.a + 2]
+    if type(init) is int and type(step) is int:
+        if step == 0:
+            raise LuaRuntimeError("'for' step is zero")
+        if type(limit) is int:
+            ilimit = limit
+        elif type(limit) is float and math.isfinite(limit):
+            ilimit = math.ceil(limit) if step < 0 else math.floor(limit)
+            if ilimit > _INT_MAX:
+                if step < 0:
+                    frame.pc = ins.d
+                    return
+                ilimit = _INT_MAX
+            elif ilimit < _INT_MIN:
+                if step > 0:
+                    frame.pc = ins.d
+                    return
+                ilimit = _INT_MIN
+        else:
+            raise LuaRuntimeError("'for' limit must be a number")
+        if (step > 0 and init > ilimit) or (step < 0 and init < ilimit):
+            frame.pc = ins.d
+            return
+        if step > 0:
+            count = ((ilimit & _UINT_MASK) - (init & _UINT_MASK)) & _UINT_MASK
+            if step != 1:
+                count //= step & _UINT_MASK
+        else:
+            count = ((init & _UINT_MASK) - (ilimit & _UINT_MASK)) & _UINT_MASK
+            count //= -(step + 1) + 1
+        regs[ins.a] = i64(count)
+        regs[ins.a + 1] = step
+        regs[ins.a + 2] = init
+        return
+
+    if not all(_is_number(value) for value in (init, limit, step)):
+        raise LuaRuntimeError("'for' limit must be a number")
+    init, limit, step = float(init), float(limit), float(step)
+    if step == 0.0:
+        raise LuaRuntimeError("'for' step is zero")
+    if (step > 0 and init > limit) or (step < 0 and init < limit):
+        frame.pc = ins.d
+        return
+    regs[ins.a] = limit
+    regs[ins.a + 1] = step
+    regs[ins.a + 2] = init
+
+
+def _pforloop(vm, frames, frame, ins, regs, constants):
+    if type(regs[ins.a + 1]) is int:
+        count = regs[ins.a] & _UINT_MASK
+        if count > 0:
+            regs[ins.a] = i64(count - 1)
+            regs[ins.a + 2] = i64(regs[ins.a + 2] + regs[ins.a + 1])
+            frame.pc = ins.d
+        return
+    limit = float(regs[ins.a])
+    step = float(regs[ins.a + 1])
+    idx = float(regs[ins.a + 2]) + step
+    if (step > 0 and idx <= limit) or (step < 0 and idx >= limit):
+        regs[ins.a + 2] = idx
+        frame.pc = ins.d
+
+
+def _ptforprep(vm, frames, frame, ins, regs, constants):
+    regs[ins.a + 2], regs[ins.a + 3] = regs[ins.a + 3], regs[ins.a + 2]
+    value = regs[ins.a + 2]
+    if value is not None and value is not False:
+        if vm._tm(value, b"__close") is None:
+            raise LuaRuntimeError("variable got a non-closable value")
+        frame.puc_close_stack.append((ins.a + 2, value))
+    frame.pc = ins.d
+
+
+def _ptforloop(vm, frames, frame, ins, regs, constants):
+    if regs[ins.a + 3] is not None:
+        frame.pc = ins.d
+
+
 def _guard(vm, frames, frame, ins, regs, constants):
     expected = constants[ins.b]
     if not type_matches(expected, regs[ins.a]):
@@ -273,12 +358,56 @@ def _close(vm, frames, frame, ins, regs, constants):
     frame.pending_close_target = ins.a
 
 
+def _ptbc(vm, frames, frame, ins, regs, constants):
+    value = regs[ins.a]
+    if value is None or value is False:
+        return
+    if vm._tm(value, b"__close") is None:
+        raise LuaRuntimeError("variable got a non-closable value")
+    frame.puc_close_stack.append((ins.a, value))
+
+
+def _pclose(vm, frames, frame, ins, regs, constants):
+    frame.pending_puc_close_reg = ins.a
+
+
 def _vararg(vm, frames, frame, ins, regs, constants):
     if ins.b == -1:
         regs[ins.a] = MultiValue(frame.varargs)
         return
     for i in range(ins.b):
         regs[ins.a + i] = frame.varargs[i] if i < len(frame.varargs) else None
+
+
+def _pvararg(vm, frames, frame, ins, regs, constants):
+    if ins.c >= 0:
+        table = regs[ins.c]
+        if not isinstance(table, LuaTable):
+            raise LuaRuntimeError("invalid named vararg table")
+        count = table.rawget(b"n")
+        if type(count) is not int or count < 0:
+            raise LuaRuntimeError("invalid named vararg count")
+        values = tuple(table.rawget(i) for i in range(1, count + 1))
+    else:
+        values = frame.varargs
+    if ins.b == -1:
+        regs[ins.a] = MultiValue(tuple(values))
+        return
+    for i in range(ins.b):
+        regs[ins.a + i] = values[i] if i < len(values) else None
+
+
+def _pgetvarg(vm, frames, frame, ins, regs, constants):
+    key = regs[ins.b]
+    if isinstance(key, bytes) and key == b"n":
+        regs[ins.a] = len(frame.varargs)
+        return
+    try:
+        index = _to_int(key)
+    except LuaRuntimeError:
+        regs[ins.a] = None
+        return
+    regs[ins.a] = frame.varargs[index - 1] if 1 <= index <= len(frame.varargs) else None
 
 
 def _unpack(vm, frames, frame, ins, regs, constants):
@@ -369,14 +498,22 @@ OPCODE_HANDLERS = {
     Op.JMPIFNIL: _jmpifnil,
     Op.FORPREP: _forprep,
     Op.FORLOOP: _forloop,
+    Op.PFORPREP: _pforprep,
+    Op.PFORLOOP: _pforloop,
+    Op.PTFORPREP: _ptforprep,
+    Op.PTFORLOOP: _ptforloop,
     Op.CALL: _call,
     Op.CALLV: _call,
     Op.TAILCALL: _call,
     Op.TAILCALLV: _call,
     Op.VARARG: _vararg,
+    Op.PVARARG: _pvararg,
+    Op.PGETVARG: _pgetvarg,
     Op.UNPACK: _unpack,
     Op.TBC: _tbc,
     Op.CLOSE: _close,
+    Op.PTBC: _ptbc,
+    Op.PCLOSE: _pclose,
     Op.CHECKNIL: _checknil,
     Op.RETURN: _return,
     Op.RETURNV: _returnv,
