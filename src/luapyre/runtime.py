@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .parser import Parser
-from .compiler import Compiler
+from .source_compiler import SourceCompiler
 from .table import LuaTable
 from .values import MultiValue, i64
 from .threadvm import LuaThread
@@ -72,15 +72,15 @@ class LuaRuntime:
     def multi_return(*values):
         return MultiValue(tuple(values))
 
-    def compile(self, source: str):
-        return Compiler().compile(Parser(source).parse())
+    def compile(self, source: str, *, chunkname: str | bytes = "=(luapyre)"):
+        return SourceCompiler(chunkname).compile(Parser(source).parse())
 
-    def execute(self, source: str, *, fuel=None):
-        return self.vm.run(self.compile(source), fuel=fuel)
+    def execute(self, source: str, *, fuel=None, chunkname: str | bytes = "=(luapyre)"):
+        return self.vm.run(self.compile(source, chunkname=chunkname), fuel=fuel)
 
     def collect(self):
         """Run one full Lua-level collection cycle."""
         return self.vm.gc.collect()
 
-    def disassemble(self, source: str):
-        return self.compile(source).disassemble()
+    def disassemble(self, source: str, *, chunkname: str | bytes = "=(luapyre)"):
+        return self.compile(source, chunkname=chunkname).disassemble()
