@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 from pathlib import Path
+import sys
 import tarfile
 
 import pytest
 
-from tools import official_551 as suite
+
+_TOOL = Path(__file__).resolve().parents[1] / "tools" / "official_551.py"
+_SPEC = importlib.util.spec_from_file_location("luapyre_official_551_tool", _TOOL)
+assert _SPEC is not None and _SPEC.loader is not None
+suite = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = suite
+_SPEC.loader.exec_module(suite)
 
 
 def _tar(path: Path, members: list[tuple[str, bytes | None, str]]) -> None:
