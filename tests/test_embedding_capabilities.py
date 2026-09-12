@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from luapyre import LuaRuntime
 
 
@@ -15,6 +17,15 @@ def test_warning_sink_and_warning_controls():
     lua = LuaRuntime(warning=warnings.append)
     lua.execute('warn("a", "b"); warn("@off"); warn("hidden"); warn("@on"); warn("c")')
     assert warnings == [b"ab", b"c"]
+
+
+def test_runtime_capabilities_reject_noncallables():
+    with pytest.raises(TypeError, match="output sink"):
+        LuaRuntime(output=42)
+    with pytest.raises(TypeError, match="warning sink"):
+        LuaRuntime(warning=42)
+    with pytest.raises(TypeError, match="file loader"):
+        LuaRuntime(file_loader=42)
 
 
 def test_preload_require_and_loaded_cache():
