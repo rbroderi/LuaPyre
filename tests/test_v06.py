@@ -158,6 +158,33 @@ return hits, first
     assert result == (1, 42)
 
 
+def test_resurrected_table_can_be_marked_for_finalization_again():
+    lua = LuaRuntime()
+    result = lua.execute(
+        '''
+local hits = 0
+local rescued
+local mt
+mt = {__gc = function(self)
+  hits = hits + 1
+  if hits == 1 then
+    rescued = self
+    setmetatable(self, mt)
+  end
+end}
+local function seed()
+  local value = setmetatable({}, mt)
+end
+seed()
+collectgarbage()
+rescued = nil
+collectgarbage()
+return hits
+'''
+    )
+    assert result == 2
+
+
 def test_weak_values_drop_finalized_objects_before_gc_callback():
     lua = LuaRuntime()
     result = lua.execute(
