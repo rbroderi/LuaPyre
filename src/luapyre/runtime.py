@@ -7,6 +7,7 @@ from .gcvm import GarbageCollectedVM
 from .parser import Parser
 from .source_compiler import SourceCompiler
 from .stdlib import install_safe_stdlib
+from .stdlib_output import install_output_library
 from .table import LuaTable
 from .threadvm import LuaThread
 from .values import MultiValue, i64
@@ -26,6 +27,7 @@ class LuaRuntime:
         self.vm = GarbageCollectedVM(self.globals, fuel=fuel, max_frames=max_frames)
         if safe_stdlib:
             install_safe_stdlib(self.globals, self.vm)
+            install_output_library(self.globals, self.vm)
             install_diagnostic_stdlib(self.globals, self.vm)
 
     def _to_lua(self, value):
