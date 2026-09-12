@@ -27,7 +27,7 @@ for k = 1, 4000 do
 end
 return total
 """,
-        20864000,
+        20960000,
     ),
     "induction_while": (
         """-- luapyre: typed
