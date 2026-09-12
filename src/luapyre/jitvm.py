@@ -10,8 +10,15 @@ from .threadvm import _CloseSelfSignal, _YieldSignal
 from .vm import Frame
 
 
+# Main-thread interpretation keeps fuel in a local variable, exactly like the
+# Tier-0 VM. Synchronize the JIT-visible budget only at opcodes that can consume
+# compiled instructions. This avoids a method/attribute tax on every cold op.
+_MAIN_JIT_SYNC_OPS = frozenset((Op.CALL, Op.CALLV, Op.JFORLOOP))
+_MAIN_LEAF_CALL_OPS = frozenset((Op.CALL, Op.CALLV))
+
+
 def _jit_forloop(vm, frames, frame, ins, regs, constants):
-    """FORLOOP handler with a low-overhead per-backedge JIT state cache."""
+    """JFORLOOP handler with a low-overhead per-backedge JIT state cache."""
     if not vm._forloop(regs, ins):
         return
     backedge_pc = frame.pc - 1
@@ -36,9 +43,10 @@ class TieredJITVM(GarbageCollectedVM):
     straight-line leaf functions may run as generated Python; every unsupported
     or guard-miss path resumes the ordinary opcode interpreter.
 
-    JIT loop probing happens only after a taken native FORLOOP backedge. Once a
-    loop is proven unjittable, its instruction identity is negative-cached so
-    subsequent iterations pay only one dictionary lookup and branch.
+    The source compiler quickens only structurally eligible numeric loops to
+    JFORLOOP, so ordinary FORLOOP keeps the exact Tier-0 dispatch path. Once a
+    quickened loop is dynamically proven unjittable, its instruction identity
+    is negative-cached.
     """
 
     def __init__(
@@ -53,6 +61,7 @@ class TieredJITVM(GarbageCollectedVM):
         super().__init__(globals, fuel=fuel, max_frames=max_frames)
         self.jit = PythonJIT(threshold=jit_threshold, enabled=jit_enabled)
         self._jit_main_fuel = self.default_fuel
+        self._jit_main_leaf_allowed = False
         self._jit_loop_states: dict[int, int | bool | CompiledLoop] = {}
 
     def _jit_budget(self) -> int:
@@ -103,12 +112,18 @@ class TieredJITVM(GarbageCollectedVM):
     def _invoke(self, frames, parent, fn, args, dest, want, tail=False):
         # Synchronous stdlib callbacks intentionally stay on the interpreter:
         # their local fuel accounting and visible-frame prefix are specialized
-        # for callback semantics. Tail calls also retain the normal frame swap.
+        # for callback semantics. On the main thread leaf compilation is entered
+        # only from a direct CALL/CALLV whose local fuel has just been synced.
+        thread = self.current_thread
+        leaf_budget_is_current = (
+            thread is not None and not thread.is_main
+        ) or self._jit_main_leaf_allowed
         if (
             isinstance(fn, Closure)
             and not tail
             and not self._sync_frame_prefixes
             and self.jit.enabled
+            and leaf_budget_is_current
         ):
             if len(frames) >= self.max_frames:
                 raise LuaRuntimeError("stack overflow")
@@ -128,7 +143,8 @@ class TieredJITVM(GarbageCollectedVM):
         previous_thread = self.current_thread
         self.current_thread = self.main_thread
         self.main_thread.status = "running"
-        self._jit_main_fuel = self.default_fuel if fuel is None else fuel
+        remaining = self.default_fuel if fuel is None else fuel
+        self._jit_main_fuel = remaining
         try:
             root = Closure(proto, [], self.globals)
             root_regs = [None] * max(1, proto.register_count)
@@ -137,6 +153,8 @@ class TieredJITVM(GarbageCollectedVM):
             frames = [Frame(root, root_regs)]
             final_values = ()
             handlers = _JIT_OPCODE_HANDLERS
+            sync_ops = _MAIN_JIT_SYNC_OPS
+            leaf_ops = _MAIN_LEAF_CALL_OPS
 
             while frames:
                 try:
@@ -144,21 +162,40 @@ class TieredJITVM(GarbageCollectedVM):
                     if self._drive_pending(frames, frame):
                         continue
 
-                    self._jit_consume(1)
+                    remaining -= 1
+                    if remaining < 0:
+                        raise LuaQuotaError("execution quota exceeded")
                     if frame.pc >= len(frame.proto.code):
                         final_values = self._return(frames, frame, ())
                         continue
 
                     ins = frame.proto.code[frame.pc]
                     frame.pc += 1
-                    result = handlers[ins.op](
-                        self,
-                        frames,
-                        frame,
-                        ins,
-                        frame.regs,
-                        frame.proto.constants,
-                    )
+                    handler = handlers[ins.op]
+                    if ins.op in sync_ops:
+                        self._jit_main_fuel = remaining
+                        self._jit_main_leaf_allowed = ins.op in leaf_ops
+                        try:
+                            result = handler(
+                                self,
+                                frames,
+                                frame,
+                                ins,
+                                frame.regs,
+                                frame.proto.constants,
+                            )
+                        finally:
+                            remaining = self._jit_main_fuel
+                            self._jit_main_leaf_allowed = False
+                    else:
+                        result = handler(
+                            self,
+                            frames,
+                            frame,
+                            ins,
+                            frame.regs,
+                            frame.proto.constants,
+                        )
                     if result is not None:
                         final_values = result
 
@@ -176,6 +213,7 @@ class TieredJITVM(GarbageCollectedVM):
                 return final_values[0]
             return final_values
         finally:
+            self._jit_main_leaf_allowed = False
             self.current_thread = previous_thread
 
     def _execute_thread(self, thread, stop_depth: int | None = None):
