@@ -100,7 +100,7 @@ local co = coroutine.create(function()
     end
   })
   coroutine.yield("ready")
-  error("boom")
+  error("boom", 0)
 end)
 local ok1 = coroutine.resume(co)
 local ok2, err = coroutine.resume(co)
