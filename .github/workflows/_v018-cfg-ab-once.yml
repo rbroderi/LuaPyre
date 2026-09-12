@@ -1,0 +1,29 @@
+name: 0.18 CFG value IR same-runner A/B
+
+on:
+  push:
+    branches:
+      - v0.18-cfg-value-ir
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: _baseline
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compare merged 0.17 with CFG value IR branch
+        shell: bash
+        run: |
+          echo 'baseline (merged 0.17)'
+          PYTHONPATH="$GITHUB_WORKSPACE/_baseline/src" python benchmarks/value_ir_ab.py --label main --warmups 3 --repeats 9
+          echo 'CFG value IR branch'
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python benchmarks/value_ir_ab.py --label cfg-ir --warmups 3 --repeats 9
