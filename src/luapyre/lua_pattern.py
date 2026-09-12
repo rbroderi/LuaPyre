@@ -220,13 +220,15 @@ class LuaPattern:
                         return None
                     p = set_end
                     continue
-                if 49 <= special <= 57:
+                if 48 <= special <= 57:
+                    if special == 48:
+                        raise LuaRuntimeError("invalid capture index %0")
                     index = special - 49
                     if index >= len(captures):
-                        raise LuaRuntimeError("invalid capture index")
+                        raise LuaRuntimeError(f"invalid capture index %{chr(special)}")
                     capture = captures[index]
                     if capture.position or capture.end is None:
-                        raise LuaRuntimeError("invalid capture index")
+                        raise LuaRuntimeError(f"invalid capture index %{chr(special)}")
                     text = subject[capture.start:capture.end]
                     if not subject.startswith(text, s):
                         return None

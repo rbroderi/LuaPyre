@@ -190,6 +190,8 @@ class LuaGC:
             elif op is Op.CALLV:
                 writes.add(ins.a)
         elif op is Op.VARARG:
+            if proto.vararg_name_reg >= 0:
+                reads.add(proto.vararg_name_reg)
             if ins.b == -1:
                 writes.add(ins.a)
             else:

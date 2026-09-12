@@ -5,7 +5,10 @@ import math
 from .bytecode import Cell, Closure, Op
 from .errors import LuaRuntimeError
 from .table import LuaTable
-from .values import MultiValue, i64, static_value_type, truthy, type_matches
+from .values import (
+    MultiValue, coerce_lua_integer, i64, parse_lua_number,
+    static_value_type, truthy, type_matches,
+)
 
 
 _UINT_MASK = (1 << 64) - 1
@@ -26,13 +29,37 @@ def _need_number(value):
 
 
 def _to_int(value):
-    if type(value) is int:
-        return i64(value)
-    if type(value) is float and math.isfinite(value) and value.is_integer():
-        iv = int(value)
-        if _INT_MIN <= iv <= _INT_MAX:
-            return iv
+    integer = coerce_lua_integer(value)
+    if integer is not None:
+        return integer
     raise LuaRuntimeError("number has no integer representation")
+
+
+def _shift(value, count, *, left):
+    """Lua logical shift without negating ``math.mininteger``."""
+    value &= _UINT_MASK
+    if count >= 64 or count <= -64:
+        return 0
+    if count < 0:
+        left = not left
+        count = -count
+    result = (value << count) & _UINT_MASK if left else value >> count
+    return i64(result)
+
+
+def _bitwise_error(vm, frames, frame, op, a, b, dest):
+    name = {
+        Op.BAND: "band", Op.BOR: "bor", Op.BXOR: "bxor",
+        Op.SHL: "shl", Op.SHR: "shr",
+    }[op]
+    tm = vm._first_tm(a, b, vm.ARITH_TM[op])
+    if tm is not None:
+        vm._invoke(frames, frame, tm, [a, b], dest, 1)
+        return
+    bad = a if coerce_lua_integer(a) is None else b
+    raise LuaRuntimeError(
+        f"attempt to perform '{name}' on a {static_value_type(bad).name} value"
+    )
 
 
 def _to_lua_string(value):
@@ -147,13 +174,37 @@ def _float_arith(vm, frames, frame, ins, regs, constants):
 
 
 def _generic_arith(vm, frames, frame, ins, regs, constants):
-    vm._generic_binary(frames, frame, ins.op, regs[ins.b], regs[ins.c], ins.a)
+    a, b = regs[ins.b], regs[ins.c]
+    if ins.op in (Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR):
+        ai, bi = coerce_lua_integer(a), coerce_lua_integer(b)
+        if ai is None or bi is None:
+            _bitwise_error(vm, frames, frame, ins.op, a, b, ins.a)
+            return
+        if ins.op is Op.BAND:
+            value = i64(ai & bi)
+        elif ins.op is Op.BOR:
+            value = i64(ai | bi)
+        elif ins.op is Op.BXOR:
+            value = i64(ai ^ bi)
+        elif ins.op is Op.SHL:
+            value = _shift(ai, bi, left=True)
+        else:
+            value = _shift(ai, bi, left=False)
+        regs[ins.a] = value
+        return
+
+    na, nb = parse_lua_number(a), parse_lua_number(b)
+    if na is not None and nb is not None:
+        vm._generic_binary(frames, frame, ins.op, na, nb, ins.a)
+    else:
+        vm._generic_binary(frames, frame, ins.op, a, b, ins.a)
 
 
 def _neg(vm, frames, frame, ins, regs, constants):
     value = regs[ins.b]
-    if _is_number(value):
-        regs[ins.a] = i64(-value) if type(value) is int else -value
+    number = parse_lua_number(value)
+    if number is not None:
+        regs[ins.a] = i64(-number) if type(number) is int else -number
         return
     tm = vm._tm(value, b"__unm")
     if tm is None:
@@ -165,13 +216,16 @@ def _neg(vm, frames, frame, ins, regs, constants):
 
 def _bnot(vm, frames, frame, ins, regs, constants):
     value = regs[ins.b]
-    try:
-        regs[ins.a] = i64(~_to_int(value))
-    except LuaRuntimeError:
-        tm = vm._tm(value, b"__bnot")
-        if tm is None:
-            raise
-        vm._invoke(frames, frame, tm, [value], ins.a, 1)
+    integer = coerce_lua_integer(value)
+    if integer is not None:
+        regs[ins.a] = i64(~integer)
+        return
+    tm = vm._tm(value, b"__bnot")
+    if tm is None:
+        raise LuaRuntimeError(
+            f"attempt to perform 'bnot' on a {static_value_type(value).name} value"
+        )
+    vm._invoke(frames, frame, tm, [value], ins.a, 1)
 
 
 def _concat(vm, frames, frame, ins, regs, constants):
@@ -371,12 +425,26 @@ def _pclose(vm, frames, frame, ins, regs, constants):
     frame.pending_puc_close_reg = ins.a
 
 
+def _native_varargs(frame, regs):
+    named = frame.proto.vararg_name_reg
+    if named < 0:
+        return frame.varargs
+    table = regs[named]
+    if not isinstance(table, LuaTable):
+        raise LuaRuntimeError("no proper 'n' field in vararg table")
+    count = table.rawget(b"n")
+    if type(count) is not int or count < 0 or count > 1_000_000:
+        raise LuaRuntimeError("no proper 'n' field in vararg table")
+    return tuple(table.rawget(index) for index in range(1, count + 1))
+
+
 def _vararg(vm, frames, frame, ins, regs, constants):
+    values = _native_varargs(frame, regs)
     if ins.b == -1:
-        regs[ins.a] = MultiValue(frame.varargs)
+        regs[ins.a] = MultiValue(tuple(values))
         return
     for i in range(ins.b):
-        regs[ins.a + i] = frame.varargs[i] if i < len(frame.varargs) else None
+        regs[ins.a + i] = values[i] if i < len(values) else None
 
 
 def _pvararg(vm, frames, frame, ins, regs, constants):

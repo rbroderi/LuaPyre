@@ -88,8 +88,8 @@ def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
 
     def codepoint(s, i=1, j=None, lax=False):
         s = need_bytes(s, 1, "codepoint")
-        i = _position(need_integer(i, 2, "codepoint"), len(s), allow_end=True)
-        j = i if j is None else _position(need_integer(j, 3, "codepoint"), len(s), allow_end=True)
+        i = _position(need_integer(i, 2, "codepoint"), len(s), allow_end=False)
+        j = i if j is None else _position(need_integer(j, 3, "codepoint"), len(s), allow_end=False)
         if i > j:
             return MultiValue(())
         values = []
@@ -104,7 +104,16 @@ def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
     def length_fn(s, i=1, j=-1, lax=False):
         s = need_bytes(s, 1, "len")
         i = _position(need_integer(i, 2, "len"), len(s), allow_end=True)
-        j = _position(need_integer(j, 3, "len"), len(s), allow_end=True)
+        raw_j = need_integer(j, 3, "len")
+        j = normalize_index(raw_j, len(s))
+        if len(s) == 0 and raw_j == -1:
+            j = 0
+        if j < 1 or j > len(s):
+            if i == len(s) + 1 and j == len(s):
+                return 0
+            if len(s) == 0 and j == 0:
+                return 0
+            raise LuaRuntimeError("position out of bounds")
         if i > j:
             return 0
         pos = i - 1
@@ -133,9 +142,9 @@ def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
             pos = i - 1
             while pos > 0 and 0x80 <= s[pos] <= 0xBF:
                 pos -= 1
-            _cp, end = _decode(s, pos, True)
-            if i - 1 >= end:
-                raise LuaRuntimeError("initial position is a continuation byte")
+            end = pos + 1
+            while end < len(s) and 0x80 <= s[end] <= 0xBF:
+                end += 1
             return MultiValue((pos + 1, end))
 
         if i <= len(s) and 0x80 <= s[i - 1] <= 0xBF:
@@ -147,13 +156,17 @@ def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
             while remaining > 1:
                 if pos >= len(s):
                     return None
-                _cp, pos = _decode(s, pos, True)
+                pos += 1
+                while pos < len(s) and 0x80 <= s[pos] <= 0xBF:
+                    pos += 1
                 remaining -= 1
-            if pos == len(s):
-                return MultiValue((len(s) + 1, len(s) + 1))
             if pos > len(s):
                 return None
-            _cp, end = _decode(s, pos, True)
+            if pos == len(s):
+                return MultiValue((len(s) + 1, len(s) + 1))
+            end = pos + 1
+            while end < len(s) and 0x80 <= s[end] <= 0xBF:
+                end += 1
             return MultiValue((pos + 1, end))
 
         pos = i - 1
@@ -165,7 +178,9 @@ def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
             while pos > 0 and 0x80 <= s[pos] <= 0xBF:
                 pos -= 1
             remaining -= 1
-        _cp, end = _decode(s, pos, True)
+        end = pos + 1
+        while end < len(s) and 0x80 <= s[end] <= 0xBF:
+            end += 1
         return MultiValue((pos + 1, end))
 
     def codes(s, lax=False):
