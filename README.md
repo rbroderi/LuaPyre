@@ -51,6 +51,23 @@ assert result == 42
 
 Host capabilities are explicit. The default runtime does not expose filesystem, networking, process execution, Python import/eval, package loading, `io`, `os`, `debug`, or Python object introspection.
 
+## 0.10 PUC debug fidelity and exact-suite infrastructure
+
+The 0.10 tranche extends conformance work from text/LuaPyre-native diagnostics into official PUC-Lua 5.5 binary chunks and adds a pinned path to the exact Lua 5.5.1 upstream test suite:
+
+- the PUC reader now preserves and validates signed line-delta tables, absolute-line checkpoints, local-variable ranges, source names, and upvalue debug names instead of merely consuming/discarding them
+- Lua 5.5's delta/absolute line encoding is reconstructed into exact source lines before PUC instructions are lowered into LuaPyre VM instructions
+- every translated VM instruction receives the source line of the PUC instruction that produced it, including lowering sequences where one PUC instruction expands into several LuaPyre instructions
+- nested PUC prototypes retain their own source/line metadata recursively
+- stripped PUC chunks remain stripped: LuaPyre does not invent source or line information when `string.dump(..., true)` removed it
+- translated PUC arithmetic errors now preserve sparse compile/load-time value provenance and can match Lua-style `(field 'name')`, `(global 'name')`, and `(upvalue 'name')` suffixes
+- diagnostic provenance is consulted only after an exception occurs; successful opcode execution still carries no runtime provenance-tracking work
+- PUC local-variable metadata is retained for broader future name/debug compatibility even where LuaPyre does not yet reproduce every `getobjname` category
+
+The new `tools/official_551.py` developer harness pins the exact official `lua-5.5.1-tests.tar.gz` archive by SHA-256 (`da07b543872dc0bb2ff12aabd0c248578d78df3eb6b67efdc537a46d455c7f31`). It verifies the archive before use, bounds compressed and expanded sizes, rejects traversal paths, symlinks, hard links, devices, and other non-file/non-directory tar members, and extracts without `tarfile.extractall`. It can inventory the suite or execute explicitly selected `.lua` files in fresh LuaPyre runtimes.
+
+A separate manual GitHub Actions workflow, `official Lua 5.5.1 conformance`, downloads/verifies/inventories that exact upstream suite. Selected files can then be run explicitly. This workflow is intentionally separate from ordinary push/PR CI: upstream's full suite includes filesystem, OS, package/C-library, debug, and C-API assumptions that LuaPyre's default sandbox intentionally does not grant, and broad official-suite conformance is still in progress. The harness measures that work without weakening the embedding security model or making ordinary CI depend on lua.org availability.
+
 ## 0.9 source and error fidelity
 
 The 0.9 tranche makes runtime diagnostics carry Lua source information without putting debug work into the hot opcode path:
@@ -65,14 +82,14 @@ The 0.9 tranche makes runtime diagnostics carry Lua source information without p
 - `LuaRuntimeError` keeps a structured Lua stack as `LuaTraceFrame` records before unwind destroys the frames
 - `LuaRuntime.traceback(error)` formats that captured stack for embedders without enabling the sandboxed-out `debug` library
 - source diagnostics are captured for main execution, synchronous standard-library callbacks, and coroutine failures
-- LuaPyre-native `string.dump` now wraps the existing validated VM payload in a bounded debug-metadata envelope; `strip = false` preserves source/line data and `strip = true` removes it with Lua-compatible observable behavior
+- LuaPyre-native `string.dump` wraps the existing validated VM payload in a bounded debug-metadata envelope; `strip = false` preserves source/line data and `strip = true` removes it with Lua-compatible observable behavior
 - the debug envelope is independently validated and remains subject to the same bounded in-memory loading policy
 
 Source and line bookkeeping is deliberately compile/load-time metadata. The shared opcode handlers do not perform per-instruction diagnostic work, so the 0.8 dispatch architecture stays unchanged on successful execution.
 
 The 0.9 differential suite checks default/explicit error levels, `assert`, `error(nil)`, string and reader-function chunk names, runtime-error line prefixes, syntax-error source prefixes, and stripped/unstripped native dump reload behavior against `lupa.lua55`.
 
-PUC-Lua 5.5 chunks continue to execute through the 0.8 compatibility translator, but reconstruction of PUC debug line tables is intentionally still deferred. A stripped PUC chunk therefore does not gain invented source-line data, and full PUC debug-symbol fidelity remains part of broader exact-5.5.1 conformance work. Lua-style variable-name enrichment in type errors and a public `debug` library are also not claimed by 0.9.
+PUC-Lua diagnostics are extended further by 0.10. A public `debug` library remains intentionally absent from the default sandbox, and not every Lua `getobjname`/variable-description category is claimed yet.
 
 ## 0.8 binary chunks
 
@@ -91,7 +108,7 @@ The 0.8 tranche adds binary-function serialization and PUC-Lua 5.5 binary input 
 
 LuaPyre intentionally keeps the two formats separate. `string.dump` does **not** claim to emit an official PUC-Lua chunk; it emits LuaPyre's own serialization of LuaPyre prototypes. PUC-Lua chunks are an interoperability input path that is decoded and translated into LuaPyre bytecode before execution. This preserves the custom VM/optimizer/JIT architecture while still allowing compiled Lua 5.5 code to enter through `load`.
 
-The PUC compatibility suite differentially executes compiler-generated binary chunks against `lupa.lua55`, covering arithmetic and comparison expressions, tables, branches, numeric and generic loops, closures/upvalues, varargs and multiple results, metamethod fallback, tail calls, `<close>`, and GC-sensitive liveness. Exact Lua 5.5.1 remains the release-level format authority.
+The PUC compatibility suite differentially executes compiler-generated binary chunks against `lupa.lua55`, covering arithmetic and comparison expressions, tables, branches, numeric and generic loops, closures/upvalues, varargs and multiple results, metamethod fallback, tail calls, `<close>`, GC-sensitive liveness, source/debug lines, and selected Lua-style error-name attribution. Exact Lua 5.5.1 remains the release-level format authority.
 
 ## 0.7 safe standard libraries
 
@@ -166,9 +183,11 @@ The 0.4 tranche already provides `goto`/labels, local `<const>`/`<close>`, Lua 5
 
 CI runs on Python 3.13 and 3.14 and installs Lupa 2.8+, then explicitly imports `lupa.lua55`. This gives the differential suite an in-process PUC-Lua 5.5 oracle without compiling or launching a separate Lua executable. CI verifies that the selected backend reports `_VERSION == "Lua 5.5"` before running tests.
 
-Differential coverage now includes source/error diagnostics, safe standard libraries, Lua patterns, packing/unpacking, explicit-seed random output, UTF-8 iteration/offsets, `__pairs`, protected calls, text loading environments, weak keys/values, ephemerons, finalizer ordering, resurrection interactions, weak-table behavior across finalization, and execution of compiler-generated PUC-Lua 5.5 binary chunks through LuaPyre's translator. For exact micro-release conformance, LuaPyre targets Lua 5.5.1 and the official 5.5.1 tests/reference implementation remain the final authority. Lupa is the fast per-commit differential oracle; release-level conformance will additionally be checked against the exact 5.5.1 distribution.
+Differential coverage now includes source/error diagnostics, PUC source-line reconstruction and selected variable-name attribution, safe standard libraries, Lua patterns, packing/unpacking, explicit-seed random output, UTF-8 iteration/offsets, `__pairs`, protected calls, text loading environments, weak keys/values, ephemerons, finalizer ordering, resurrection interactions, weak-table behavior across finalization, and execution of compiler-generated PUC-Lua 5.5 binary chunks through LuaPyre's translator.
 
-The full official Lua test suite is **not** expected to pass yet. Major remaining work includes automatic incremental/generational GC pacing, PUC debug-line reconstruction and variable-name-enriched diagnostics, yieldable native-library/C-API continuations, userdata/C-API GC behavior outside the sandbox value model, and substantially broader coverage of the official Lua 5.5.1 suite. The unsafe host-facing libraries remain intentionally absent from the default sandbox rather than being treated as missing semantic work.
+For exact micro-release conformance, LuaPyre targets Lua 5.5.1. The manual exact-suite workflow and `tools/official_551.py` use the checksum-pinned official 5.5.1 test archive as the release-level authority, while Lupa remains the fast per-commit differential oracle.
+
+The full official Lua test suite is **not** expected to pass yet. Major remaining work includes automatic incremental/generational GC pacing, additional exact runtime-error/debug-name categories, yieldable native-library/C-API continuations, userdata/C-API GC behavior outside the sandbox value model, and substantially broader coverage of the official Lua 5.5.1 suite. The unsafe host-facing libraries remain intentionally absent from the default sandbox rather than being treated as missing semantic work.
 
 ## Performance roadmap
 
