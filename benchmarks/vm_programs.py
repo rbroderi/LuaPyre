@@ -98,6 +98,47 @@ end
 return s
 """
 
+_GLOBAL_READ = """
+g = 7
+local s = 0
+for i = 1, 30000 do
+    local v = g
+    s = s + v
+end
+return s
+"""
+
+_TYPED_GLOBAL_READ = """-- luapyre: typed
+global g: integer
+g = 7
+local s = 0
+for i = 1, 30000 do
+    local v: integer = g
+    s = s + v
+end
+return s
+"""
+
+_CONST_FIELD = """
+local t = {value = 7}
+local s = 0
+for i = 1, 30000 do
+    local v = t.value
+    s = s + v
+end
+return s
+"""
+
+_TYPED_CONST_FIELD = """-- luapyre: typed
+local t = {value = 7}
+local s = 0
+for i = 1, 30000 do
+    local v: integer = t.value
+    s = s + v
+end
+return s
+"""
+
 _FIB = """
 local function fib(n)
     if n < 2 then
@@ -401,6 +442,18 @@ WORKLOADS: dict[str, Workload] = {
         225000000,
         group="typed",
         luapyre_source=_TYPED_BRANCHES,
+    ),
+    "typed_global_read": Workload(
+        _GLOBAL_READ,
+        210000,
+        group="typed",
+        luapyre_source=_TYPED_GLOBAL_READ,
+    ),
+    "typed_const_field": Workload(
+        _CONST_FIELD,
+        210000,
+        group="typed",
+        luapyre_source=_TYPED_CONST_FIELD,
     ),
     "coroutines": Workload(
         """
