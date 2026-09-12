@@ -20,7 +20,7 @@ def _tostring(value):
     return repr(value).encode("utf-8")
 
 
-def install_safe_stdlib(globals_table: LuaTable):
+def install_safe_stdlib(globals_table: LuaTable, vm=None):
     def put(name, fn):
         host = HostFunction(fn, name)
         globals_table.rawset(name.encode(), host)
@@ -136,3 +136,15 @@ def install_safe_stdlib(globals_table: LuaTable):
             raise LuaRuntimeError("bad argument #1 to 'ipairs' (table expected)")
         return MultiValue((ipairs_host, table, 0))
     put("ipairs", ipairs)
+
+    if vm is not None:
+        coroutine = LuaTable()
+        coroutine.rawset(b"create", HostFunction(vm.create_thread, "coroutine.create"))
+        coroutine.rawset(b"resume", HostFunction(vm.resume_thread, "coroutine.resume"))
+        coroutine.rawset(b"yield", HostFunction(vm.yield_current, "coroutine.yield"))
+        coroutine.rawset(b"status", HostFunction(vm.coroutine_status, "coroutine.status"))
+        coroutine.rawset(b"running", HostFunction(vm.running_thread, "coroutine.running"))
+        coroutine.rawset(b"isyieldable", HostFunction(vm.is_yieldable, "coroutine.isyieldable"))
+        coroutine.rawset(b"close", HostFunction(vm.close_thread, "coroutine.close"))
+        coroutine.rawset(b"wrap", HostFunction(vm.wrap_thread, "coroutine.wrap"))
+        globals_table.rawset(b"coroutine", coroutine)
