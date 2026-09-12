@@ -210,8 +210,9 @@ class VM:
                 if type(a) is int and type(b) is int:
                     raise LuaRuntimeError("attempt to divide by zero")
                 return True, _float_div(a, b)
-            q = math.floor(a / b)
-            return True, i64(q) if type(a) is int and type(b) is int else float(q)
+            if type(a) is int and type(b) is int:
+                return True, i64(a // b)
+            return True, float(math.floor(float(a) / float(b)))
         if op is Op.MOD:
             if not (_is_number(a) and _is_number(b)):
                 return False, None

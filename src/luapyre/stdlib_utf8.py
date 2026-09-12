@@ -177,6 +177,8 @@ def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
             pos -= 1
             while pos > 0 and 0x80 <= s[pos] <= 0xBF:
                 pos -= 1
+            if 0x80 <= s[pos] <= 0xBF:
+                raise LuaRuntimeError("initial position is a continuation byte")
             remaining -= 1
         end = pos + 1
         while end < len(s) and 0x80 <= s[end] <= 0xBF:

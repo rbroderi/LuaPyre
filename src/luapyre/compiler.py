@@ -80,7 +80,7 @@ class LoopContext:
 class Compiler:
     def compile(self, chunk: A.Chunk) -> Proto:
         analyze_control_flow(chunk.body)
-        proto = Proto("<chunk>")
+        proto = Proto("<chunk>", is_vararg=True)
         ctx = _FunctionCompiler(proto)
         env = ctx.alloc()
         proto.env_reg = env
