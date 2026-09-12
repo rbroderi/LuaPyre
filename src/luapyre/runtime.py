@@ -7,14 +7,16 @@ from .diagnostics import format_traceback
 from .diagnostic_stdlib import install_diagnostic_stdlib
 from .errors import LuaRuntimeError
 from .gcvm import GarbageCollectedVM
-from .jitvm import TieredJITVM
+from .optimizing_jitvm import OptimizingJITVM
 from .parser import Parser
 from .source_compiler import SourceCompiler
+from .source_mode import FULLY_TYPED_MODE, detect_source_mode
 from .stdlib import install_safe_stdlib
 from .stdlib_output import install_output_library
 from .stdlib_package import install_package_library
 from .table import LuaTable
 from .threadvm import LuaThread
+from .typed_parser import TypedParser
 from .values import MultiValue, i64
 from .vm import HostFunction
 
@@ -27,9 +29,11 @@ class LuaRuntime:
     Python introspection remain absent unless the embedding application exposes
     an explicit capability.
 
-    LuaPyre 0.13 enables the guarded tiered JIT by default. Pass ``jit=False``
-    for the exact interpreter-only execution path, or lower ``jit_threshold``
-    when profiling short hot loops/functions.
+    LuaPyre enables the guarded tiered JIT by default. Pass ``jit=False`` for
+    the exact interpreter-only execution path, or lower ``jit_threshold`` when
+    profiling short hot loops/functions. Source beginning with the first/second
+    line cookie ``-- luapyre: typed`` opts into the fully typed compiler
+    contract used as LuaPyre's primary optimization target.
     """
 
     def __init__(
@@ -46,7 +50,7 @@ class LuaRuntime:
     ):
         self.globals = LuaTable()
         if jit:
-            self.vm = TieredJITVM(
+            self.vm = OptimizingJITVM(
                 self.globals,
                 fuel=fuel,
                 max_frames=max_frames,
@@ -161,7 +165,13 @@ class LuaRuntime:
         return MultiValue(tuple(values))
 
     def compile(self, source: str, *, chunkname: str | bytes = "=(luapyre)"):
-        return SourceCompiler(chunkname).compile(Parser(source).parse())
+        mode = detect_source_mode(source)
+        fully_typed = mode == FULLY_TYPED_MODE
+        parser = TypedParser(source) if fully_typed else Parser(source)
+        return SourceCompiler(
+            chunkname,
+            fully_typed=fully_typed,
+        ).compile(parser.parse())
 
     def execute(self, source: str, *, fuel=None, chunkname: str | bytes = "=(luapyre)"):
         return self.vm.run(self.compile(source, chunkname=chunkname), fuel=fuel)

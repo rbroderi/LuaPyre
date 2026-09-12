@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from . import astnodes as A
 from .bytecode import Ins, Op, Proto
-from .compiler import Compiler, Symbol, _FunctionCompiler
+from .compiler import Compiler, LoopContext, Symbol, _FunctionCompiler
+from .errors import LuaTypeError
+from .jit_policy import can_jit_natural_loop
 from .semantics import analyze_control_flow
-from .typesys import TABLE
+from .source_mode import validate_fully_typed_ast
+from .typesys import ANY, FLOAT, INTEGER, TABLE, accepts
 
 
 def _last_body_line(body, default: int) -> int:
@@ -12,13 +15,21 @@ def _last_body_line(body, default: int) -> int:
 
 
 class SourceCompiler(Compiler):
-    """Compiler variant that records Lua source/line information per opcode."""
+    """Compiler variant that records source lines and source-JIT contracts."""
 
-    def __init__(self, source: str | bytes | None = "=(luapyre)"):
+    def __init__(
+        self,
+        source: str | bytes | None = "=(luapyre)",
+        *,
+        fully_typed: bool = False,
+    ):
         self.source = source
+        self.fully_typed = fully_typed
 
     def compile(self, chunk: A.Chunk) -> Proto:
         analyze_control_flow(chunk.body)
+        if self.fully_typed:
+            validate_fully_typed_ast(chunk)
         proto = Proto(
             "<chunk>",
             is_vararg=True,
@@ -26,8 +37,15 @@ class SourceCompiler(Compiler):
             linedefined=0,
             lastlinedefined=_last_body_line(chunk.body, chunk.line),
             jit_trust_types=True,
+            jit_fully_typed=self.fully_typed,
         )
-        ctx = _SourceFunctionCompiler(proto)
+        ctx = _SourceFunctionCompiler(proto, fully_typed=self.fully_typed)
+        if self.fully_typed:
+            # Fully typed source cannot acquire an untracked Any through an
+            # accidental global lookup. Ambient host/stdlib names must be
+            # declared, e.g. ``global math: table``.
+            ctx.implicit_global = False
+            ctx.scopes[0].implicit_before = False
         ctx.current_line = chunk.line
         env = ctx.alloc()
         proto.env_reg = env
@@ -41,7 +59,8 @@ class SourceCompiler(Compiler):
 
 
 class _SourceFunctionCompiler(_FunctionCompiler):
-    def __init__(self, proto, params=None, parent=None):
+    def __init__(self, proto, params=None, parent=None, *, fully_typed=False):
+        self.fully_typed = fully_typed
         super().__init__(proto, params, parent)
         self.current_line = proto.linedefined or 1
 
@@ -54,6 +73,10 @@ class _SourceFunctionCompiler(_FunctionCompiler):
         previous = self.current_line
         self.current_line = stmt.line
         try:
+            if self.fully_typed and type(stmt) is A.LocalDecl:
+                return self._typed_local_decl(stmt)
+            if self.fully_typed and type(stmt) is A.GlobalDecl:
+                return self._typed_global_decl(stmt)
             return super().stmt(stmt)
         finally:
             self.current_line = previous
@@ -65,6 +88,125 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             return super().expr(expr)
         finally:
             self.current_line = previous
+
+    def _binding_type(self, declared, actual, line: int, kind: str):
+        expected = declared.typ
+        if expected is ANY:
+            if actual is ANY:
+                raise LuaTypeError(
+                    f"line {line}: fully typed mode cannot infer type of {kind} "
+                    f"'{declared.name}'; add a type annotation"
+                )
+            expected = actual
+        if actual is not ANY and not accepts(expected, actual):
+            raise LuaTypeError(f"line {line}: cannot assign {actual} to {expected}")
+        return expected
+
+    def _typed_local_decl(self, stmt: A.LocalDecl):
+        values = self.adjust_values(stmt.values, len(stmt.names))
+        for declared, (vr, actual) in zip(stmt.names, values):
+            expected = self._binding_type(declared, actual, stmt.line, "local")
+            if actual is ANY:
+                self.emit(Op.GUARD, vr, self.proto.add_const(expected.name))
+            r = self.alloc()
+            self.emit(Op.LOCAL, r, vr)
+            readonly = declared.attribute in ("const", "close")
+            self.define_local(declared.name, Symbol(r, expected, readonly=readonly))
+            if declared.attribute == "close":
+                self.emit(Op.TBC, r)
+                self.close_depth += 1
+
+    def _typed_global_decl(self, stmt: A.GlobalDecl):
+        if stmt.wildcard:
+            raise LuaTypeError(
+                f"line {stmt.line}: fully typed mode does not allow 'global *'"
+            )
+
+        values = self.adjust_values(stmt.values, len(stmt.names)) if stmt.values else []
+        typed_declarations = []
+        if values:
+            for declared, (_, actual) in zip(stmt.names, values):
+                expected = self._binding_type(declared, actual, stmt.line, "global")
+                typed_declarations.append(
+                    A.DeclaredName(declared.name, expected, declared.attribute)
+                )
+        else:
+            for declared in stmt.names:
+                if declared.typ is ANY:
+                    raise LuaTypeError(
+                        f"line {stmt.line}: fully typed mode requires a type for "
+                        f"ambient global '{declared.name}'"
+                    )
+                typed_declarations.append(declared)
+
+        for declared in typed_declarations:
+            self.declare_global(
+                declared.name,
+                declared.typ,
+                declared.attribute == "const",
+            )
+        if values:
+            self._global_initialize(typed_declarations, values, stmt.line)
+
+    def numeric_for(self, stmt):
+        sr, start_type = self.expr(stmt.start)
+        lr, limit_type = self.expr(stmt.limit)
+        if stmt.step is None:
+            tr = self.alloc()
+            self.emit(Op.LOADK, tr, self.proto.add_const(1))
+            step_type = INTEGER
+        else:
+            tr, step_type = self.expr(stmt.step)
+
+        numeric_types = (start_type, limit_type, step_type)
+        if all(typ is INTEGER for typ in numeric_types):
+            loop_type = INTEGER
+        elif all(typ in (INTEGER, FLOAT) for typ in numeric_types):
+            loop_type = FLOAT
+        else:
+            loop_type = ANY
+        if self.fully_typed and loop_type is ANY:
+            raise LuaTypeError(
+                f"line {stmt.line}: fully typed numeric for bounds must have "
+                "statically numeric types"
+            )
+
+        idx = self.alloc()
+        limit = self.alloc()
+        step = self.alloc()
+        self.emit(Op.MOVE, idx, sr)
+        self.emit(Op.MOVE, limit, lr)
+        self.emit(Op.MOVE, step, tr)
+        prep = self.emit(Op.FORPREP, idx, limit, step, 0)
+        base = self.close_depth
+        self.push_scope()
+        self.loop_breaks.append(LoopContext(base))
+        try:
+            visible = self.alloc()
+            self.define_local(stmt.name, Symbol(visible, loop_type, readonly=True))
+            body_start = len(self.proto.code)
+            self.emit(Op.LOCAL, visible, idx)
+            self.compile_block(stmt.body, scoped=False)
+            self.emit_close_to(base, update=True)
+            loop_op = (
+                Op.JFORLOOP
+                if can_jit_natural_loop(self.proto.code, body_start, len(self.proto.code))
+                else Op.FORLOOP
+            )
+            self.emit(loop_op, idx, limit, step, body_start)
+            end = len(self.proto.code)
+            self.patch_d(prep, end)
+            self._finish_loop(end)
+        finally:
+            self.pop_scope()
+
+    def generic_for(self, stmt):
+        if self.fully_typed:
+            raise LuaTypeError(
+                f"line {stmt.line}: fully typed generic for variables need an "
+                "explicit typed iterator contract; use a numeric loop for now"
+            )
+        return super().generic_for(stmt)
 
     def _new_child(self, name, params, returns, body, vararg_name, vararg_type):
         analyze_control_flow(body)
@@ -80,8 +222,14 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             linedefined=defined_line,
             lastlinedefined=_last_body_line(body, defined_line),
             jit_trust_types=True,
+            jit_fully_typed=self.fully_typed,
         )
-        sub = _SourceFunctionCompiler(child, params, self)
+        sub = _SourceFunctionCompiler(
+            child,
+            params,
+            self,
+            fully_typed=self.fully_typed,
+        )
         if vararg_name not in (None, ""):
             reg = sub.alloc()
             child.vararg_name_reg = reg
