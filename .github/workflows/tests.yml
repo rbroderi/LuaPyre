@@ -26,3 +26,5 @@ jobs:
           print("Reference backend:", lua.lua_implementation)
           PY
       - run: pytest
+      - name: Benchmark VM dispatch
+        run: python benchmarks/vm_dispatch.py
