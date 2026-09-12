@@ -252,3 +252,47 @@ x = x + 2
 return x
 ''') == 42
     assert lua.get("x") is None
+
+
+def test_source_cache_reuses_proto_and_reports_hits():
+    lua = LuaRuntime()
+    first = lua.compile("return 42")
+    second = lua.compile("return 42")
+    assert second is first
+    assert lua.source_cache_info == {
+        "hits": 1,
+        "misses": 1,
+        "size": 1,
+        "maxsize": 128,
+    }
+
+
+def test_source_cache_is_bounded_lru():
+    lua = LuaRuntime(source_cache_size=2)
+    first = lua.compile("return 1")
+    evicted = lua.compile("return 2")
+    assert lua.compile("return 1") is first
+    lua.compile("return 3")
+    assert lua.compile("return 2") is not evicted
+    assert lua.source_cache_info["size"] == 2
+
+
+def test_source_cache_can_be_disabled_and_cleared():
+    disabled = LuaRuntime(source_cache_size=0)
+    assert disabled.compile("return 42") is not disabled.compile("return 42")
+    assert disabled.source_cache_info == {
+        "hits": 0,
+        "misses": 2,
+        "size": 0,
+        "maxsize": 0,
+    }
+
+    lua = LuaRuntime(source_cache_size=2)
+    lua.compile("return 42")
+    lua.clear_source_cache()
+    assert lua.source_cache_info == {
+        "hits": 0,
+        "misses": 0,
+        "size": 0,
+        "maxsize": 2,
+    }

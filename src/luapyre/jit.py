@@ -71,11 +71,7 @@ class JITStats:
     virtual_frame_materializations: int = 0
     virtual_multivalue_elisions: int = 0
     virtual_multivalue_materializations: int = 0
-    escape_plans: int = 0
-    virtual_frame_elisions: int = 0
-    virtual_frame_materializations: int = 0
-    virtual_multivalue_elisions: int = 0
-    virtual_multivalue_materializations: int = 0
+    compiled_frame_allocations: int = 0
 
 
 @dataclass(frozen=True, slots=True)

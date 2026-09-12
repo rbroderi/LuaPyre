@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import FunctionType
 
 from .ast_backend import JumpListLayout, inline_expression_helper, inline_local_jump_list
@@ -73,6 +73,7 @@ _FUNCTION_OPS = frozenset(
 class CompiledAstFunction:
     proto: Proto
     runner: FunctionType
+    frame_pool: list[object] = field(default_factory=list, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,7 +197,12 @@ class TypedFunctionJITMixin:
     ):
         if len(frames) >= vm.max_frames:
             raise LuaRuntimeError("stack overflow")
-        child = vm._new_frame(closure, list(args), dest, want)
+        acquire = getattr(vm, "_acquire_compiled_frame", None)
+        child = (
+            acquire(compiled, closure, args, dest, want)
+            if acquire is not None
+            else vm._new_frame(closure, list(args), dest, want)
+        )
         frames.append(child)
         status, values = compiled.runner(vm, frames, child, budget, meter)
         if status == _FUNC_RETURN:
@@ -204,6 +210,9 @@ class TypedFunctionJITMixin:
                 raise RuntimeError("compiled function stack mismatch")
             frames.pop()
             self.function_executions += 1
+            release = getattr(vm, "_release_compiled_frame", None)
+            if release is not None:
+                release(compiled, child)
             return _FUNC_RETURN, values
         self.function_suspends += 1
         return _FUNC_SUSPEND, None
