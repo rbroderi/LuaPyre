@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .bytecode import Ins, Op, Proto
-from .typed_ir import TypedIRCompiler, TypedIRPlan
+from .typed_ir import TypedIRCompiler, TypedIRPlan, _reads, _writes
 from .value_ir import (
     ValueIRCompiler,
     ValueKind,
@@ -41,6 +41,7 @@ class CFGValueIRBlock:
     predecessors: tuple[int, ...]
     successors: tuple[int, ...]
     instructions: tuple[tuple[int, Ins], ...]
+    live_in: tuple[int, ...]
     entry_values: tuple[tuple[int, int], ...]
     exit_values: tuple[tuple[int, int], ...]
     phi_nodes: tuple[int, ...]
@@ -56,11 +57,10 @@ class CFGValueIRBlock:
 class CFGValueIRPlan:
     """Acyclic SSA-like value graph with explicit merge values.
 
-    0.18 deliberately starts with forward-only scalar CFGs. Every block carries
-    an exact virtual register state at entry/exit, merge points use phi-like
-    values, and instruction cost remains attached to the original block so a
-    backend can preserve path-dependent Lua fuel while still eliminating copies,
-    folding constants and reusing pure expressions inside a block.
+    Every block carries a virtual register state, but only bytecode-live inputs
+    participate in merge proof and side-exit rematerialization. This matters for
+    a register VM: compiler scratch registers routinely contain unrelated values
+    on sibling paths even though no later instruction can observe them.
     """
 
     typed_plan: TypedIRPlan
@@ -131,9 +131,12 @@ def _build_blocks(proto: Proto) -> tuple[_RawBlock, ...] | None:
     by_start = {block.start: index for index, block in enumerate(raw)}
     if 0 not in by_start:
         return None
-    for block in raw:
-        if any(target not in by_start for target in block.successor_starts):
-            return None
+    if any(
+        target not in by_start
+        for block in raw
+        for target in block.successor_starts
+    ):
+        return None
 
     reachable: set[int] = set()
     stack = [0]
@@ -142,19 +145,53 @@ def _build_blocks(proto: Proto) -> tuple[_RawBlock, ...] | None:
         if start in reachable:
             continue
         reachable.add(start)
-        block = raw[by_start[start]]
-        stack.extend(block.successor_starts)
+        stack.extend(raw[by_start[start]].successor_starts)
 
     blocks = tuple(block for block in raw if block.start in reachable)
-    # The first CFG-value tranche intentionally excludes cycles. This keeps phi
-    # construction single-pass and makes exact block-entry rematerialization easy
-    # to audit before loop-carried values are introduced.
     for block in blocks:
         if any(target <= block.start for target in block.successor_starts):
             return None
     if not any(block.instructions[-1][1].op in _CFG_TERMINAL for block in blocks):
         return None
     return blocks
+
+
+def _block_liveness(
+    blocks: tuple[_RawBlock, ...],
+) -> tuple[tuple[tuple[int, ...], ...], tuple[tuple[int, ...], ...]]:
+    index_by_start = {block.start: index for index, block in enumerate(blocks)}
+    successors = tuple(
+        tuple(index_by_start[start] for start in block.successor_starts)
+        for block in blocks
+    )
+    uses: list[set[int]] = []
+    defs: list[set[int]] = []
+    for block in blocks:
+        block_uses: set[int] = set()
+        block_defs: set[int] = set()
+        for _pc, ins in block.instructions:
+            for register in _reads(ins):
+                if register not in block_defs:
+                    block_uses.add(register)
+            block_defs.update(_writes(ins))
+        uses.append(block_uses)
+        defs.append(block_defs)
+
+    live_in = [set() for _ in blocks]
+    live_out = [set() for _ in blocks]
+    changed = True
+    while changed:
+        changed = False
+        for index in range(len(blocks) - 1, -1, -1):
+            new_out: set[int] = set()
+            for successor in successors[index]:
+                new_out.update(live_in[successor])
+            new_in = uses[index] | (new_out - defs[index])
+            if new_out != live_out[index] or new_in != live_in[index]:
+                live_out[index] = new_out
+                live_in[index] = new_in
+                changed = True
+    return successors, tuple(tuple(sorted(registers)) for registers in live_in)
 
 
 class CFGValueIRCompiler(ValueIRCompiler):
@@ -164,18 +201,13 @@ class CFGValueIRCompiler(ValueIRCompiler):
         raw = _build_blocks(proto)
         if raw is None:
             self._raw_blocks = None
-            # A placeholder plan is never consumed when raw construction failed.
             super().__init__(proto, TypedIRCompiler(proto).compile(()))
             return
-        blocks = tuple(block.instructions for block in raw)
-        typed = TypedIRCompiler(proto).compile(blocks)
+        typed = TypedIRCompiler(proto).compile(tuple(block.instructions for block in raw))
         super().__init__(proto, typed)
         self._raw_blocks = raw
 
     def _clear_expression_interns(self) -> None:
-        # CSE is currently block-local. Reusing a value produced only in a
-        # sibling branch would violate dominance, so only immutable argument /
-        # literal / constant intern entries survive a block boundary.
         self._intern = {
             key: node_id
             for key, node_id in self._intern.items()
@@ -204,6 +236,7 @@ class CFGValueIRCompiler(ValueIRCompiler):
         block_start: int,
         predecessor_indices: tuple[int, ...],
         predecessor_states: tuple[dict[int, int], ...],
+        live_registers: frozenset[int],
     ) -> tuple[dict[int, int], tuple[int, ...]] | None:
         if not predecessor_states:
             return None
@@ -212,6 +245,11 @@ class CFGValueIRCompiler(ValueIRCompiler):
         for register in range(self.proto.register_count):
             incoming = tuple(state[register] for state in predecessor_states)
             if all(value == incoming[0] for value in incoming[1:]):
+                merged[register] = incoming[0]
+                continue
+            if register not in live_registers:
+                # Dead physical scratch state is not semantically observable and
+                # is deliberately not reconstructed on a side exit.
                 merged[register] = incoming[0]
                 continue
             types = tuple(self._nodes[value].type_name for value in incoming)
@@ -289,12 +327,9 @@ class CFGValueIRCompiler(ValueIRCompiler):
         if initial is None:
             return None
 
-        index_by_start = {block.start: index for index, block in enumerate(raw_blocks)}
+        successor_indices, live_in = _block_liveness(raw_blocks)
         predecessor_lists: list[list[int]] = [[] for _ in raw_blocks]
-        successor_indices: list[tuple[int, ...]] = []
-        for index, block in enumerate(raw_blocks):
-            successors = tuple(index_by_start[start] for start in block.successor_starts)
-            successor_indices.append(successors)
+        for index, successors in enumerate(successor_indices):
             for successor in successors:
                 predecessor_lists[successor].append(index)
 
@@ -319,6 +354,7 @@ class CFGValueIRCompiler(ValueIRCompiler):
                     block.start,
                     predecessors,
                     tuple(state for state in predecessor_states if state is not None),
+                    frozenset(live_in[index]),
                 )
                 if merged is None:
                     return None
@@ -347,7 +383,6 @@ class CFGValueIRCompiler(ValueIRCompiler):
                 if ins.op is Op.HALT:
                     if (pc, ins) != block.instructions[-1]:
                         return None
-                    return_values = ()
                     continue
                 if not self._compile_pure_instruction(pc, ins, state):
                     return None
@@ -361,6 +396,7 @@ class CFGValueIRCompiler(ValueIRCompiler):
                     predecessors=predecessors,
                     successors=successor_indices[index],
                     instructions=block.instructions,
+                    live_in=live_in[index],
                     entry_values=tuple(sorted(entry_states[index].items())),
                     exit_values=tuple(sorted(state.items())),
                     phi_nodes=phi_nodes,
@@ -370,9 +406,6 @@ class CFGValueIRCompiler(ValueIRCompiler):
             )
 
         if not any(block.phi_nodes for block in compiled_blocks):
-            # Branch-only functions without any merge value are already handled
-            # efficiently by the older structured/typed function tiers. 0.18 is
-            # specifically validating SSA joins first.
             return None
 
         return CFGValueIRPlan(
