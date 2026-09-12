@@ -64,7 +64,9 @@ local function sum_to(n: integer): integer
     end
     return total
 end
-return sum_to(20)
+local first: integer = sum_to(20)
+local second: integer = sum_to(20)
+return first + second
 """
 
 _BRANCHY_LOOP_SOURCE = """-- luapyre: typed
@@ -81,7 +83,9 @@ local function branchy(n: integer): integer
     end
     return total
 end
-return branchy(10)
+local first: integer = branchy(10)
+local second: integer = branchy(10)
+return first + second
 """
 
 
@@ -149,13 +153,13 @@ def test_cfg_value_ir_builds_loop_carried_phi_values_from_natural_backedge():
 
 def test_cfg_value_ir_structures_simple_natural_loop_without_state_dispatch():
     runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
-    assert runtime.execute(_LOOP_SOURCE) == 190
+    assert runtime.execute(_LOOP_SOURCE) == 380
     assert "<luapyre-cfg-value-ir-loop>" in _compiled_function_filenames(runtime)
 
 
 def test_cfg_value_ir_branchy_reducible_loop_uses_generic_cyclic_backend():
     runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
-    assert runtime.execute(_BRANCHY_LOOP_SOURCE) == 15
+    assert runtime.execute(_BRANCHY_LOOP_SOURCE) == 30
     assert "<luapyre-cfg-value-ir-function>" in _compiled_function_filenames(runtime)
 
 
@@ -182,7 +186,7 @@ def test_cfg_value_ir_generic_dag_preserves_every_nearby_fuel_boundary():
 
 
 def test_cfg_value_ir_loop_side_exit_preserves_every_nearby_fuel_boundary():
-    for fuel in range(1, 220):
+    for fuel in range(1, 300):
         assert _outcome(_LOOP_SOURCE, jit=True, fuel=fuel) == _outcome(
             _LOOP_SOURCE, jit=False, fuel=fuel
         )
