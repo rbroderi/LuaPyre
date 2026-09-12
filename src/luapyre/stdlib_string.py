@@ -106,11 +106,16 @@ class _PackFormat:
     @staticmethod
     def _number(text: str, index: int):
         start = index
+        value = 0
         while index < len(text) and text[index].isdigit():
+            digit = ord(text[index]) - ord("0")
+            if value > (INT_MAX - digit) // 10:
+                raise LuaRuntimeError("invalid format")
+            value = value * 10 + digit
             index += 1
         if start == index:
             return None, index
-        return int(text[start:index]), index
+        return value, index
 
     def _raw_option(self):
         text = self.text
@@ -196,6 +201,12 @@ def _padding(offset: int, alignment: int) -> int:
     return (-offset) % max(1, alignment)
 
 
+def _checked_size(offset: int, amount: int, message: str) -> int:
+    if amount < 0 or offset > INT_MAX - amount:
+        raise LuaRuntimeError(message)
+    return offset + amount
+
+
 def _pack(fmt: bytes, values):
     parser = _PackFormat(fmt)
     out = bytearray()
@@ -203,6 +214,9 @@ def _pack(fmt: bytes, values):
     for option, endian in parser.options():
         kind, detail, size, alignment = option
         pad = _padding(len(out), alignment)
+        projected = _checked_size(len(out), pad, "format result too long")
+        if kind in ("padding", "int", "float", "fixed", "sized"):
+            _checked_size(projected, size, "format result too long")
         out.extend(b"\0" * pad)
         if kind == "padding":
             out.append(0)
@@ -340,9 +354,11 @@ def _packsize(fmt: bytes):
         kind, _detail, size, alignment = option
         if kind in ("zero", "sized"):
             raise LuaRuntimeError("variable-length format")
-        offset += _padding(offset, alignment)
+        offset = _checked_size(
+            offset, _padding(offset, alignment), "format result too large"
+        )
         if kind in ("int", "float", "fixed", "padding"):
-            offset += size
+            offset = _checked_size(offset, size, "format result too large")
     return offset
 
 

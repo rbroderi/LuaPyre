@@ -299,7 +299,10 @@ class _FunctionCompiler:
     def _store_ref(self, ref, value, line, actual=ANY):
         if ref.readonly or (ref.symbol is not None and ref.symbol.readonly):
             kind = "global" if ref.kind == "global" else "local"
-            raise LuaTypeError(f"line {line}: cannot assign to read-only {kind} '{ref.name}'")
+            raise LuaTypeError(
+                f"line {line}: cannot assign to read-only {kind} '{ref.name}' "
+                f"(const variable '{ref.name}')"
+            )
         if ref.typ is not ANY and actual is not ANY and not accepts(ref.typ, actual):
             raise LuaTypeError(f"line {line}: cannot assign {actual} to {ref.typ}")
         if ref.typ is not ANY and actual is ANY:

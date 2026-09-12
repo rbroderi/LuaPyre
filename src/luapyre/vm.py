@@ -68,6 +68,31 @@ def _float_div(a, b):
     return math.copysign(math.inf, a * (1.0 if math.copysign(1.0, b) > 0 else -1.0))
 
 
+def _float_pow(a, b):
+    a = float(a)
+    b = float(b)
+    try:
+        return math.pow(a, b)
+    except ValueError:
+        if a == 0.0 and b < 0.0:
+            negative = (
+                math.copysign(1.0, a) < 0.0
+                and math.isfinite(b)
+                and b.is_integer()
+                and int(b) & 1
+            )
+            return -math.inf if negative else math.inf
+        return math.nan
+    except OverflowError:
+        negative = (
+            a < 0.0
+            and math.isfinite(b)
+            and b.is_integer()
+            and int(b) & 1
+        )
+        return -math.inf if negative else math.inf
+
+
 def _shift_left(a, n):
     a = _to_int(a) & ((1 << 64) - 1)
     n = _to_int(n)
@@ -223,7 +248,7 @@ class VM:
         if op is Op.POW:
             if not (_is_number(a) and _is_number(b)):
                 return False, None
-            return True, float(a) ** float(b)
+            return True, _float_pow(a, b)
         if op in (Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR):
             try:
                 ai = _to_int(a)
