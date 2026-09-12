@@ -162,14 +162,11 @@ Those paths continue through proven older tiers or Tier 0.
 
 The HotSpot/LuaJIT-inspired next steps are:
 
-1. profile-backed monomorphic/polymorphic inline caches for calls and table shapes;
-2. deoptimization reason/site feedback so repeated guard misses widen specialization instead of thrashing;
-3. dominance-frontier/PRE and broader global value numbering;
-4. loop predication/range analysis using the induction/limit metadata;
-5. hot side-exit compilation and CFG stitching;
-6. CFG OSR using the existing exact Frame/PC/register contract;
-7. escape analysis and virtual Frame/MultiValue materialization;
-8. standard-library intrinsics; and
-9. eventual native lowering from the same typed/value/CALL/CFG/loop IR.
+0.21 implements the first two items: bounded mono/polymorphic call/table
+caches and site/reason feedback with unstable-region retirement. Subsequent
+work is dominance-frontier/PRE and broader global value numbering, loop
+predication/range analysis, hot side-exit compilation and CFG stitching, CFG
+OSR, escape analysis, standard-library intrinsics, and eventual native lowering
+from the same typed/value/CALL/CFG/loop IR.
 
 Exact Lua 5.5.1 semantics, signed-64 arithmetic, path-dependent fuel, frame state, and fail-closed fallback remain mandatory for every extension.

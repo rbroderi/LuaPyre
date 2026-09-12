@@ -5,6 +5,7 @@ from .diagnostics import capture_error
 from .errors import LuaQuotaError, LuaRuntimeError
 from .gcvm import GarbageCollectedVM
 from .jit import CompiledLoop, DEOPT, PythonJIT
+from .inline_cache import CacheState, InlineCacheFeedback
 from .opdispatch import OPCODE_HANDLERS
 from .threadvm import _CloseSelfSignal, _YieldSignal
 from .vm import Frame
@@ -27,6 +28,52 @@ def _jit_forloop(vm, frames, frame, ins, regs, constants):
 
 _JIT_OPCODE_HANDLERS = dict(OPCODE_HANDLERS)
 _JIT_OPCODE_HANDLERS[Op.JFORLOOP] = _jit_forloop
+
+
+def _jit_gettable(vm, frames, frame, ins, regs, constants):
+    obj, key = regs[ins.b], regs[ins.c]
+    if not isinstance(obj, vm._ic_table_type) or obj.metatable is not None:
+        return vm._gettable(frames, frame, obj, key, ins.a)
+    token = vm._ic_hash_key(key)
+    if token is None:
+        return vm._gettable(frames, frame, obj, key, ins.a)
+    site = vm.inline_caches.table_site(frame.proto, frame.pc - 1, "get")
+    before = site.state
+    entry = site.match((obj, token))
+    if entry is not None:
+        if entry[2] == obj.version:
+            regs[ins.a] = entry[3]
+            return None
+        site.invalidations += 1
+        site.misses += 1
+    value = obj.rawget(key)
+    regs[ins.a] = value
+    site.install((obj, token, obj.version, value), key_size=2)
+    vm._note_megamorphic(before, site.state)
+    return None
+
+
+def _jit_settable(vm, frames, frame, ins, regs, constants):
+    obj, key, value = regs[ins.a], regs[ins.b], regs[ins.c]
+    if not isinstance(obj, vm._ic_table_type) or obj.metatable is not None:
+        return vm._settable(frames, frame, obj, key, value)
+    token = vm._ic_hash_key(key)
+    if token is None:
+        return vm._settable(frames, frame, obj, key, value)
+    site = vm.inline_caches.table_site(frame.proto, frame.pc - 1, "set")
+    before = site.state
+    entry = site.match((obj, token))
+    if entry is not None:
+        obj.rawset(key, value)
+        return None
+    obj.rawset(key, value)
+    site.install((obj, token), key_size=2)
+    vm._note_megamorphic(before, site.state)
+    return None
+
+
+_JIT_OPCODE_HANDLERS[Op.GETTABLE] = _jit_gettable
+_JIT_OPCODE_HANDLERS[Op.SETTABLE] = _jit_settable
 
 
 class TieredJITVM(GarbageCollectedVM):
@@ -56,6 +103,90 @@ class TieredJITVM(GarbageCollectedVM):
         self._jit_main_fuel = self.default_fuel
         self._jit_main_leaf_allowed = False
         self._jit_loop_states: dict[int, int | bool | CompiledLoop] = {}
+        self.inline_caches = InlineCacheFeedback()
+        self._call_site_arrays: dict[int, tuple[Proto, list[object | None]]] = {}
+        from .table import LuaTable, _hash_key
+        self._ic_table_type = LuaTable
+        self._ic_hash_key = _hash_key
+
+    def _note_megamorphic(self, before, after) -> None:
+        if before is not CacheState.MEGAMORPHIC and after is CacheState.MEGAMORPHIC:
+            self.jit.stats.megamorphic_sites += 1
+
+    def _invoke_site(self, frames, parent, fn, args, dest, want, tail=False):
+        pc = parent.pc - 1
+        sites = parent.jit_call_sites
+        if sites is None:
+            proto = parent.proto
+            cached_sites = self._call_site_arrays.get(id(proto))
+            if cached_sites is None or cached_sites[0] is not proto:
+                sites = [None] * len(proto.code)
+                self._call_site_arrays[id(proto)] = (proto, sites)
+            else:
+                sites = cached_sites[1]
+            parent.jit_call_sites = sites
+        site = sites[pc]
+        # Lua closures are distinct runtime objects on every CLOSURE execution,
+        # but their executable call shape is the immutable Proto. Keying those
+        # entries by Proto prevents repeated runs/recursive instantiations from
+        # making an otherwise stable lexical site megamorphic. Host functions
+        # retain exact object identity.
+        call_target = fn.proto if isinstance(fn, Closure) else fn
+        # Keep the stable monomorphic path to one dictionary lookup and one
+        # identity guard. Polymorphic probing and transitions stay off this path.
+        if (
+            site is not None
+            and not site.megamorphic
+            and len(site.entries) == 1
+            and site.entries[0][0] is call_target
+        ):
+            site.hits += 1
+            entry = site.entries[0]
+        else:
+            if site is None:
+                site = self.inline_caches.call_site(parent.proto, pc)
+                sites[pc] = site
+            entry = site.match((call_target,))
+        before = site.state
+        if entry is None:
+            site.install((call_target, type(fn), None))
+            self._note_megamorphic(before, site.state)
+        else:
+            compiled = entry[2]
+            if (
+                compiled is not None
+                and not tail
+                and not self._sync_frame_prefixes
+                and self._jit_budget() >= compiled.instruction_cost
+            ):
+                if len(frames) >= self.max_frames:
+                    raise LuaRuntimeError("stack overflow")
+                leaf_frame = self._new_frame(fn, list(args), dest, want)
+                values = compiled.runner(leaf_frame)
+                if values is not DEOPT:
+                    self._jit_consume(compiled.instruction_cost)
+                    self._write_results(parent.regs, dest, want, values)
+                    self.jit.stats.leaf_executions += 1
+                    return None
+
+        result = self._invoke(frames, parent, fn, args, dest, want, tail=tail)
+        if isinstance(fn, Closure) and not tail and not site.megamorphic:
+            cached = self.jit._leaf_cache.get(id(fn.proto))
+            if cached is not None and cached[0] is fn.proto and cached[1] is not None:
+                site.install((call_target, type(fn), cached[1]))
+        return result
+
+    def sync_inline_cache_stats(self) -> None:
+        """Materialize observability counters off the execution hot path."""
+        call_sites = self.inline_caches.calls.values()
+        table_sites = self.inline_caches.tables.values()
+        self.jit.stats.call_ic_hits = sum(site.hits for site in call_sites)
+        self.jit.stats.call_ic_misses = sum(site.misses for site in call_sites)
+        self.jit.stats.table_ic_hits = sum(site.hits for site in table_sites)
+        self.jit.stats.table_ic_misses = sum(site.misses for site in table_sites)
+        self.jit.stats.cache_invalidations = sum(
+            site.invalidations for site in table_sites
+        )
 
     def _jit_budget(self) -> int:
         thread = self.current_thread
@@ -101,6 +232,10 @@ class TieredJITVM(GarbageCollectedVM):
             compiled.ir.exit_pc,
         ):
             self.jit.stats.deopts += 1
+            reason = "entry_guard" if not progressed and used == 0 else "side_exit"
+            if self.inline_caches.record_deopt(frame.proto, frame.pc, reason):
+                self._jit_loop_states[key] = False
+                self.jit.stats.retired_regions += 1
 
     def _invoke(self, frames, parent, fn, args, dest, want, tail=False):
         # Synchronous stdlib callbacks intentionally stay on the interpreter:

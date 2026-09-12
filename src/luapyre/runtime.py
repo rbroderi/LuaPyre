@@ -180,7 +180,16 @@ class LuaRuntime:
     def jit_stats(self):
         """Return live tiered-JIT counters, or ``None`` for interpreter-only runtimes."""
         jit = getattr(self.vm, "jit", None)
+        sync = getattr(self.vm, "sync_inline_cache_stats", None)
+        if sync is not None:
+            sync()
         return None if jit is None else jit.stats
+
+    @property
+    def jit_feedback(self):
+        """Snapshot adaptive inline-cache and deoptimization feedback."""
+        caches = getattr(self.vm, "inline_caches", None)
+        return None if caches is None else caches.snapshot()
 
     @staticmethod
     def traceback(error: LuaRuntimeError, *, include_message: bool = True) -> bytes:

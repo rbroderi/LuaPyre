@@ -31,6 +31,10 @@ class Frame:
     # compiler-maintained lexical close depth used by native LuaPyre bytecode.
     puc_close_stack: list[tuple[int, object]] = field(default_factory=list)
     pending_puc_close_reg: int | None = None
+    # Tiered VMs bind this lazily to their per-Proto call-site array. Keeping
+    # the array on the active frame removes dictionary/key construction from
+    # the monomorphic CALL hot path. Tier 0 leaves it as None.
+    jit_call_sites: list[object | None] | None = None
 
     @property
     def proto(self):
@@ -111,6 +115,10 @@ class VM:
             args.insert(0, fn)
             fn = tm
         raise LuaRuntimeError("'__call' chain too long; possible loop")
+
+    def _invoke_site(self, frames, parent, fn, args, dest, want, tail=False):
+        """Call-site hook used by adaptive VMs; Tier 0 stays cache-free."""
+        return self._invoke(frames, parent, fn, args, dest, want, tail=tail)
 
     def _gettable(self, frames, frame, obj, key, dest):
         for _ in range(self.MAXTAGLOOP):
