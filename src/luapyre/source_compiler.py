@@ -4,7 +4,7 @@ from . import astnodes as A
 from .bytecode import Ins, Op, Proto
 from .compiler import Compiler, LoopContext, Symbol, _FunctionCompiler
 from .errors import LuaTypeError
-from .jit_policy import can_jit_natural_loop
+from .jit_policy import can_jit_natural_loop, can_jit_typed_loop
 from .semantics import analyze_control_flow
 from .source_mode import validate_fully_typed_ast
 from .typesys import ANY, FLOAT, INTEGER, TABLE, accepts
@@ -188,12 +188,20 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             self.emit(Op.LOCAL, visible, idx)
             self.compile_block(stmt.body, scoped=False)
             self.emit_close_to(base, update=True)
-            loop_op = (
-                Op.JFORLOOP
-                if can_jit_natural_loop(self.proto.code, body_start, len(self.proto.code))
-                else Op.FORLOOP
+            eligible = (
+                can_jit_typed_loop(self.proto.code, body_start, len(self.proto.code))
+                if self.fully_typed
+                else can_jit_natural_loop(
+                    self.proto.code, body_start, len(self.proto.code)
+                )
             )
-            self.emit(loop_op, idx, limit, step, body_start)
+            self.emit(
+                Op.JFORLOOP if eligible else Op.FORLOOP,
+                idx,
+                limit,
+                step,
+                body_start,
+            )
             end = len(self.proto.code)
             self.patch_d(prep, end)
             self._finish_loop(end)
