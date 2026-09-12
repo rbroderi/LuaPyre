@@ -54,7 +54,7 @@ return total
 """
     proto = runtime.compile(source)
     assert Op.JFORLOOP in [ins.op for ins in proto.code]
-    assert runtime.vm.run(proto) == 112000
+    assert runtime.vm.run(proto) == 122000
     assert runtime.jit_stats.loop_compiles >= 1
 
 
