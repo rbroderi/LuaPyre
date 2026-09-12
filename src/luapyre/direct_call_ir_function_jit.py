@@ -7,6 +7,7 @@ from .bytecode import Closure, Op, Proto
 from .call_ir import CallIRPlan, analyze_direct_calls
 from .escape_analysis import EscapePlan, analyze_escapes
 from .function_jit import CompiledAstFunction, _FUNC_RETURN, _FUNC_SUSPEND
+from .range_analysis import analyze_integer_ranges
 from .values import MultiValue
 from .virtual_frame import compile_virtual_frame
 
@@ -106,6 +107,7 @@ class DirectCallIRFunctionJITMixin:
                     return super()._compile_ast_function(proto)
 
         registers = tuple(range(max(1, proto.register_count)))
+        ranges = analyze_integer_ranges(proto)
         namespace: dict[str, object] = {
             "_Closure": Closure,
             "_FUNC_RETURN": _FUNC_RETURN,
@@ -173,7 +175,12 @@ class DirectCallIRFunctionJITMixin:
             lines.append("    if budget - meter[0] - used < 1:")
             lines.extend(suspend(pc, "        "))
 
-        def emit_i64(dest: str, expression: str, tag: str) -> None:
+        def emit_i64(
+            dest: str, expression: str, tag: str, *, overflow_free: bool = False
+        ) -> None:
+            if overflow_free:
+                lines.append(f"    {dest} = {expression}")
+                return
             temp = f"_wide_{tag}"
             lines.extend(
                 [
@@ -202,7 +209,12 @@ class DirectCallIRFunctionJITMixin:
             elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[op]
                 lines.append("    used += 1")
-                emit_i64(a, f"{b} {symbol} {c}", str(pc))
+                emit_i64(
+                    a,
+                    f"{b} {symbol} {c}",
+                    str(pc),
+                    overflow_free=ranges.overflow_free(pc),
+                )
             elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[op]
                 lines.extend(["    used += 1", f"    {a} = float({b} {symbol} {c})"])

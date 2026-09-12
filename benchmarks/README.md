@@ -58,3 +58,7 @@ For performance comparisons, compare runs on the same runner class and Python ve
   and open-result MultiValue scalar replacement against the previous release.
 - `gc_pacing_ab.py` compares stopped and automatic generational pacing for
   binary-tree allocation and Lua-observable weak-value churn.
+- `cpython_specialization_ab.py` compares the dense register loop, typed leaf,
+  and range-proven integer shapes affected by 0.25 code generation. Run the
+  same command from each revision with a different `--label`; warmed bytecode
+  specialization itself is asserted in `tests/test_cpython_specialization.py`.

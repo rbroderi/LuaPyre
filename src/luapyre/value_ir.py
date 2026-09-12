@@ -8,6 +8,7 @@ import struct
 
 from .bytecode import Op, Proto
 from .call_ir import StaticCallSite, StaticClosureRef
+from .range_analysis import analyze_integer_ranges
 from .typed_ir import TypedIRCompiler, TypedIRPlan
 from .typesys import accepts, parse_simple_type
 
@@ -35,6 +36,7 @@ class ValueNode:
     args: tuple[int, ...] = ()
     payload: object = None
     def_pc: int = -1
+    overflow_free: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +180,7 @@ class ValueIRCompiler:
         self._cse_pcs: set[int] = set()
         self._call_sites: list[StaticCallSite] = []
         self._extra_instruction_cost = 0
+        self._integer_ranges = analyze_integer_ranges(proto)
 
     def _new_node(
         self,
@@ -188,6 +191,7 @@ class ValueIRCompiler:
         args: tuple[int, ...] = (),
         payload: object = None,
         def_pc: int = -1,
+        overflow_free: bool = False,
         key: tuple[object, ...] | None = None,
     ) -> int:
         if key is not None:
@@ -195,7 +199,9 @@ class ValueIRCompiler:
             if existing is not None:
                 return existing
         node_id = len(self._nodes)
-        self._nodes.append(ValueNode(node_id, kind, type_name, op, args, payload, def_pc))
+        self._nodes.append(
+            ValueNode(node_id, kind, type_name, op, args, payload, def_pc, overflow_free)
+        )
         if key is not None:
             self._intern[key] = node_id
         return node_id
@@ -290,6 +296,10 @@ class ValueIRCompiler:
             op=op,
             args=(left_id, right_id),
             def_pc=pc,
+            overflow_free=(
+                op in {"add_i", "sub_i", "mul_i"}
+                and self._integer_ranges.overflow_free(pc)
+            ),
             key=key,
         )
         self._definition_pcs[node_id] = pc

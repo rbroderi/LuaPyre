@@ -5,6 +5,7 @@ from types import FunctionType
 from .bytecode import Op, Proto
 from .errors import LuaRuntimeError
 from .function_jit import _FUNC_RETURN, _FUNC_SUSPEND
+from .range_analysis import analyze_integer_ranges
 from .values import static_value_type, type_matches
 from .vm import Frame
 
@@ -18,6 +19,7 @@ _TWO64 = 1 << 64
 def compile_virtual_frame(proto: Proto) -> FunctionType | None:
     """Compile a proven non-escaping child without allocating its Frame."""
 
+    ranges = analyze_integer_ranges(proto)
     leaders = {0, len(proto.code)}
     for pc, ins in enumerate(proto.code):
         if ins.op is Op.JMP:
@@ -78,7 +80,11 @@ def compile_virtual_frame(proto: Proto) -> FunctionType | None:
                 lines.extend([f"{indent}used += 1", f"{indent}{a} = {b}"])
             elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
-                lines.extend([f"{indent}used += 1", f"{indent}_wide_{pc} = ({b} {symbol} {c}) & _MASK64", f"{indent}{a} = _wide_{pc} - _TWO64 if _wide_{pc} & _SIGN64 else _wide_{pc}"])
+                lines.append(f"{indent}used += 1")
+                if ranges.overflow_free(pc):
+                    lines.append(f"{indent}{a} = {b} {symbol} {c}")
+                else:
+                    lines.extend([f"{indent}_wide_{pc} = ({b} {symbol} {c}) & _MASK64", f"{indent}{a} = _wide_{pc} - _TWO64 if _wide_{pc} & _SIGN64 else _wide_{pc}"])
             elif ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[ins.op]
                 lines.extend([f"{indent}used += 1", f"{indent}{a} = float({b} {symbol} {c})"])

@@ -8,6 +8,7 @@ from .ast_backend import JumpListLayout, inline_expression_helper, inline_local_
 from .bytecode import Closure, Ins, Op, Proto
 from .errors import LuaRuntimeError
 from .opdispatch import _float_divide, _float_modulo
+from .range_analysis import analyze_integer_ranges
 from .table import LuaTable
 from .values import lua_equal, static_value_type, type_matches
 
@@ -217,6 +218,7 @@ class TypedFunctionJITMixin:
             return None
 
         registers = tuple(range(max(1, proto.register_count)))
+        ranges = analyze_integer_ranges(proto)
         block_index = {block.start: index for index, block in enumerate(blocks)}
 
         def state_for(pc: int) -> int:
@@ -248,7 +250,11 @@ class TypedFunctionJITMixin:
 
         block_names = tuple(f"_jump_{index}" for index in range(len(blocks)))
 
-        def i64(dest: str, expression: str, tag: str, indent: str) -> list[str]:
+        def i64(
+            dest: str, expression: str, tag: str, indent: str, *, overflow_free=False
+        ) -> list[str]:
+            if overflow_free:
+                return [f"{indent}{dest} = {expression}"]
             tmp = f"_i64_{tag}"
             return [
                 f"{indent}{tmp} = ({expression}) & _MASK64",
@@ -278,6 +284,17 @@ class TypedFunctionJITMixin:
         def emit_forloop(out: list[str], ins: Ins, loop_state: int, exit_state: int, pc: int, indent: str):
             a, b, c = f"_r{ins.a}", f"_r{ins.b}", f"_r{ins.c}"
             tag = f"f_{pc}_{ins.a}"
+            if all(ranges.range_at(pc, reg) is not None for reg in (ins.a, ins.b, ins.c)):
+                out.extend(
+                    [
+                        f"{indent}_next_{tag} = {a} + {c}",
+                        f"{indent}if _next_{tag} < _INT_MIN or _next_{tag} > _INT_MAX or ({c} > 0 and _next_{tag} > {b}) or ({c} < 0 and _next_{tag} < {b}):",
+                        f"{indent}    return {exit_state}",
+                        f"{indent}{a} = _next_{tag}",
+                        f"{indent}return {loop_state}",
+                    ]
+                )
+                return
             out.extend(
                 [
                     f"{indent}if type({a}) is int and type({b}) is int and type({c}) is int:",
@@ -337,7 +354,12 @@ class TypedFunctionJITMixin:
                 elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                     symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[op]
                     lines.append(f"{indent}used += 1")
-                    lines.extend(i64(a, f"{b} {symbol} {c}", str(pc), indent))
+                    lines.extend(
+                        i64(
+                            a, f"{b} {symbol} {c}", str(pc), indent,
+                            overflow_free=ranges.overflow_free(pc),
+                        )
+                    )
                 elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                     symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[op]
                     lines.extend([f"{indent}used += 1", f"{indent}{a} = float({b} {symbol} {c})"])

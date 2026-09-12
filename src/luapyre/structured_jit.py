@@ -5,6 +5,7 @@ from types import FunctionType
 
 from .bytecode import Closure, Op
 from .jit import CompiledLoop, IRBlock, IRInstruction, IRLoop
+from .range_analysis import analyze_integer_ranges
 from .values import type_matches
 
 
@@ -131,7 +132,15 @@ class StructuredTypedLoopJITMixin:
             return None
 
         captured = self._captured_registers(proto)
-        lowered = tuple(IRInstruction(start_pc + i, ins) for i, ins in enumerate(body))
+        ranges = analyze_integer_ranges(proto)
+        lowered = tuple(
+            IRInstruction(
+                start_pc + i,
+                ins,
+                overflow_free=ranges.overflow_free(start_pc + i),
+            )
+            for i, ins in enumerate(body)
+        )
         ir = IRLoop(
             start_pc,
             backedge_pc,
@@ -144,6 +153,7 @@ class StructuredTypedLoopJITMixin:
             return None
 
         calls: dict[int, tuple[Closure, tuple[tuple[int, object], ...]]] = {}
+        child_ranges = {}
         extra_cost = 0
         for pc, ins in zip(range(start_pc, backedge_pc), body):
             if ins.op is not Op.CALL:
@@ -159,6 +169,7 @@ class StructuredTypedLoopJITMixin:
             if any(self._writes_register(other, ins.b) for other in body):
                 return None
             calls[pc] = (fn, sequence)
+            child_ranges[pc] = analyze_integer_ranges(fn.proto)
             extra_cost += len(sequence)
 
         iteration_cost = len(body) + 1 + extra_cost
@@ -226,9 +237,11 @@ class StructuredTypedLoopJITMixin:
                 lines.append(f"{indent}{a} = {b}")
             elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
-                lines.extend(
-                    self._i64_lines(a, f"{b} {symbol} {c}", str(pc), indent)
-                )
+                expression = f"{b} {symbol} {c}"
+                if ranges.overflow_free(pc):
+                    lines.append(f"{indent}{a} = {expression}")
+                else:
+                    lines.extend(self._i64_lines(a, expression, str(pc), indent))
             elif ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[ins.op]
                 lines.append(f"{indent}{a} = float({b} {symbol} {c})")
@@ -265,14 +278,18 @@ class StructuredTypedLoopJITMixin:
                             Op.SUB_I: "-",
                             Op.MUL_I: "*",
                         }[child_ins.op]
-                        lines.extend(
-                            self._i64_lines(
-                                ca,
-                                f"{cb} {symbol} {cc}",
-                                f"inl_{pc}_{child_pc}",
-                                indent,
+                        expression = f"{cb} {symbol} {cc}"
+                        if child_ranges[pc].overflow_free(child_pc):
+                            lines.append(f"{indent}{ca} = {expression}")
+                        else:
+                            lines.extend(
+                                self._i64_lines(
+                                    ca,
+                                    expression,
+                                    f"inl_{pc}_{child_pc}",
+                                    indent,
+                                )
                             )
-                        )
                     elif child_ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                         symbol = {
                             Op.ADD_F: "+",
@@ -310,32 +327,52 @@ class StructuredTypedLoopJITMixin:
             f"_r{loop_ins.c}",
         )
         lines.append(f"{indent}used += {iteration_cost}")
-        lines.extend(
-            [
-                f"{indent}if type({idx}) is int and type({limit}) is int and type({step}) is int:",
-                f"{indent}    _next = {idx} + {step}",
-                f"{indent}    if _next < _INT_MIN or _next > _INT_MAX or ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",
-            ]
+        integer_loop = all(
+            ranges.range_at(start_pc, reg) is not None
+            for reg in (loop_ins.a, loop_ins.b, loop_ins.c)
         )
-        lines.extend(self._spill_lines(registers, indent + "        "))
-        lines.extend(
-            [
-                f"{indent}        frame.pc = {ir.exit_pc}",
-                f"{indent}        return used, True",
-                f"{indent}    {idx} = _next",
-                f"{indent}    continue",
-                f"{indent}_next = float({idx}) + float({step})",
-                f"{indent}if ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",
-            ]
-        )
-        lines.extend(self._spill_lines(registers, indent + "    "))
-        lines.extend(
-            [
-                f"{indent}    frame.pc = {ir.exit_pc}",
-                f"{indent}    return used, True",
-                f"{indent}{idx} = _next",
-            ]
-        )
+        if integer_loop:
+            lines.extend(
+                [
+                    f"{indent}_next = {idx} + {step}",
+                    f"{indent}if _next < _INT_MIN or _next > _INT_MAX or ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",
+                ]
+            )
+            lines.extend(self._spill_lines(registers, indent + "    "))
+            lines.extend(
+                [
+                    f"{indent}    frame.pc = {ir.exit_pc}",
+                    f"{indent}    return used, True",
+                    f"{indent}{idx} = _next",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    f"{indent}if type({idx}) is int and type({limit}) is int and type({step}) is int:",
+                    f"{indent}    _next = {idx} + {step}",
+                    f"{indent}    if _next < _INT_MIN or _next > _INT_MAX or ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",
+                ]
+            )
+            lines.extend(self._spill_lines(registers, indent + "        "))
+            lines.extend(
+                [
+                    f"{indent}        frame.pc = {ir.exit_pc}",
+                    f"{indent}        return used, True",
+                    f"{indent}    {idx} = _next",
+                    f"{indent}    continue",
+                    f"{indent}_next = float({idx}) + float({step})",
+                    f"{indent}if ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",
+                ]
+            )
+            lines.extend(self._spill_lines(registers, indent + "    "))
+            lines.extend(
+                [
+                    f"{indent}    frame.pc = {ir.exit_pc}",
+                    f"{indent}    return used, True",
+                    f"{indent}{idx} = _next",
+                ]
+            )
 
         lines.extend(self._spill_lines(registers, "    "))
         lines.extend(

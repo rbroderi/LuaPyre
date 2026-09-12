@@ -5,6 +5,7 @@ from enum import Enum
 import math
 
 from .bytecode import Ins, Op, Proto
+from .range_analysis import analyze_integer_ranges
 
 
 class IRValueKind(str, Enum):
@@ -58,6 +59,7 @@ class TypedIRInstruction:
     result_type: str | None = None
     specialization: str | None = None
     dead_definition: bool = False
+    overflow_free: bool = False
 
     def value_for(self, register: int) -> IRValue:
         for source_reg, value in self.sources:
@@ -358,6 +360,7 @@ class TypedIRCompiler:
 
     def __init__(self, proto: Proto):
         self.proto = proto
+        self.integer_ranges = analyze_integer_ranges(proto)
 
     def _stable_environment(self) -> bool:
         env = self.proto.env_reg
@@ -590,6 +593,7 @@ class TypedIRCompiler:
                         tuple(sources),
                         result_type=result_type,
                         specialization=specialization,
+                        overflow_free=self.integer_ranges.overflow_free(pc),
                     )
                 )
 
