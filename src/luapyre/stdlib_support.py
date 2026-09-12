@@ -73,7 +73,26 @@ def number_to_bytes(value) -> bytes:
     if type(value) is int:
         return str(value).encode("ascii")
     if type(value) is float:
-        # Python's repr gives the shortest round-trippable decimal, which is
-        # the same broad contract Lua uses for its default numeric rendering.
         return repr(value).encode("ascii")
     raise LuaRuntimeError("number expected")
+
+
+def tostring_value(vm, value) -> bytes:
+    tm = vm._tm(value, b"__tostring") if vm is not None else None
+    if tm is not None:
+        results = vm.call_sync(tm, (value,))
+        rendered = results[0] if results else None
+        if not isinstance(rendered, bytes):
+            raise LuaRuntimeError("'__tostring' must return a string")
+        return rendered
+    if value is None:
+        return b"nil"
+    if value is True:
+        return b"true"
+    if value is False:
+        return b"false"
+    if isinstance(value, bytes):
+        return value
+    if type(value) in (int, float):
+        return number_to_bytes(value)
+    return repr(value).encode("utf-8", "replace")
