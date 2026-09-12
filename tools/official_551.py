@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+from dataclasses import asdict, dataclass
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import sys
 import tarfile
-import tempfile
 from urllib.request import Request, urlopen
 
 
@@ -17,11 +20,57 @@ SUITE_ARCHIVE = "lua-5.5.1-tests.tar.gz"
 SUITE_ROOT = "lua-5.5.1-tests"
 MAX_ARCHIVE_BYTES = 4 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 16 * 1024 * 1024
+MAX_SUITE_FILE_BYTES = 16 * 1024 * 1024
 MAX_MEMBERS = 10_000
+DEFAULT_FILE_FUEL = 20_000_000
+
+# This list is intentionally provisional on the feature branch. 0.11 commits
+# only files that have actually passed against the checksum-pinned 5.5.1 suite.
+BASELINE_FILES = (
+    "pm.lua",
+    "utf8.lua",
+    "tpack.lua",
+    "sort.lua",
+    "bitwise.lua",
+)
+
+_STRESS_FILES = {
+    "big.lua",
+    "cstack.lua",
+    "gc.lua",
+    "gengc.lua",
+    "memerr.lua",
+    "verybig.lua",
+}
+
+_DEPENDENCY_RULES = (
+    ("internal-test-api", re.compile(rb"\bT\s*[\.\[]")),
+    ("debug-library", re.compile(rb"(?:\brequire\s*\(?\s*['\"]debug['\"]|\bdebug\s*[\.:])")),
+    ("io-library", re.compile(rb"\bio\s*[\.:]")),
+    ("os-library", re.compile(rb"\bos\s*[\.:]")),
+    ("package-library", re.compile(rb"\bpackage\s*[\.:]")),
+    ("module-loader", re.compile(rb"\brequire\b")),
+    ("file-loader", re.compile(rb"\b(?:loadfile|dofile)\b")),
+)
 
 
 class SuiteError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class FileClassification:
+    name: str
+    category: str
+    hints: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RunResult:
+    name: str
+    status: str
+    error_type: str | None = None
+    error: str | None = None
 
 
 def sha256_file(path: Path) -> str:
@@ -48,7 +97,7 @@ def verify_archive(path: Path, *, expected: str = SUITE_SHA256) -> None:
 
 def download_archive(destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = Request(SUITE_URL, headers={"User-Agent": "LuaPyre-conformance/0.10"})
+    request = Request(SUITE_URL, headers={"User-Agent": "LuaPyre-conformance/0.11"})
     tmp = destination.with_name(destination.name + ".tmp")
     try:
         with urlopen(request, timeout=30) as response, tmp.open("wb") as out:
@@ -161,7 +210,7 @@ def list_lua_files(suite_root: Path) -> list[str]:
     )
 
 
-def resolve_suite_file(suite_root: Path, name: str) -> Path:
+def _resolve_suite_path(suite_root: Path, name: str, *, lua_only: bool) -> Path:
     relative = _safe_member_path(name)
     root = suite_root.resolve()
     path = (root / Path(*relative.parts)).resolve()
@@ -169,46 +218,262 @@ def resolve_suite_file(suite_root: Path, name: str) -> Path:
         raise SuiteError(f"test path escapes suite root: {name!r}")
     if not path.is_file():
         raise SuiteError(f"test file not found: {name}")
-    if path.suffix != ".lua":
+    if lua_only and path.suffix != ".lua":
         raise SuiteError(f"not a Lua test file: {name}")
+    if path.stat().st_size > MAX_SUITE_FILE_BYTES:
+        raise SuiteError(f"suite file exceeds size limit: {name}")
     return path
 
 
-def run_selected(suite_root: Path, names: list[str], *, unrestricted: bool = True) -> bool:
-    """Run explicitly selected upstream Lua files in isolated LuaPyre runtimes.
+def resolve_suite_file(suite_root: Path, name: str) -> Path:
+    return _resolve_suite_path(suite_root, name, lua_only=True)
 
-    `_U=true` matches Lua's documented basic-suite mode. This helper does not
-    add ambient filesystem, OS, package, C-module, or debug-library access; a
-    selected upstream file that requires those facilities fails explicitly.
+
+def resolve_suite_asset(suite_root: Path, name: str) -> Path:
+    """Resolve a read-only asset below the suite root for the test harness."""
+    return _resolve_suite_path(suite_root, name, lua_only=False)
+
+
+def _display_lua_value(value) -> str:
+    if value is None:
+        return "nil"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+_SUITE_PRELUDE = r'''
+local __suite_read <const> = __luapyre_suite_read
+
+function loadfile(filename, mode, env)
+  if type(filename) ~= "string" then
+    error("bad argument #1 to 'loadfile' (string expected)", 2)
+  end
+  local source, err = __suite_read(filename)
+  if source == nil then return nil, err end
+  return load(source, "@" .. filename, mode or "bt", env)
+end
+
+function dofile(filename)
+  local f, err = loadfile(filename)
+  if f == nil then error(err, 2) end
+  return f()
+end
+
+package = {
+  loaded = {},
+  preload = {},
+  path = "./?.lua;./?/init.lua",
+}
+
+for _, name in ipairs({"coroutine", "math", "string", "table", "utf8"}) do
+  if _G[name] ~= nil then package.loaded[name] = _G[name] end
+end
+
+function package.searchpath(name, path, sep, rep)
+  sep = sep or "."
+  rep = rep or "/"
+  local escaped = string.gsub(sep, "(%W)", "%%%1")
+  local module = string.gsub(name, escaped, rep)
+  local errors = {}
+  for template in string.gmatch(path, "[^;]+") do
+    local candidate = string.gsub(template, "%?", module)
+    candidate = string.gsub(candidate, "^%./", "")
+    local source = __suite_read(candidate)
+    if source ~= nil then return candidate end
+    errors[#errors + 1] = "\n\tno file '" .. candidate .. "'"
+  end
+  return nil, table.concat(errors)
+end
+
+function require(name)
+  if type(name) ~= "string" then
+    error("bad argument #1 to 'require' (string expected)", 2)
+  end
+  local loaded = package.loaded[name]
+  if loaded ~= nil then return loaded end
+
+  local loader = package.preload[name]
+  local loader_data = ":preload:"
+  if loader == nil then
+    local filename, err = package.searchpath(name, package.path)
+    if filename == nil then
+      error("module '" .. name .. "' not found:" .. (err or ""), 2)
+    end
+    loader, err = loadfile(filename)
+    if loader == nil then error(err, 2) end
+    loader_data = filename
+  end
+
+  -- Mark before entering the loader so simple recursive requires terminate.
+  package.loaded[name] = true
+  local result = loader(name, loader_data)
+  if result ~= nil then package.loaded[name] = result end
+  return package.loaded[name]
+end
+'''
+
+
+def install_suite_capabilities(lua, suite_root: Path, *, echo: bool = False) -> None:
+    """Install read-only capabilities needed by upstream user-mode tests.
+
+    These names exist only in the fresh conformance runtime. The normal
+    ``LuaRuntime`` environment remains sandboxed and does not gain filesystem,
+    package, or output access.
     """
+    root = suite_root.resolve()
+
+    def suite_read(name):
+        if not isinstance(name, bytes):
+            return lua.multi_return(None, b"filename must be a string")
+        try:
+            text = name.decode("utf-8")
+            path = resolve_suite_asset(root, text)
+            return path.read_bytes()
+        except (UnicodeDecodeError, OSError, SuiteError) as error:
+            return lua.multi_return(None, str(error).encode("utf-8", "replace"))
+
+    def suite_print(*values):
+        if echo:
+            print("\t".join(_display_lua_value(value) for value in values))
+        return None
+
+    lua.expose("__luapyre_suite_read", suite_read)
+    lua.expose("print", suite_print)
+    lua.set("arg", [])
+    lua.execute(_SUITE_PRELUDE, chunkname="=LuaPyre official-suite harness")
+
+
+def make_suite_runtime(
+    suite_root: Path,
+    *,
+    unrestricted: bool = True,
+    echo: bool = False,
+    fuel: int = DEFAULT_FILE_FUEL,
+):
     from luapyre import LuaRuntime
 
-    success = True
+    lua = LuaRuntime(fuel=fuel)
+    install_suite_capabilities(lua, suite_root, echo=echo)
+    if unrestricted:
+        lua.set("_U", True)
+    return lua
+
+
+def classify_file(suite_root: Path, name: str) -> FileClassification:
+    path = resolve_suite_file(suite_root, name)
+    source = path.read_bytes()
+    hints = [label for label, pattern in _DEPENDENCY_RULES if pattern.search(source)]
+    if name in _STRESS_FILES:
+        hints.append("stress/resource-sensitive")
+
+    unique = tuple(dict.fromkeys(hints))
+    if "internal-test-api" in unique:
+        category = "internal-c"
+    elif any(item in unique for item in ("debug-library", "io-library", "os-library")):
+        category = "sandbox-host"
+    elif "stress/resource-sensitive" in unique:
+        category = "stress"
+    elif any(item in unique for item in ("package-library", "module-loader", "file-loader")):
+        category = "harness-assisted"
+    else:
+        category = "sandbox-safe"
+    return FileClassification(name, category, unique)
+
+
+def classify_suite(suite_root: Path) -> list[FileClassification]:
+    return [classify_file(suite_root, name) for name in list_lua_files(suite_root)]
+
+
+def run_files(
+    suite_root: Path,
+    names: list[str] | tuple[str, ...],
+    *,
+    unrestricted: bool = True,
+    echo: bool = False,
+    fuel: int = DEFAULT_FILE_FUEL,
+) -> list[RunResult]:
+    """Run selected upstream Lua files in isolated, suite-rooted runtimes."""
+    results: list[RunResult] = []
     for name in names:
         path = resolve_suite_file(suite_root, name)
-        lua = LuaRuntime()
-        if unrestricted:
-            lua.set("_U", True)
+        lua = make_suite_runtime(
+            suite_root,
+            unrestricted=unrestricted,
+            echo=echo,
+            fuel=fuel,
+        )
         source = path.read_bytes()
         try:
             text = source.decode("utf-8")
         except UnicodeDecodeError as error:
+            result = RunResult(name, "fail", type(error).__name__, str(error))
+            results.append(result)
             print(f"FAIL {name}: not UTF-8: {error}", file=sys.stderr)
-            success = False
             continue
         try:
             lua.execute(text, chunkname="@" + name)
         except Exception as error:  # developer harness: report exact failing boundary
+            result = RunResult(name, "fail", type(error).__name__, str(error))
+            results.append(result)
             print(f"FAIL {name}: {type(error).__name__}: {error}", file=sys.stderr)
-            success = False
         else:
+            results.append(RunResult(name, "pass"))
             print(f"PASS {name}")
-    return success
+    return results
+
+
+def run_selected(
+    suite_root: Path,
+    names: list[str],
+    *,
+    unrestricted: bool = True,
+    echo: bool = False,
+    fuel: int = DEFAULT_FILE_FUEL,
+) -> bool:
+    return all(
+        result.status == "pass"
+        for result in run_files(
+            suite_root,
+            names,
+            unrestricted=unrestricted,
+            echo=echo,
+            fuel=fuel,
+        )
+    )
+
+
+def build_report(
+    suite_root: Path,
+    *,
+    classifications: list[FileClassification] | None = None,
+    runs: list[RunResult] | None = None,
+) -> dict[str, object]:
+    classifications = classifications or classify_suite(suite_root)
+    counts = Counter(item.category for item in classifications)
+    runs = runs or []
+    return {
+        "target": "Lua 5.5.1",
+        "suite_sha256": SUITE_SHA256,
+        "lua_files": len(classifications),
+        "classification_counts": dict(sorted(counts.items())),
+        "files": [asdict(item) for item in classifications],
+        "runs": [asdict(item) for item in runs],
+        "run_summary": {
+            "total": len(runs),
+            "passed": sum(item.status == "pass" for item in runs),
+            "failed": sum(item.status != "pass" for item in runs),
+        },
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Verify and inspect the exact official Lua 5.5.1 test suite."
+        description="Verify, classify, and run the exact official Lua 5.5.1 test suite."
     )
     parser.add_argument(
         "--work-dir",
@@ -228,6 +493,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--list", action="store_true", help="list all .lua files in the suite")
     parser.add_argument(
+        "--classify",
+        action="store_true",
+        help="print the static dependency category for every .lua file",
+    )
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="run the committed sandbox-compatible 5.5.1 baseline",
+    )
+    parser.add_argument(
         "--files",
         nargs="*",
         default=[],
@@ -238,6 +513,22 @@ def _parser() -> argparse.ArgumentParser:
         "--full-mode",
         action="store_true",
         help="do not set _U=true for selected tests (does not grant extra host capabilities)",
+    )
+    parser.add_argument(
+        "--echo",
+        action="store_true",
+        help="forward the upstream suite's print calls to stdout",
+    )
+    parser.add_argument(
+        "--fuel",
+        type=int,
+        default=DEFAULT_FILE_FUEL,
+        help=f"instruction fuel per selected file (default: {DEFAULT_FILE_FUEL})",
+    )
+    parser.add_argument(
+        "--report-json",
+        type=Path,
+        help="write a machine-readable classification/run report",
     )
     return parser
 
@@ -254,17 +545,51 @@ def main(argv: list[str] | None = None) -> int:
             allow_download=not args.no_download,
         )
         files = list_lua_files(suite_root)
+        classifications = classify_suite(suite_root)
         print(f"Lua 5.5.1 official suite: {suite_root}")
         print(f"archive sha256: {SUITE_SHA256}")
         print(f"Lua files: {len(files)}")
         if args.list:
             for name in files:
                 print(name)
-        if args.files and not run_selected(
-            suite_root,
-            args.files,
-            unrestricted=not args.full_mode,
-        ):
+        if args.classify:
+            for item in classifications:
+                detail = ", ".join(item.hints) if item.hints else "no host dependency hints"
+                print(f"{item.category:16} {item.name:20} {detail}")
+            counts = Counter(item.category for item in classifications)
+            print("classification summary:")
+            for category, count in sorted(counts.items()):
+                print(f"  {category}: {count}")
+
+        selected: list[str] = []
+        if args.baseline:
+            selected.extend(BASELINE_FILES)
+        selected.extend(args.files)
+        selected = list(dict.fromkeys(selected))
+
+        runs: list[RunResult] = []
+        if selected:
+            runs = run_files(
+                suite_root,
+                selected,
+                unrestricted=not args.full_mode,
+                echo=args.echo,
+                fuel=args.fuel,
+            )
+
+        if args.report_json:
+            args.report_json.parent.mkdir(parents=True, exist_ok=True)
+            report = build_report(
+                suite_root,
+                classifications=classifications,
+                runs=runs,
+            )
+            args.report_json.write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+        if any(result.status != "pass" for result in runs):
             return 1
         return 0
     except SuiteError as error:
