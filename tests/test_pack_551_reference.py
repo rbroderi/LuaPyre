@@ -22,7 +22,8 @@ def test_wide_integer_unpack_uses_lua_integer_low_bits_and_extension_rules():
     actual = _values(LuaRuntime().execute(source))
     assert actual == reference
     assert actual[0] == -0x0807060504030201
-    assert actual[2] == -0x0807060504030201
+    assert actual[1] == -0x0807060504030201
+    assert actual[2] == 10
 
 
 def test_wide_integer_unpack_rejects_non_extension_bytes():
