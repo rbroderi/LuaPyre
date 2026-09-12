@@ -7,7 +7,7 @@ from .diagnostics import format_traceback
 from .diagnostic_stdlib import install_diagnostic_stdlib
 from .errors import LuaRuntimeError
 from .gcvm import GarbageCollectedVM
-from .jitvm import TieredJITVM
+from .optimizing_jitvm import OptimizingJITVM
 from .parser import Parser
 from .source_compiler import SourceCompiler
 from .source_mode import FULLY_TYPED_MODE, detect_source_mode
@@ -49,7 +49,7 @@ class LuaRuntime:
     ):
         self.globals = LuaTable()
         if jit:
-            self.vm = TieredJITVM(
+            self.vm = OptimizingJITVM(
                 self.globals,
                 fuel=fuel,
                 max_frames=max_frames,
