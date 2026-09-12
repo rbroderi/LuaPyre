@@ -56,6 +56,10 @@ class Proto:
     vararg_name_reg: int = -1
     vararg_type: LuaType = ANY
     env_reg: int = -1
+    source: str | bytes | None = "=?"
+    linedefined: int = 0
+    lastlinedefined: int = 0
+    lineinfo: list[int] = field(default_factory=list)
 
     def add_const(self, value):
         for i, current in enumerate(self.constants):
@@ -63,6 +67,15 @@ class Proto:
                 return i
         self.constants.append(value)
         return len(self.constants) - 1
+
+    def line_for_pc(self, pc: int) -> int:
+        if not self.lineinfo:
+            return -1
+        if pc < 0:
+            pc = 0
+        if pc >= len(self.lineinfo):
+            pc = len(self.lineinfo) - 1
+        return self.lineinfo[pc]
 
     def disassemble(self) -> str:
         return "\n".join(
