@@ -116,10 +116,9 @@ def test_typed_mode_rejects_global_wildcard_and_generic_for_for_now():
         LuaRuntime().compile("-- luapyre: typed\nglobal *\nreturn 1")
 
     source = """-- luapyre: typed
-global pairs: function
 global input: table
 local total = 0
-for k, v in pairs(input) do
+for k, v in input do
     total = total + 1
 end
 return total
