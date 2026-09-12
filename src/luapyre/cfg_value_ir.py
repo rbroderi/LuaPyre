@@ -649,6 +649,7 @@ class CFGValueIRCompiler(ValueIRCompiler):
                 args=(pre_value, back_value),
                 payload=(preheader, latch),
                 def_pc=node.def_pc,
+                overflow_free=node.overflow_free,
             )
 
         blocks = tuple(block for block in compiled_blocks if block is not None)

@@ -9,7 +9,9 @@ from .jit_codegen import (
     LOOP_EMITTERS,
     generated_namespace,
     optimize_generated_ast,
+    promote_constant_registers,
 )
+from .range_analysis import analyze_integer_ranges
 from .table import LuaTable
 from .values import i64, lua_equal, type_matches
 
@@ -65,23 +67,47 @@ class DenseEmitterJITMixin:
         # the backedge no longer pays a Python bound-method call every iteration.
         loop_ins = ir.loop_ins
         idx, limit, step = loop_ins.a, loop_ins.b, loop_ins.c
+        ranges = analyze_integer_ranges(frame.proto)
+        integer_loop = all(
+            ranges.range_at(ir.start_pc, reg) is not None
+            for reg in (idx, limit, step)
+        )
         lines.extend(
             [
                 f"        _idx = regs[{idx}]",
                 f"        _limit = regs[{limit}]",
                 f"        _step = regs[{step}]",
-                "        if type(_idx) is int and type(_limit) is int and type(_step) is int:",
-                "            _next = _idx + _step",
-                "            if _next >= _INT_MIN and _next <= _INT_MAX and not ((_step > 0 and _next > _limit) or (_step < 0 and _next < _limit)):",
-                f"                regs[{idx}] = _next",
-                f"                used += {cost}",
-                "                continue",
-                "        else:",
-                "            _next = float(_idx) + float(_step)",
-                "            if not ((_step > 0 and _next > _limit) or (_step < 0 and _next < _limit)):",
-                f"                regs[{idx}] = _next",
-                f"                used += {cost}",
-                "                continue",
+            ]
+        )
+        if integer_loop:
+            lines.extend(
+                [
+                    "        _next = _idx + _step",
+                    "        if _next >= _INT_MIN and _next <= _INT_MAX and not ((_step > 0 and _next > _limit) or (_step < 0 and _next < _limit)):",
+                    f"            regs[{idx}] = _next",
+                    f"            used += {cost}",
+                    "            continue",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "        if type(_idx) is int and type(_limit) is int and type(_step) is int:",
+                    "            _next = _idx + _step",
+                    "            if _next >= _INT_MIN and _next <= _INT_MAX and not ((_step > 0 and _next > _limit) or (_step < 0 and _next < _limit)):",
+                    f"                regs[{idx}] = _next",
+                    f"                used += {cost}",
+                    "                continue",
+                    "        else:",
+                    "            _next = float(_idx) + float(_step)",
+                    "            if not ((_step > 0 and _next > _limit) or (_step < 0 and _next < _limit)):",
+                    f"                regs[{idx}] = _next",
+                    f"                used += {cost}",
+                    "                continue",
+                ]
+            )
+        lines.extend(
+            [
                 f"        used += {cost}",
                 f"        frame.pc = {ir.exit_pc}",
                 "        return used, True",
@@ -104,16 +130,20 @@ class DenseEmitterJITMixin:
             }
         )
         tree = optimize_generated_ast(ast.parse("\n".join(lines)))
+        tree = promote_constant_registers(tree, spill_returns=True)
         exec(compile(tree, "<luapyre-dense-jit-loop>", "exec"), namespace)
         return CompiledLoop(ir, cost, namespace["_jit_loop"])
 
     def _compile_leaf(self, proto: Proto):
         sequence: list[IRInstruction] = []
         return_ins: IRInstruction | None = None
+        ranges = analyze_integer_ranges(proto)
         for pc, ins in enumerate(proto.code):
             if ins.op not in self._leaf_ops_for_dense_codegen():
                 return super()._compile_leaf(proto)
-            item = IRInstruction(pc, ins, self._leaf_profile(proto, ins))
+            item = IRInstruction(
+                pc, ins, self._leaf_profile(proto, ins), ranges.overflow_free(pc)
+            )
             sequence.append(item)
             if ins.op is Op.RETURN:
                 return_ins = item
@@ -149,6 +179,7 @@ class DenseEmitterJITMixin:
             }
         )
         tree = optimize_generated_ast(ast.parse("\n".join(lines)))
+        tree = promote_constant_registers(tree, spill_returns=False)
         exec(compile(tree, "<luapyre-dense-jit-leaf>", "exec"), namespace)
         return CompiledLeaf(proto, cost, namespace["_jit_leaf"])
 

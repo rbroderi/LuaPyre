@@ -118,13 +118,16 @@ class ValueIRFunctionJITMixin:
             op = node.op
             if op in ("add_i", "sub_i", "mul_i"):
                 symbol = {"add_i": "+", "sub_i": "-", "mul_i": "*"}[op]
-                tmp = f"_wide_{node.id}"
-                lines.extend(
-                    [
-                        f"    {tmp} = ({args[0]} {symbol} {args[1]}) & _MASK64",
-                        f"    {dest} = {tmp} - _TWO64 if {tmp} & _SIGN64 else {tmp}",
-                    ]
-                )
+                if node.overflow_free:
+                    lines.append(f"    {dest} = {args[0]} {symbol} {args[1]}")
+                else:
+                    tmp = f"_wide_{node.id}"
+                    lines.extend(
+                        [
+                            f"    {tmp} = ({args[0]} {symbol} {args[1]}) & _MASK64",
+                            f"    {dest} = {tmp} - _TWO64 if {tmp} & _SIGN64 else {tmp}",
+                        ]
+                    )
             elif op in ("add_f", "sub_f", "mul_f"):
                 symbol = {"add_f": "+", "sub_f": "-", "mul_f": "*"}[op]
                 lines.append(f"    {dest} = float({args[0]} {symbol} {args[1]})")

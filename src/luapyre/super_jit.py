@@ -28,6 +28,11 @@ class SuperPythonJIT(
 ):
     """Typed compiler pipeline ending in the optimized Python-AST backend.
 
+    0.25 shapes emitted functions for CPython specialization. Dense constant
+    register accesses become fast locals, backend-neutral integer intervals
+    remove proven-unnecessary signed-64 wrapping, and proven integer loop
+    backedges omit repeated numeric representation dispatch.
+
     0.22 adds a profile-guided trace tier around this function/region compiler.
     Typed interpreter branches can OSR the live Frame directly into a cyclic
     scalar CFG trace, and alternate successors become exact hot side exits.

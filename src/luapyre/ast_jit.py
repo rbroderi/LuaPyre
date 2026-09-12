@@ -10,6 +10,7 @@ from .errors import LuaRuntimeError
 from .jit import CompiledLoop, IRBlock, IRInstruction, IRLoop
 from .jit_policy import TYPED_JIT_LOOP_BODY_OPS
 from .opdispatch import _float_divide, _float_modulo, _float_power, _shift, _to_lua_string
+from .range_analysis import analyze_integer_ranges
 from .region_jit import RegionPythonJIT
 from .table import LuaTable
 from .values import coerce_lua_integer, lua_equal, static_value_type, type_matches
@@ -98,13 +99,16 @@ class AstPythonJIT(RegionPythonJIT):
             return None
 
         lowered: list[IRInstruction] = []
+        ranges = analyze_integer_ranges(proto)
         leaders = {start_pc, backedge_pc}
         for offset, ins in enumerate(body):
             pc = start_pc + offset
             specialization = None
             if ins.op in (Op.ADD, Op.SUB, Op.MUL, Op.MOD, Op.EQ, Op.LT, Op.LE):
                 specialization = self._profile_binary(frame.regs, ins)
-            lowered.append(IRInstruction(pc, ins, specialization))
+            lowered.append(
+                IRInstruction(pc, ins, specialization, ranges.overflow_free(pc))
+            )
 
             # Calls are block boundaries even though they do not alter the CFG:
             # a direct child consumes a dynamic amount of fuel and may suspend
@@ -334,6 +338,7 @@ class AstPythonJIT(RegionPythonJIT):
             lines.append(f"{indent}{r(arg_index)} = {source}")
 
         child_cost = 0
+        child_ranges = analyze_integer_ranges(proto)
         returned: list[str] | None = None
         for child_pc, child_ins in sequence:
             op = child_ins.op
@@ -345,14 +350,16 @@ class AstPythonJIT(RegionPythonJIT):
                 lines.append(f"{indent}{r(child_ins.a)} = {r(child_ins.b)}")
             elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[op]
-                lines.extend(
-                    self._i64_lines(
-                        r(child_ins.a),
-                        f"{r(child_ins.b)} {symbol} {r(child_ins.c)}",
-                        f"inline_{item.pc}_{child_pc}",
-                        indent,
+                expression = f"{r(child_ins.b)} {symbol} {r(child_ins.c)}"
+                if child_ranges.overflow_free(child_pc):
+                    lines.append(f"{indent}{r(child_ins.a)} = {expression}")
+                else:
+                    lines.extend(
+                        self._i64_lines(
+                            r(child_ins.a), expression,
+                            f"inline_{item.pc}_{child_pc}", indent,
+                        )
                     )
-                )
             elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[op]
                 lines.append(
@@ -475,7 +482,11 @@ class AstPythonJIT(RegionPythonJIT):
         elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
             symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[op]
             out.append(f"{indent}used += 1")
-            out.extend(self._i64_lines(a, f"{b} {symbol} {c}", str(pc), indent))
+            expression = f"{b} {symbol} {c}"
+            if item.overflow_free:
+                out.append(f"{indent}{a} = {expression}")
+            else:
+                out.extend(self._i64_lines(a, expression, str(pc), indent))
         elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
             symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[op]
             out.extend(
@@ -760,32 +771,53 @@ class AstPythonJIT(RegionPythonJIT):
         outer = ir.loop_ins
         idx, limit, step = self._reg(outer.a), self._reg(outer.b), self._reg(outer.c)
         tag = f"outer_{outer.a}_{backedge_pc}"
-        lines.extend(
-            [
-                f"        if type({idx}) is int and type({limit}) is int and type({step}) is int:",
-                f"            _next_{tag} = {idx} + {step}",
-                f"            if _next_{tag} < _INT_MIN or _next_{tag} > _INT_MAX or ({step} > 0 and _next_{tag} > {limit}) or ({step} < 0 and _next_{tag} < {limit}):",
-            ]
+        ranges = analyze_integer_ranges(frame.proto)
+        integer_loop = all(
+            ranges.range_at(start_pc, reg) is not None
+            for reg in (outer.a, outer.b, outer.c)
         )
-        lines.extend(self._spill_lines(registers, "                "))
-        lines.extend(
-            [
-                f"                frame.pc = {ir.exit_pc}",
-                "                return used, True",
-                f"            {idx} = _next_{tag}",
-                "            continue",
-                f"        _next_{tag} = float({idx}) + float({step})",
-                f"        if ({step} > 0 and _next_{tag} > {limit}) or ({step} < 0 and _next_{tag} < {limit}):",
-            ]
-        )
-        lines.extend(self._spill_lines(registers, "            "))
-        lines.extend(
-            [
-                f"            frame.pc = {ir.exit_pc}",
-                "            return used, True",
-                f"        {idx} = _next_{tag}",
-            ]
-        )
+        if integer_loop:
+            lines.extend(
+                [
+                    f"        _next_{tag} = {idx} + {step}",
+                    f"        if _next_{tag} < _INT_MIN or _next_{tag} > _INT_MAX or ({step} > 0 and _next_{tag} > {limit}) or ({step} < 0 and _next_{tag} < {limit}):",
+                ]
+            )
+            lines.extend(self._spill_lines(registers, "            "))
+            lines.extend(
+                [
+                    f"            frame.pc = {ir.exit_pc}",
+                    "            return used, True",
+                    f"        {idx} = _next_{tag}",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    f"        if type({idx}) is int and type({limit}) is int and type({step}) is int:",
+                    f"            _next_{tag} = {idx} + {step}",
+                    f"            if _next_{tag} < _INT_MIN or _next_{tag} > _INT_MAX or ({step} > 0 and _next_{tag} > {limit}) or ({step} < 0 and _next_{tag} < {limit}):",
+                ]
+            )
+            lines.extend(self._spill_lines(registers, "                "))
+            lines.extend(
+                [
+                    f"                frame.pc = {ir.exit_pc}",
+                    "                return used, True",
+                    f"            {idx} = _next_{tag}",
+                    "            continue",
+                    f"        _next_{tag} = float({idx}) + float({step})",
+                    f"        if ({step} > 0 and _next_{tag} > {limit}) or ({step} < 0 and _next_{tag} < {limit}):",
+                ]
+            )
+            lines.extend(self._spill_lines(registers, "            "))
+            lines.extend(
+                [
+                    f"            frame.pc = {ir.exit_pc}",
+                    "            return used, True",
+                    f"        {idx} = _next_{tag}",
+                ]
+            )
 
         source = "\n".join(lines)
         tree = ast.parse(source)

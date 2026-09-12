@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .bytecode import Cell, Ins, Op
 from .jit import CompiledLoop, IRBlock, IRInstruction, IRLoop, PythonJIT
 from .jit_policy import JIT_LOOP_BODY_OPS
+from .range_analysis import analyze_integer_ranges
 from .table import LuaTable
 from .values import i64, lua_equal, type_matches
 
@@ -53,13 +54,16 @@ class RegionPythonJIT(PythonJIT):
             return None
 
         lowered: list[IRInstruction] = []
+        ranges = analyze_integer_ranges(proto)
         leaders = {start_pc, backedge_pc}
         for offset, ins in enumerate(body):
             pc = start_pc + offset
             specialization = None
             if ins.op in (Op.ADD, Op.SUB, Op.MUL, Op.MOD, Op.EQ, Op.LT, Op.LE):
                 specialization = self._profile_binary(frame.regs, ins)
-            lowered.append(IRInstruction(pc, ins, specialization))
+            lowered.append(
+                IRInstruction(pc, ins, specialization, ranges.overflow_free(pc))
+            )
 
             if ins.op in _BRANCH_OPS:
                 target = ins.a
@@ -198,8 +202,9 @@ class RegionPythonJIT(PythonJIT):
                     offset,
                     indent,
                 )
+            expression = f"regs[{ins.b}] {symbol} regs[{ins.c}]"
             lines.append(
-                f"{indent}regs[{ins.a}] = _i64(regs[{ins.b}] {symbol} regs[{ins.c}])"
+                f"{indent}regs[{ins.a}] = {expression if item.overflow_free else f'_i64({expression})'}"
             )
         elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
             symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[op]

@@ -91,8 +91,9 @@ def _make_loop_int_binop(symbol: str) -> Emitter:
                 pc,
                 offset,
             )
+        expression = f"regs[{ins.b}] {symbol} regs[{ins.c}]"
         lines.append(
-            f"        regs[{ins.a}] = _i64(regs[{ins.b}] {symbol} regs[{ins.c}])"
+            f"        regs[{ins.a}] = {expression if item.overflow_free else f'_i64({expression})'}"
         )
         return True
 
@@ -242,7 +243,10 @@ def _make_leaf_int_binop(symbol: str) -> Emitter:
                 lines,
                 f"type(regs[{ins.b}]) is int and type(regs[{ins.c}]) is int",
             )
-        lines.append(f"    regs[{ins.a}] = _i64(regs[{ins.b}] {symbol} regs[{ins.c}])")
+        expression = f"regs[{ins.b}] {symbol} regs[{ins.c}]"
+        lines.append(
+            f"    regs[{ins.a}] = {expression if item.overflow_free else f'_i64({expression})'}"
+        )
         return True
 
     return emit
@@ -448,6 +452,121 @@ class _InlineI64Assignments(ast.NodeTransformer):
             orelse=ast.Name(id=temp, ctx=ast.Load()),
         )
         return [masked, ast.Assign(targets=node.targets, value=wrapped)]
+
+
+class _RegisterCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.registers: set[int] = set()
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if (
+            isinstance(node.value, ast.Name)
+            and node.value.id == "regs"
+            and isinstance(node.slice, ast.Constant)
+            and type(node.slice.value) is int
+        ):
+            self.registers.add(node.slice.value)
+        self.generic_visit(node)
+
+
+class _PromoteConstantRegisters(ast.NodeTransformer):
+    def __init__(self, registers: tuple[int, ...], *, spill_returns: bool) -> None:
+        self.registers = registers
+        self.spill_returns = spill_returns
+
+    @staticmethod
+    def _register_name(index: int, ctx) -> ast.Name:
+        return ast.Name(id=f"_r{index}", ctx=ctx)
+
+    def _spill(self, location: ast.AST) -> list[ast.Assign]:
+        out = []
+        for index in self.registers:
+            target = ast.Subscript(
+                value=ast.Name(id="regs", ctx=ast.Load()),
+                slice=ast.Constant(index),
+                ctx=ast.Store(),
+            )
+            out.append(
+                ast.copy_location(
+                    ast.Assign(targets=[target], value=self._register_name(index, ast.Load())),
+                    location,
+                )
+            )
+        return out
+
+    @staticmethod
+    def _contains_gc_safepoint(node: ast.AST) -> bool:
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call) or not isinstance(child.func, ast.Attribute):
+                continue
+            if (
+                isinstance(child.func.value, ast.Name)
+                and child.func.value.id == "vm"
+                and child.func.attr in ("_new_table", "_new_cell", "_new_closure")
+            ):
+                return True
+        return False
+
+    def visit_Subscript(self, node: ast.Subscript):
+        node = self.generic_visit(node)
+        if (
+            isinstance(node.value, ast.Name)
+            and node.value.id == "regs"
+            and isinstance(node.slice, ast.Constant)
+            and type(node.slice.value) is int
+        ):
+            return ast.copy_location(self._register_name(node.slice.value, node.ctx), node)
+        return node
+
+    def visit_Assign(self, node: ast.Assign):
+        node = self.generic_visit(node)
+        if self._contains_gc_safepoint(node):
+            return [*self._spill(node), node]
+        return node
+
+    def visit_Return(self, node: ast.Return):
+        node = self.generic_visit(node)
+        is_deopt = isinstance(node.value, ast.Name) and node.value.id == "_DEOPT"
+        if self.spill_returns or is_deopt:
+            return [*self._spill(node), node]
+        return node
+
+
+def promote_constant_registers(tree: ast.AST, *, spill_returns: bool) -> ast.AST:
+    """Turn constant ``regs[n]`` traffic into fast locals in generated code."""
+    collector = _RegisterCollector()
+    collector.visit(tree)
+    registers = tuple(sorted(collector.registers))
+    if not registers:
+        return tree
+
+    tree = _PromoteConstantRegisters(registers, spill_returns=spill_returns).visit(tree)
+    function = next((node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)), None)
+    if function is None:
+        return tree
+    insert_at = next(
+        (
+            index + 1
+            for index, stmt in enumerate(function.body)
+            if isinstance(stmt, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "regs" for target in stmt.targets)
+        ),
+        0,
+    )
+    loads = [
+        ast.Assign(
+            targets=[ast.Name(id=f"_r{index}", ctx=ast.Store())],
+            value=ast.Subscript(
+                value=ast.Name(id="regs", ctx=ast.Load()),
+                slice=ast.Constant(index),
+                ctx=ast.Load(),
+            ),
+        )
+        for index in registers
+    ]
+    function.body[insert_at:insert_at] = loads
+    ast.fix_missing_locations(tree)
+    return tree
 
 
 def optimize_generated_ast(tree: ast.AST) -> ast.AST:

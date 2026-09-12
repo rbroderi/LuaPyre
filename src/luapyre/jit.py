@@ -5,6 +5,7 @@ from types import FunctionType
 
 from .bytecode import Cell, Ins, Op, Proto
 from .jit_policy import JIT_LOOP_BODY_OPS
+from .range_analysis import analyze_integer_ranges
 from .table import LuaTable
 from .values import i64, lua_equal, type_matches
 
@@ -19,6 +20,7 @@ class IRInstruction:
     pc: int
     ins: Ins
     specialization: str | None = None
+    overflow_free: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,12 +172,15 @@ class PythonJIT:
         if not body_ins or any(ins.op not in _LOOP_BODY_OPS for ins in body_ins):
             return None
         lowered = []
+        ranges = analyze_integer_ranges(proto)
         for offset, ins in enumerate(body_ins):
             pc = start_pc + offset
             specialization = None
             if ins.op in (Op.ADD, Op.SUB, Op.MUL, Op.MOD, Op.EQ, Op.LT, Op.LE):
                 specialization = self._profile_binary(frame.regs, ins)
-            lowered.append(IRInstruction(pc, ins, specialization))
+            lowered.append(
+                IRInstruction(pc, ins, specialization, ranges.overflow_free(pc))
+            )
         loop_ins = proto.code[backedge_pc]
         if loop_ins.op not in (Op.FORLOOP, Op.JFORLOOP) or loop_ins.d != start_pc:
             return None
@@ -311,7 +316,10 @@ class PythonJIT:
                         pc,
                         offset,
                     )
-                lines.append(f"        regs[{ins.a}] = _i64(regs[{ins.b}] {symbol} regs[{ins.c}])")
+                expression = f"regs[{ins.b}] {symbol} regs[{ins.c}]"
+                lines.append(
+                    f"        regs[{ins.a}] = {expression if item.overflow_free else f'_i64({expression})'}"
+                )
             elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[op]
                 if not trusted:
@@ -448,10 +456,13 @@ class PythonJIT:
     def _compile_leaf(self, proto: Proto) -> CompiledLeaf | None:
         sequence: list[IRInstruction] = []
         return_ins: IRInstruction | None = None
+        ranges = analyze_integer_ranges(proto)
         for pc, ins in enumerate(proto.code):
             if ins.op not in _LEAF_OPS:
                 return None
-            item = IRInstruction(pc, ins, self._leaf_profile(proto, ins))
+            item = IRInstruction(
+                pc, ins, self._leaf_profile(proto, ins), ranges.overflow_free(pc)
+            )
             sequence.append(item)
             if ins.op is Op.RETURN:
                 return_ins = item
@@ -484,7 +495,10 @@ class PythonJIT:
                     lines.append(
                         f"    if not (type(regs[{ins.b}]) is int and type(regs[{ins.c}]) is int): return _DEOPT"
                     )
-                lines.append(f"    regs[{ins.a}] = _i64(regs[{ins.b}] {symbol} regs[{ins.c}])")
+                expression = f"regs[{ins.b}] {symbol} regs[{ins.c}]"
+                lines.append(
+                    f"    regs[{ins.a}] = {expression if item.overflow_free else f'_i64({expression})'}"
+                )
             elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[op]
                 if not trusted:

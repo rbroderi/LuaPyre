@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.24.0a1**
+**Python 3.13+** · **current pre-alpha: 0.25.0a1**
 
 LuaPyre is not yet a complete Lua 5.5.1 implementation. Correct semantics come first; the runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
@@ -91,7 +91,7 @@ lua = LuaRuntime()
 
 Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default hotness threshold is 32 loop entries/calls and can be changed with `jit_threshold=`. Live counters are available through `lua.jit_stats`; `lua.jit_feedback` snapshots adaptive call/table cache states and deoptimization reasons.
 
-0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, and 0.23 added escape analysis and virtual Frames/MultiValues. **0.24 adds automatic allocation-debt pacing, young/old object ages, remembered-set barriers, and generational minor/major semantic collection.** Ordinary table churn takes a cheap CPython young-generation path until weak tables or finalizers make Lua reachability observable. See [`docs/gc-pacing-0.24.md`](docs/gc-pacing-0.24.md) and the earlier design notes in [`docs/`](docs/).
+0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, 0.23 added escape analysis and virtual Frames/MultiValues, and 0.24 added automatic generational GC pacing. **0.25 shapes generated code for CPython's adaptive interpreter:** dense registers become Python fast locals, conservative integer intervals remove proven-unnecessary wrap operations, and range-proven numeric loops omit their per-iteration int/float branch. See [`docs/cpython-specialization-0.25.md`](docs/cpython-specialization-0.25.md) and the earlier design notes in [`docs/`](docs/).
 
 ### Output and warnings
 
@@ -278,6 +278,7 @@ Unsafe host-facing libraries are not treated as default-sandbox requirements.
 9. proven 0.15/0.16 structured loops, recursion, captured closures, dynamic calls, and table/global tiers retained whenever the new typed/value/CALL IR cannot prove a stronger exact path
 10. bounded call/table polymorphic inline caches and deoptimization site/reason feedback with unstable-region retirement
 11. hot side-exit traces and CFG OSR through the exact live Frame/PC/register contract
-12. later: native x86-64/AArch64 or LLVM backend consuming the same typed/value/CALL IR and deoptimization contract
+12. CPython-specialization-aware code shapes, conservative overflow facts, and bytecode audits
+13. later: native x86-64/AArch64 or LLVM backend consuming the same typed/value/CALL IR and deoptimization contract
 
 CPython's own optimizer/JIT can accelerate generated Python when available, but it is never a LuaPyre correctness dependency.
