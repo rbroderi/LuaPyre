@@ -27,7 +27,8 @@ def test_ir_recognizes_root_environment_constant_key_and_dses_key_load():
     assert table_get is not None
     assert table_get.specialization == "global_get"
     assert table_get.value_for(1).kind is IRValueKind.CONSTANT
-    assert plan.cache_sites == (1,)
+    assert plan.invariant_sites == (1,)
+    assert plan.cache_sites == ()
 
 
 def test_ir_virtualizes_env_upvalue_and_constant_key_together():
@@ -55,6 +56,27 @@ def test_ir_virtualizes_env_upvalue_and_constant_key_together():
     assert table_get is not None and table_get.specialization == "global_get"
     assert table_get.value_for(0).kind is IRValueKind.UPVALUE
     assert table_get.value_for(0).is_environment
+    assert plan.invariant_sites == (2,)
+
+
+def test_global_load_is_not_hoisted_across_possible_table_mutation():
+    proto = Proto(
+        "root",
+        code=[
+            Ins(Op.LOADK, 1, 0),
+            Ins(Op.GETTABLE, 2, 0, 1),
+            Ins(Op.SETTABLE, 3, 4, 5),
+        ],
+        constants=[b"answer"],
+        register_count=6,
+        env_reg=0,
+        jit_fully_typed=True,
+    )
+    plan = TypedIRCompiler(proto).compile(
+        (((0, proto.code[0]), (1, proto.code[1]), (2, proto.code[2])),)
+    )
+    assert plan.invariant_sites == ()
+    assert plan.cache_sites == (1,)
 
 
 def test_ir_does_not_virtualize_constants_for_unconverted_arithmetic():
