@@ -67,6 +67,16 @@ return bad(-1), bad(math.maxinteger), bad(math.mininteger), bad(1.0)
 ''') == (True, True, True, True)
 
 
+def test_loaded_chunks_are_variadic_and_named_vararg_is_const():
+    assert run(r'''
+local f = assert(load[[ return {...} ]])
+local t = f(2, 3)
+local st, msg = load("return function (... t) t = 10 end")
+return t[1], t[2], t[3], st == nil,
+       string.find(msg, "const variable 't'") ~= nil
+''') == (2, 3, None, True, True)
+
+
 def test_gsub_reports_lua_capture_and_replacement_diagnostics():
     assert run(r'''
 local function fails(fragment, f, ...)
@@ -97,6 +107,29 @@ return
 ''') == (True, True, True, True, True)
 
 
+def test_pack_rejects_format_and_total_size_overflow():
+    assert run(r'''
+local function fails(fragment, f, ...)
+  local ok, err = pcall(f, ...)
+  return (not ok) and string.find(err, fragment) ~= nil
+end
+local huge = string.format("c%d", math.maxinteger - 9)
+return
+  fails("invalid format", string.packsize, "c1" .. string.rep("0", 40)),
+  string.packsize(huge) == math.maxinteger - 9,
+  fails("too large", string.packsize, huge .. "c10"),
+  fails("too long", string.pack, "xxxxxxxxxx " .. huge)
+''') == (True, True, True, True)
+
+
+def test_integer_idiv_and_pow_boundary_semantics():
+    assert run(r'''
+return math.maxinteger // 1 == math.maxinteger,
+       math.mininteger // -1 == math.mininteger,
+       0^-1 == 1/0
+''') == (True, True, True)
+
+
 def test_utf8_offset_accepts_incomplete_sequences_as_byte_boundaries():
     assert run(r'''
 local p1,e1 = utf8.offset("\xE0", 1)
@@ -117,3 +150,12 @@ return
   bad(utf8.len, "abc", 0, 2),
   bad(utf8.len, "abc", 1, 4)
 ''') == (True, True, True, True)
+
+
+def test_utf8_empty_ranges_and_iterator_controls_match_lua():
+    assert run(r'''
+local t = {utf8.codepoint("", 1, -1)}
+local f = utf8.codes("")
+return #t, utf8.len("", 1, -1),
+       f("", 2) == nil, f("", -1) == nil, f("", math.mininteger) == nil
+''') == (0, 0, True, True, True)
