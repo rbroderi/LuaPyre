@@ -19,11 +19,12 @@ jobs:
           python-version: '3.13'
       - name: Install LuaPyre and benchmark dependencies
         run: python -m pip install -e '.[dev]'
-      - name: Validate all four-way benchmark workloads
+      - name: Measure complete four-way benchmark corpus
         run: |
           python benchmarks/compare_runtimes.py \
-            --repeats 1 \
-            --warmups 0 \
+            --repeats 7 \
+            --warmups 3 \
             --require-all \
-            --json benchmark-results.json
+            --json benchmark-results.json \
+            | tee benchmark-results.txt
           python -m json.tool benchmark-results.json >/dev/null
