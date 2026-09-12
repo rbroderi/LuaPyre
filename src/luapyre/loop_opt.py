@@ -144,6 +144,29 @@ class CFGLoopOptimizer:
             return value if type(value) is int else None
         return None
 
+    def _comparison_condition(self, condition_id: int | None) -> tuple[int, str] | None:
+        """Peel boolean normalization around a loop comparison.
+
+        Source lowering may feed JMPIF/JMPIFNOT from TOBOOL/NOT wrappers rather
+        than directly from LT/LE.  Those wrappers are pure aliases for induction
+        recognition; the backend still uses the original condition node.
+        """
+
+        if condition_id is None:
+            return None
+        current = condition_id
+        seen: set[int] = set()
+        while current not in seen:
+            seen.add(current)
+            node = self.plan.node(current)
+            if node.op in ("lt", "le") and len(node.args) == 2:
+                return current, node.op
+            if node.op in ("tobool", "not") and len(node.args) == 1:
+                current = node.args[0]
+                continue
+            break
+        return None
+
     def _induction_for_phi(
         self,
         loop: CFGNaturalLoop,
@@ -161,7 +184,6 @@ class CFGLoopOptimizer:
             return None
 
         constant_node: int | None = None
-        raw_step: int | None = None
         if update.op == "add_i":
             if update.args[0] == phi_id:
                 constant_node = update.args[1]
@@ -185,22 +207,22 @@ class CFGLoopOptimizer:
         limit_node: int | None = None
         compare_op: str | None = None
         header = self.plan.blocks[loop.header]
-        condition_id = header.condition_value
-        if condition_id is not None:
-            condition = self.plan.node(condition_id)
-            if condition.op in ("lt", "le") and len(condition.args) == 2:
-                if condition.args[0] == phi_id:
-                    other = condition.args[1]
-                elif condition.args[1] == phi_id:
-                    other = condition.args[0]
-                else:
-                    other = None
-                if other is not None and (
-                    other in invariant_nodes or self._defined_before_loop(other, loop)
-                ):
-                    compare_node = condition_id
-                    limit_node = other
-                    compare_op = condition.op
+        comparison = self._comparison_condition(header.condition_value)
+        if comparison is not None:
+            candidate_id, candidate_op = comparison
+            condition = self.plan.node(candidate_id)
+            if condition.args[0] == phi_id:
+                other = condition.args[1]
+            elif condition.args[1] == phi_id:
+                other = condition.args[0]
+            else:
+                other = None
+            if other is not None and (
+                other in invariant_nodes or self._defined_before_loop(other, loop)
+            ):
+                compare_node = candidate_id
+                limit_node = other
+                compare_op = candidate_op
 
         return CFGInductionVariable(
             header=loop.header,
