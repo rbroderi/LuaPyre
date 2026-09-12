@@ -154,7 +154,18 @@ def _constant_type(value: object) -> str:
 
 def _result_type(ins: Ins, source_types: dict[int, str]) -> str | None:
     op = ins.op
-    if op in (Op.ADD_I, Op.SUB_I, Op.MUL_I, Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR, Op.BNOT, Op.LEN):
+    if op in (
+        Op.ADD_I,
+        Op.SUB_I,
+        Op.MUL_I,
+        Op.BAND,
+        Op.BOR,
+        Op.BXOR,
+        Op.SHL,
+        Op.SHR,
+        Op.BNOT,
+        Op.LEN,
+    ):
         return "integer"
     if op in (Op.ADD_F, Op.SUB_F, Op.MUL_F, Op.DIV, Op.POW):
         return "float"
@@ -171,16 +182,37 @@ def _result_type(ins: Ins, source_types: dict[int, str]) -> str | None:
         right = source_types.get(ins.c, "Any")
         if left == right == "integer":
             return "integer"
-        if left in ("integer", "float", "number") and right in ("integer", "float", "number"):
+        if left in ("integer", "float", "number") and right in (
+            "integer",
+            "float",
+            "number",
+        ):
             return "number"
     return None
 
 
 def _reads(ins: Ins) -> tuple[int, ...]:
     op = ins.op
-    if op in (Op.LOADK, Op.GETGLOBAL, Op.GETUPVAL, Op.CLOSURE, Op.NEWTABLE, Op.JMP, Op.HALT):
+    if op in (
+        Op.LOADK,
+        Op.GETGLOBAL,
+        Op.GETUPVAL,
+        Op.CLOSURE,
+        Op.NEWTABLE,
+        Op.JMP,
+        Op.HALT,
+    ):
         return ()
-    if op in (Op.MOVE, Op.LOCAL, Op.GETCELL, Op.LEN, Op.BNOT, Op.NEG, Op.NOT, Op.TOBOOL):
+    if op in (
+        Op.MOVE,
+        Op.LOCAL,
+        Op.GETCELL,
+        Op.LEN,
+        Op.BNOT,
+        Op.NEG,
+        Op.NOT,
+        Op.TOBOOL,
+    ):
         return (ins.b,)
     if op is Op.SETGLOBAL:
         return (ins.a,)
@@ -274,14 +306,54 @@ def _virtualizable_use(ins: Ins, register: int) -> bool:
     return False
 
 
+def _cfg_targets(ins: Ins, fallthrough: int) -> tuple[int, ...]:
+    if ins.op is Op.JMP:
+        return (ins.a,)
+    if ins.op in (Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL):
+        return (ins.a, fallthrough)
+    if ins.op is Op.FORPREP:
+        return (ins.d, fallthrough)
+    if ins.op in (Op.FORLOOP, Op.JFORLOOP):
+        return (ins.d, fallthrough)
+    if ins.op in (Op.RETURN, Op.RETURNV, Op.HALT, Op.TAILCALL, Op.TAILCALLV):
+        return ()
+    return (fallthrough,)
+
+
+def _merge_identical(
+    incoming: list[dict[int, object]],
+    base: dict[int, object],
+) -> dict[int, object]:
+    """Meet predecessor facts without introducing phi nodes.
+
+    A fact crosses a join only when every predecessor carries the exact same
+    semantic value. ``base`` contains facts guaranteed independently of control
+    flow (currently the stable root environment and certified parameter types).
+    """
+
+    merged = dict(base)
+    if not incoming:
+        return merged
+    common = set(incoming[0])
+    for state in incoming[1:]:
+        common.intersection_update(state)
+    for key in common:
+        value = incoming[0][key]
+        if all(state[key] == value for state in incoming[1:]):
+            merged[key] = value
+    return merged
+
+
 class TypedIRCompiler:
     """Lower fully typed bytecode blocks into a compact optimization IR.
 
-    This is intentionally small. It performs the data-flow work that is useful
-    regardless of backend: constant propagation, conservative type propagation,
-    recognition of constant-key/global table accesses, dead virtual temporary
-    elimination, and conservative loop-invariance analysis. The Python backend
-    is responsible only for turning these facts into AST and guards.
+    This is intentionally small. It performs backend-neutral data-flow work:
+    CFG fixed-point value/type propagation, recognition of constant-key/global
+    table accesses, dead virtual temporary elimination, and conservative
+    loop-invariance analysis. At control-flow joins a value survives only when
+    every predecessor agrees, giving the optimizer SSA-like knowledge without
+    needing phi nodes. The Python backend only turns these facts into AST and
+    guards.
     """
 
     def __init__(self, proto: Proto):
@@ -293,6 +365,145 @@ class TypedIRCompiler:
             return False
         return all(env not in _writes(ins) for ins in self.proto.code)
 
+    def _base_state(
+        self, stable_env: bool
+    ) -> tuple[dict[int, IRValue], dict[int, str]]:
+        facts: dict[int, IRValue] = {}
+        types: dict[int, str] = {
+            index: typ.name for index, typ in enumerate(self.proto.param_types)
+        }
+        if stable_env:
+            facts[self.proto.env_reg] = IRValue.environment(self.proto.env_reg)
+            types[self.proto.env_reg] = "table"
+        return facts, types
+
+    def _advance_state(
+        self,
+        block: tuple[tuple[int, Ins], ...],
+        entry_facts: dict[int, IRValue],
+        entry_types: dict[int, str],
+    ) -> tuple[dict[int, IRValue], dict[int, str]]:
+        facts = dict(entry_facts)
+        types = dict(entry_types)
+        for _pc, ins in block:
+            analytical_sources = {
+                reg: facts.get(reg, IRValue.register(reg, types.get(reg, "Any")))
+                for reg in _reads(ins)
+            }
+            source_types = {
+                reg: value.type_name for reg, value in analytical_sources.items()
+            }
+            result_type = _result_type(ins, source_types)
+
+            # A call may mutate lexical cells through another closure, so a
+            # direct upvalue load is not a stable rematerialization fact after
+            # re-entry. Constants and the proven-stable root environment remain.
+            if ins.op in (Op.CALL, Op.CALLV, Op.TAILCALL, Op.TAILCALLV):
+                facts = {
+                    reg: value
+                    for reg, value in facts.items()
+                    if value.kind is not IRValueKind.UPVALUE
+                }
+
+            if ins.op is Op.SETUPVAL:
+                facts = {
+                    reg: value
+                    for reg, value in facts.items()
+                    if not (
+                        value.kind is IRValueKind.UPVALUE and value.index == ins.a
+                    )
+                }
+
+            for reg in _writes(ins):
+                facts.pop(reg, None)
+                if result_type is not None:
+                    types[reg] = result_type
+                else:
+                    types.pop(reg, None)
+
+            if ins.op is Op.LOADK:
+                typ = _constant_type(self.proto.constants[ins.b])
+                facts[ins.a] = IRValue.constant(ins.b, typ)
+                types[ins.a] = typ
+            elif ins.op is Op.GETUPVAL:
+                desc = (
+                    self.proto.upvalues[ins.b]
+                    if ins.b < len(self.proto.upvalues)
+                    else None
+                )
+                is_env = desc is not None and desc.name == "_ENV"
+                value = IRValue.upvalue(
+                    ins.b,
+                    "table" if is_env else "Any",
+                    is_environment=is_env,
+                )
+                facts[ins.a] = value
+                types[ins.a] = value.type_name
+            elif ins.op in (Op.MOVE, Op.LOCAL):
+                source = analytical_sources.get(ins.b)
+                # Constants are immutable snapshots. Do not yet propagate direct
+                # upvalue aliases through MOVE: reconstructing such an alias after
+                # SETUPVAL/re-entry requires explicit snapshot/value-number IR.
+                if source is not None and source.kind is IRValueKind.CONSTANT:
+                    facts[ins.a] = source
+                    types[ins.a] = source.type_name
+            elif ins.op is Op.GUARD:
+                expected = self.proto.constants[ins.b]
+                if isinstance(expected, str):
+                    types[ins.a] = expected
+        return facts, types
+
+    def _cfg_entry_states(
+        self,
+        blocks: tuple[tuple[tuple[int, Ins], ...], ...],
+        stable_env: bool,
+    ) -> tuple[tuple[dict[int, IRValue], dict[int, str]], ...]:
+        if not blocks:
+            return ()
+
+        starts = {block[0][0]: index for index, block in enumerate(blocks) if block}
+        predecessors: list[list[int]] = [[] for _ in blocks]
+        for index, block in enumerate(blocks):
+            if not block:
+                continue
+            pc, terminal = block[-1]
+            for target in _cfg_targets(terminal, pc + 1):
+                successor = starts.get(target)
+                if successor is not None and index not in predecessors[successor]:
+                    predecessors[successor].append(index)
+
+        base_facts, base_types = self._base_state(stable_env)
+        entry_states: list[tuple[dict[int, IRValue], dict[int, str]]] = [
+            (dict(base_facts), dict(base_types)) for _ in blocks
+        ]
+        exit_states: list[tuple[dict[int, IRValue], dict[int, str]]] = [
+            self._advance_state(block, base_facts, base_types) for block in blocks
+        ]
+
+        # The first block has an implicit predecessor from outside the compiled
+        # region/function. Including the base state in its meet prevents a loop
+        # backedge from inventing a fact that is not true on the first entry.
+        changed = True
+        while changed:
+            changed = False
+            for index, block in enumerate(blocks):
+                incoming_facts = [exit_states[p][0] for p in predecessors[index]]
+                incoming_types = [exit_states[p][1] for p in predecessors[index]]
+                if index == 0:
+                    incoming_facts.append(base_facts)
+                    incoming_types.append(base_types)
+
+                facts = _merge_identical(incoming_facts, base_facts)
+                types = _merge_identical(incoming_types, base_types)
+                new_entry = (facts, types)
+                new_exit = self._advance_state(block, facts, types)
+                if new_entry != entry_states[index] or new_exit != exit_states[index]:
+                    entry_states[index] = new_entry
+                    exit_states[index] = new_exit
+                    changed = True
+
+        return tuple(entry_states)
+
     def compile(self, blocks: tuple[tuple[tuple[int, Ins], ...], ...]) -> TypedIRPlan:
         lowered: list[TypedIRInstruction] = []
         states: list[tuple[int, tuple[tuple[int, IRValue], ...]]] = []
@@ -303,16 +514,12 @@ class TypedIRCompiler:
         global_hoist_safe = not any(
             ins.op in _INVARIANT_GLOBAL_BARRIERS for ins in region_instructions
         )
+        entry_states = self._cfg_entry_states(blocks, stable_env)
 
-        for block in blocks:
-            facts: dict[int, IRValue] = {}
-            types: dict[int, str] = {
-                index: typ.name
-                for index, typ in enumerate(self.proto.param_types)
-            }
-            if stable_env:
-                facts[self.proto.env_reg] = IRValue.environment(self.proto.env_reg)
-                types[self.proto.env_reg] = "table"
+        for block_index, block in enumerate(blocks):
+            entry_facts, entry_types = entry_states[block_index]
+            facts = dict(entry_facts)
+            types = dict(entry_types)
 
             for pc, ins in block:
                 states.append((pc, tuple(sorted(facts.items()))))
@@ -320,11 +527,15 @@ class TypedIRCompiler:
                 source_types: dict[int, str] = {}
                 analytical_sources: dict[int, IRValue] = {}
                 for reg in _reads(ins):
-                    known = facts.get(reg, IRValue.register(reg, types.get(reg, "Any")))
+                    known = facts.get(
+                        reg, IRValue.register(reg, types.get(reg, "Any"))
+                    )
                     analytical_sources[reg] = known
                     source_types[reg] = known.type_name
-                    emitted = known if _virtualizable_use(ins, reg) else IRValue.register(
-                        reg, types.get(reg, known.type_name)
+                    emitted = (
+                        known
+                        if _virtualizable_use(ins, reg)
+                        else IRValue.register(reg, types.get(reg, known.type_name))
                     )
                     sources.append((reg, emitted))
                     if emitted.kind is IRValueKind.REGISTER:
@@ -335,10 +546,12 @@ class TypedIRCompiler:
                     table_reg = ins.b if ins.op is Op.GETTABLE else ins.a
                     key_reg = ins.c if ins.op is Op.GETTABLE else ins.b
                     table_value = analytical_sources.get(
-                        table_reg, IRValue.register(table_reg, types.get(table_reg, "Any"))
+                        table_reg,
+                        IRValue.register(table_reg, types.get(table_reg, "Any")),
                     )
                     key_value = analytical_sources.get(
-                        key_reg, IRValue.register(key_reg, types.get(key_reg, "Any"))
+                        key_reg,
+                        IRValue.register(key_reg, types.get(key_reg, "Any")),
                     )
                     if key_value.kind is IRValueKind.CONSTANT:
                         key = self.proto.constants[key_value.index]
@@ -350,11 +563,15 @@ class TypedIRCompiler:
                         ):
                             if table_value.is_environment and isinstance(key, bytes):
                                 specialization = (
-                                    "global_get" if ins.op is Op.GETTABLE else "global_set"
+                                    "global_get"
+                                    if ins.op is Op.GETTABLE
+                                    else "global_set"
                                 )
                             else:
                                 specialization = (
-                                    "table_get_const" if ins.op is Op.GETTABLE else "table_set_const"
+                                    "table_get_const"
+                                    if ins.op is Op.GETTABLE
+                                    else "table_set_const"
                                 )
                     # Only specialized table ops consume virtual operands in the
                     # current AST backend. Generic accesses keep registers live.
@@ -366,17 +583,19 @@ class TypedIRCompiler:
                         materialized_reads.update(_reads(ins))
 
                 result_type = _result_type(ins, source_types)
-                item = TypedIRInstruction(
-                    pc,
-                    ins,
-                    tuple(sources),
-                    result_type=result_type,
-                    specialization=specialization,
+                lowered.append(
+                    TypedIRInstruction(
+                        pc,
+                        ins,
+                        tuple(sources),
+                        result_type=result_type,
+                        specialization=specialization,
+                    )
                 )
-                lowered.append(item)
 
-                # Calls can mutate lexical cells through other closures. Do not
-                # carry a direct-upvalue rematerialization fact across a call.
+                # Keep the lowering state identical to the fixed-point transfer
+                # function so deopt reconstruction records the exact IR values
+                # that justified specialization at each instruction.
                 if ins.op in (Op.CALL, Op.CALLV, Op.TAILCALL, Op.TAILCALLV):
                     facts = {
                         reg: value
@@ -394,8 +613,7 @@ class TypedIRCompiler:
                         )
                     }
 
-                writes = _writes(ins)
-                for reg in writes:
+                for reg in _writes(ins):
                     facts.pop(reg, None)
                     if result_type is not None:
                         types[reg] = result_type
@@ -408,9 +626,17 @@ class TypedIRCompiler:
                     types[ins.a] = typ
                     candidate_defs[pc] = ins.a
                 elif ins.op is Op.GETUPVAL:
-                    desc = self.proto.upvalues[ins.b] if ins.b < len(self.proto.upvalues) else None
+                    desc = (
+                        self.proto.upvalues[ins.b]
+                        if ins.b < len(self.proto.upvalues)
+                        else None
+                    )
                     is_env = desc is not None and desc.name == "_ENV"
-                    value = IRValue.upvalue(ins.b, "table" if is_env else "Any", is_environment=is_env)
+                    value = IRValue.upvalue(
+                        ins.b,
+                        "table" if is_env else "Any",
+                        is_environment=is_env,
+                    )
                     facts[ins.a] = value
                     types[ins.a] = value.type_name
                     candidate_defs[pc] = ins.a
@@ -424,10 +650,10 @@ class TypedIRCompiler:
                     if isinstance(expected, str):
                         types[ins.a] = expected
 
-        # A propagated LOADK/GETUPVAL is virtual only when no backend operation
-        # still needs the physical register. Cross-block uses are naturally
-        # conservative because facts restart at every block and therefore show
-        # up as REGISTER reads here.
+        # A propagated LOADK/GETUPVAL is virtual only when every backend use can
+        # consume the IR value. CFG propagation means definitions can now die
+        # even when their virtual use is in a successor block; precise state at
+        # every instruction rematerializes them on a guard/deopt side exit.
         dead_pcs = {
             pc for pc, dest in candidate_defs.items() if dest not in materialized_reads
         }
