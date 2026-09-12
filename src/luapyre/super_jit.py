@@ -51,10 +51,11 @@ class SuperPythonJIT(
     in backend-neutral IR while CFG Value IR grows scalar LICM/induction support.
 
     The 0.17 value tier still owns straight-line pure functions and lexical-call
-    inlining; larger static calls retain real Lua closures/frames through CALL
-    IR. Optimization decisions live in typed/value/CALL/CFG/loop IR. Python AST
-    is a backend, and every unsupported shape fails closed to an earlier exact
-    tier or the interpreter.
+    inlining. The 0.23 escape plan lets CALL IR virtualize eligible branchy leaf
+    Frames and open-result MultiValues, sinking real objects to suspension/error
+    boundaries. Optimization decisions live in typed/value/CALL/CFG/loop IR.
+    Python AST is a backend, and every unsupported shape fails closed to an
+    earlier exact tier or the interpreter.
     """
 
     _IR_PRIMARY_OPS = frozenset({Op.GETUPVAL, Op.GETTABLE, Op.SETTABLE})
