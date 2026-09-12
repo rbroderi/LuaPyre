@@ -16,7 +16,7 @@ from .compiler import Compiler
 from .errors import LuaPyreError, LuaQuotaError, LuaRaisedError, LuaRuntimeError
 from .parser import Parser
 from .table import LuaTable
-from .values import MultiValue, i64, lua_equal, lua_type_name, truthy
+from .values import MultiValue, i64, lua_equal, lua_type_name, parse_lua_number, truthy
 from .vm import HostFunction
 from .stdlib_math import install_math_library
 from .stdlib_string import install_string_library
@@ -39,29 +39,7 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
 
     def tonumber(value, base=None):
         if base is None:
-            if type(value) in (int, float):
-                return value
-            if not isinstance(value, bytes):
-                return None
-            try:
-                text = value.decode("ascii").strip()
-            except UnicodeDecodeError:
-                return None
-            if not text:
-                return None
-            try:
-                lower = text.lower()
-                is_hex = lower.startswith(("0x", "+0x", "-0x"))
-                if (is_hex and ("p" in lower or "." in lower)):
-                    return float.fromhex(text)
-                if any(char in text for char in ".eE"):
-                    return float(text)
-                integer = int(text, 16 if is_hex else 10)
-                if INT_MIN <= integer <= INT_MAX:
-                    return integer
-                return float(text)
-            except (ValueError, OverflowError):
-                return None
+            return parse_lua_number(value)
 
         if not isinstance(value, bytes):
             raise LuaRuntimeError("bad argument #1 to 'tonumber' (string expected)")

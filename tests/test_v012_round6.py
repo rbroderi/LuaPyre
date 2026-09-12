@@ -28,3 +28,57 @@ def test_math_huge_integer_conversion_names_field():
 local ok, err = pcall(function () return math.huge << 1 end)
 return not ok and string.find(err, "field 'huge'") ~= nil
 ''') is True
+
+
+def test_tonumber_leading_zero_decimal_matches_source_arithmetic():
+    assert run("return tonumber('-012')") == -12
+    assert run("return -010-2") == -12
+    assert run("return tonumber('-012') == -010-2") is True
+
+
+def test_tonumber_plain_hexadecimal_overflow_wraps_to_lua_integer():
+    assert run('return tonumber("0x1000000000000000000000000000000")') == 0
+    assert run('return tonumber("0xffffffffffffffff")') == -1
+    assert run('return tonumber("-0xffffffffffffffff")') == 1
+
+
+def test_tonumber_long_hexadecimal_float_overflow_returns_infinity():
+    assert run("return tonumber('0x' .. string.rep('f', 300) .. '.0') == math.huge") is True
+    assert run("return tonumber('-0x' .. string.rep('f', 300) .. '.0') == -math.huge") is True
+    assert run("return tonumber('0xe03' .. string.rep('0', 1000) .. 'p-4000')") == 3587.0
+
+
+def test_float_modulo_matches_lua_nan_and_infinity_edges():
+    assert run("local x = 0.0 % 0; return x ~= x") is True
+    assert run("local x = 1.3 % 0; return x ~= x") is True
+    assert run("local x = math.huge % 1; return x ~= x") is True
+    assert run("return 1 % math.huge") == 1.0
+    assert run("return 1e30 % math.huge") == 1e30
+    assert run("return 1e30 % -math.huge") == float("-inf")
+    assert run("return -1 % math.huge") == float("inf")
+    assert run("return -1 % -math.huge") == -1.0
+
+
+def test_integer_modulo_by_zero_still_errors():
+    assert run("local ok = pcall(function () return 1 % 0 end); return ok") is False
+
+
+def test_math_tointeger_coerces_numeric_strings_like_lua():
+    assert run('return math.tointeger(tostring(math.mininteger))') == -(1 << 63)
+    assert run('return math.tointeger(tostring(math.maxinteger))') == (1 << 63) - 1
+    assert run('return math.tointeger("34.0")') == 34
+    assert run('return math.tointeger("34.3")') is None
+    assert run('return math.tointeger({})') is None
+
+
+def test_nan_table_lookup_is_absent_but_nan_assignment_is_rejected():
+    assert run(r'''
+local nan = 0/0
+local a = {}
+local ok1 = pcall(rawset, a, nan, 1)
+local missing1 = a[nan] == nil
+a[1] = 1
+local ok2 = pcall(rawset, a, nan, 1)
+local missing2 = a[nan] == nil
+return not ok1 and missing1 and not ok2 and missing2
+''') is True

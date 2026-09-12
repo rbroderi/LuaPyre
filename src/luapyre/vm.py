@@ -71,6 +71,21 @@ def _float_div(a, b):
     return math.copysign(math.inf, a * (1.0 if math.copysign(1.0, b) > 0 else -1.0))
 
 
+def _float_mod(a, b):
+    """Lua floor-modulo for floating operands, including IEEE edge cases."""
+    a = float(a)
+    b = float(b)
+    try:
+        value = math.fmod(a, b)
+    except ValueError:
+        # C fmod produces NaN for zero divisors and infinite dividends;
+        # Python reports those domain cases as ValueError instead.
+        return math.nan
+    if (value > 0.0 and b < 0.0) or (value < 0.0 and b > 0.0):
+        value += b
+    return value
+
+
 def _float_pow(a, b):
     a = float(a)
     b = float(b)
@@ -244,10 +259,11 @@ class VM:
         if op is Op.MOD:
             if not (_is_number(a) and _is_number(b)):
                 return False, None
-            if b == 0:
-                raise LuaRuntimeError("attempt to perform 'n%0'")
-            value = a % b
-            return True, i64(value) if type(a) is int and type(b) is int else float(value)
+            if type(a) is int and type(b) is int:
+                if b == 0:
+                    raise LuaRuntimeError("attempt to perform 'n%0'")
+                return True, i64(a % b)
+            return True, _float_mod(a, b)
         if op is Op.POW:
             if not (_is_number(a) and _is_number(b)):
                 return False, None
