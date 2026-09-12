@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 from .bytecode import Closure, Proto
+from .diagnostics import capture_error, error_value
 from .errors import LuaQuotaError, LuaRuntimeError
 from .gc import LuaGC
 from .opdispatch import OPCODE_HANDLERS
 from .table import LuaTable
-from .threadvm import CoroutineVM, _YieldSignal
+from .threadvm import CoroutineVM, _CloseSelfSignal, _YieldSignal
 from .values import MultiValue, truthy
 from .vm import Frame
 
 
 class GarbageCollectedVM(CoroutineVM):
-    """Coroutine VM with Lua-level GC root tracking.
+    """Coroutine VM with Lua-level GC root tracking and source diagnostics.
 
     Host calls are the safe points where ``collectgarbage`` can run. Keeping the
     active frame list and actual host-call arguments visible while a host
@@ -33,6 +34,10 @@ class GarbageCollectedVM(CoroutineVM):
         self._sync_frame_prefixes: list[list[Frame]] = []
         self.type_metatables: dict[bytes, LuaTable] = {}
         self.gc = LuaGC(self)
+
+    @staticmethod
+    def _error_value(error):
+        return error_value(error)
 
     def metatable_for(self, value):
         if isinstance(value, LuaTable):
@@ -79,16 +84,70 @@ class GarbageCollectedVM(CoroutineVM):
         finally:
             self._active_host_values = previous
 
+    def run(self, proto: Proto, fuel=None):
+        previous_thread = self.current_thread
+        self.current_thread = self.main_thread
+        self.main_thread.status = "running"
+        try:
+            remaining = self.default_fuel if fuel is None else fuel
+            root = Closure(proto, [], self.globals)
+            root_regs = [None] * max(1, proto.register_count)
+            if proto.env_reg >= 0:
+                root_regs[proto.env_reg] = self.globals
+            frames = [Frame(root, root_regs)]
+            final_values = ()
+            handlers = OPCODE_HANDLERS
+
+            while frames:
+                try:
+                    frame = frames[-1]
+                    if self._drive_pending(frames, frame):
+                        continue
+
+                    remaining -= 1
+                    if remaining < 0:
+                        raise LuaQuotaError("execution quota exceeded")
+                    if frame.pc >= len(frame.proto.code):
+                        final_values = self._return(frames, frame, ())
+                        continue
+
+                    ins = frame.proto.code[frame.pc]
+                    frame.pc += 1
+                    result = handlers[ins.op](
+                        self,
+                        frames,
+                        frame,
+                        ins,
+                        frame.regs,
+                        frame.proto.constants,
+                    )
+                    if result is not None:
+                        final_values = result
+
+                except LuaQuotaError:
+                    raise
+                except LuaRuntimeError as exc:
+                    if not frames:
+                        raise
+                    capture_error(exc, frames)
+                    frames[-1].pending_error = exc
+
+            if len(final_values) == 0:
+                return None
+            if len(final_values) == 1:
+                return final_values[0]
+            return final_values
+        finally:
+            self.current_thread = previous_thread
+
     def call_sync(self, fn, args=()):
         """Call a Lua/host callable to completion and return all results.
 
         This is the continuation boundary used by safe standard-library
-        functions that need Lua callbacks.  Yielding across this synchronous
-        native-library boundary is deliberately rejected for now; persistent
-        coroutine continuations for native-library callbacks remain a separate
-        compatibility concern.
+        functions that need Lua callbacks. Yielding across this synchronous
+        native-library boundary is deliberately rejected for now.
         """
-        proto = Proto("<stdlib-callback>", register_count=1)
+        proto = Proto("<stdlib-callback>", register_count=1, source=None)
         parent = Frame(Closure(proto, [], self.globals), [None])
         frames = [parent]
         prefix = list(self._active_frames or ())
@@ -127,6 +186,9 @@ class GarbageCollectedVM(CoroutineVM):
                     except LuaQuotaError:
                         raise
                     except LuaRuntimeError as exc:
+                        visible = [*prefix, *frames[1:]]
+                        if visible:
+                            capture_error(exc, visible)
                         if not frames:
                             raise
                         frames[-1].pending_error = exc
@@ -143,6 +205,70 @@ class GarbageCollectedVM(CoroutineVM):
             return () if result is None else (result,)
         finally:
             self._sync_frame_prefixes.pop()
+
+    def _execute_thread(self, thread, stop_depth: int | None = None):
+        frames = thread.frames
+        final_values = ()
+        handlers = OPCODE_HANDLERS
+
+        if thread.pending_tail_resume is not None and frames:
+            values = thread.pending_tail_resume
+            thread.pending_tail_resume = None
+            final_values = self._return(frames, frames[-1], values)
+            if not frames:
+                return "return", tuple(final_values)
+
+        while frames:
+            if stop_depth is not None and len(frames) <= stop_depth:
+                return "callback", ()
+            try:
+                frame = frames[-1]
+                if self._drive_pending(frames, frame):
+                    if stop_depth is not None and len(frames) <= stop_depth:
+                        return "callback", ()
+                    continue
+
+                self._tick()
+                if frame.pc >= len(frame.proto.code):
+                    final_values = self._return(frames, frame, ())
+                    if not frames:
+                        return "return", tuple(final_values)
+                    continue
+
+                ins = frame.proto.code[frame.pc]
+                frame.pc += 1
+                result = handlers[ins.op](
+                    self,
+                    frames,
+                    frame,
+                    ins,
+                    frame.regs,
+                    frame.proto.constants,
+                )
+                if result is not None:
+                    final_values = result
+                    if not frames:
+                        return "return", tuple(final_values)
+
+            except _YieldSignal as signal:
+                thread.status = "suspended"
+                return "yield", signal.values
+            except _CloseSelfSignal:
+                error = self._force_close(thread, None)
+                thread.status = "dead"
+                thread.error = error
+                if error is None:
+                    return "return", ()
+                return "error", (self._error_value(error),)
+            except LuaQuotaError:
+                raise
+            except LuaRuntimeError as exc:
+                capture_error(exc, frames)
+                thread.error = exc
+                thread.status = "dead"
+                return "error", (self._error_value(exc),)
+
+        return "return", tuple(final_values)
 
     def index_sync(self, obj, key):
         """Perform one ordinary Lua indexing operation synchronously."""

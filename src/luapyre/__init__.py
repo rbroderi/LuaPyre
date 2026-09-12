@@ -8,6 +8,7 @@ from .errors import (
     LuaTypeError,
     LuaRuntimeError,
     LuaQuotaError,
+    LuaTraceFrame,
 )
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "LuaTypeError",
     "LuaRuntimeError",
     "LuaQuotaError",
+    "LuaTraceFrame",
 ]
 
-__version__ = "0.8.0a1"
+__version__ = "0.9.0a1"

@@ -60,7 +60,7 @@ def test_pcall_and_xpcall_preserve_error_objects():
 local ok,a,b = pcall(function(x) return x, x+2 end, 40)
 local marker = {}
 local ok2,err = pcall(function() error(marker) end)
-local ok3,msg = xpcall(function() error("boom") end, function(e) return "handled:" .. e end)
+local ok3,msg = xpcall(function() error("boom", 0) end, function(e) return "handled:" .. e end)
 return ok,a,b,ok2,err == marker,ok3,msg
 ''') == (True, 40, 42, False, True, False, b'handled:boom')
 

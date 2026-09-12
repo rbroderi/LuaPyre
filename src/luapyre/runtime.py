@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from .parser import Parser
-from .compiler import Compiler
-from .table import LuaTable
-from .values import MultiValue, i64
-from .threadvm import LuaThread
+from .diagnostics import format_traceback
+from .diagnostic_stdlib import install_diagnostic_stdlib
+from .errors import LuaRuntimeError
 from .gcvm import GarbageCollectedVM
-from .vm import HostFunction
+from .parser import Parser
+from .source_compiler import SourceCompiler
 from .stdlib import install_safe_stdlib
+from .table import LuaTable
+from .threadvm import LuaThread
+from .values import MultiValue, i64
+from .vm import HostFunction
 
 
 class LuaRuntime:
@@ -23,6 +26,7 @@ class LuaRuntime:
         self.vm = GarbageCollectedVM(self.globals, fuel=fuel, max_frames=max_frames)
         if safe_stdlib:
             install_safe_stdlib(self.globals, self.vm)
+            install_diagnostic_stdlib(self.globals, self.vm)
 
     def _to_lua(self, value):
         if value is None or type(value) in (bool, float) or isinstance(value, bytes):
@@ -72,15 +76,22 @@ class LuaRuntime:
     def multi_return(*values):
         return MultiValue(tuple(values))
 
-    def compile(self, source: str):
-        return Compiler().compile(Parser(source).parse())
+    def compile(self, source: str, *, chunkname: str | bytes = "=(luapyre)"):
+        return SourceCompiler(chunkname).compile(Parser(source).parse())
 
-    def execute(self, source: str, *, fuel=None):
-        return self.vm.run(self.compile(source), fuel=fuel)
+    def execute(self, source: str, *, fuel=None, chunkname: str | bytes = "=(luapyre)"):
+        return self.vm.run(self.compile(source, chunkname=chunkname), fuel=fuel)
+
+    @staticmethod
+    def traceback(error: LuaRuntimeError, *, include_message: bool = True) -> bytes:
+        """Format the structured Lua stack captured on a runtime exception."""
+        if not isinstance(error, LuaRuntimeError):
+            raise TypeError("traceback expects a LuaRuntimeError")
+        return format_traceback(error, include_message=include_message)
 
     def collect(self):
         """Run one full Lua-level collection cycle."""
         return self.vm.gc.collect()
 
-    def disassemble(self, source: str):
-        return self.compile(source).disassemble()
+    def disassemble(self, source: str, *, chunkname: str | bytes = "=(luapyre)"):
+        return self.compile(source, chunkname=chunkname).disassemble()

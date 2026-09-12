@@ -111,7 +111,7 @@ local mt = {
 }
 local function f()
     local x <close> = setmetatable({name="x"}, mt)
-    error("boom")
+    error("boom", 0)
 end
 f()
 '''
