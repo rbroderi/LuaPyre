@@ -231,9 +231,9 @@ class Lexer:
                 self._take()
                 while self._peek() in _HEX:
                     self._take()
-            if self._peek() in "pP":
+            if self._peek() and self._peek() in "pP":
                 self._take()
-                if self._peek() in "+-":
+                if self._peek() and self._peek() in "+-":
                     self._take()
                 while self._peek().isdigit():
                     self._take()
@@ -246,9 +246,9 @@ class Lexer:
                 self._take()
                 while self._peek().isdigit():
                     self._take()
-            if self._peek() in "eE":
+            if self._peek() and self._peek() in "eE":
                 self._take()
-                if self._peek() in "+-":
+                if self._peek() and self._peek() in "+-":
                     self._take()
                 while self._peek().isdigit():
                     self._take()
