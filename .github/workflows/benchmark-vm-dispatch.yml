@@ -2,7 +2,7 @@ name: benchmark-vm-dispatch
 
 on:
   push:
-    branches: [benchmark-vm-dispatch]
+    branches: [benchmark-vm-dispatch, vm-handler-dispatch-refactor]
 
 jobs:
   bench:
@@ -17,3 +17,4 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e .
       - run: python benchmarks/vm_dispatch.py
+      - run: python benchmarks/vm_programs.py
