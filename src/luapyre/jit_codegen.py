@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable
 
+from .ast_backend import optimize_semantic_helpers
 from .bytecode import Op
 from .values import MASK64, SIGN64
 
@@ -179,7 +180,9 @@ def _loop_eq(lines, item, offset, trusted):
     if guard is None:
         return False
     _loop_guard(lines, guard, pc, offset)
-    lines.append(f"        regs[{ins.a}] = _lua_equal(regs[{ins.b}], regs[{ins.c}])")
+    # The guard proves this is numeric or bytes equality, for which Python's
+    # equality operator has exactly the Lua result. Avoid a helper call here.
+    lines.append(f"        regs[{ins.a}] = regs[{ins.b}] == regs[{ins.c}]")
     return True
 
 
@@ -449,6 +452,7 @@ class _InlineI64Assignments(ast.NodeTransformer):
 
 def optimize_generated_ast(tree: ast.AST) -> ast.AST:
     tree = _InlineI64Assignments().visit(tree)
+    tree = optimize_semantic_helpers(tree)
     ast.fix_missing_locations(tree)
     return tree
 
