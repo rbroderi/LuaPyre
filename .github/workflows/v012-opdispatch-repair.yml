@@ -1,0 +1,44 @@
+name: repair 0.12 opdispatch
+
+on:
+  push:
+    branches:
+      - v0.12-official-suite-expansion
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.12-official-suite-expansion
+          fetch-depth: 0
+      - name: Restore complete dispatch file and patch diagnostics
+        run: |
+          git checkout 714553176e36c0f7fcaa5ec7e9f348ae39d25458 -- src/luapyre/opdispatch.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/luapyre/opdispatch.py')
+          s = p.read_text()
+          old = '''def _to_int(value):\n    integer = coerce_lua_integer(value)\n    if integer is not None:\n        return integer\n    raise LuaRuntimeError("number has no integer representation")\n'''
+          new = '''def _to_int(value):\n    integer = coerce_lua_integer(value)\n    if integer is not None:\n        return integer\n    if type(value) is float and math.isinf(value):\n        raise LuaRuntimeError("number (field 'huge') has no integer representation")\n    raise LuaRuntimeError("number has no integer representation")\n'''
+          if old not in s:
+              raise SystemExit('missing _to_int context')
+          s = s.replace(old, new, 1)
+          old = '''    bad = a if coerce_lua_integer(a) is None else b\n    raise LuaRuntimeError(\n        f"attempt to perform '{name}' on a {static_value_type(bad).name} value"\n    )\n'''
+          new = '''    bad = a if coerce_lua_integer(a) is None else b\n    if type(bad) is float:\n        if math.isinf(bad):\n            raise LuaRuntimeError("number (field 'huge') has no integer representation")\n        raise LuaRuntimeError("number has no integer representation")\n    raise LuaRuntimeError(\n        f"attempt to perform '{name}' on a {static_value_type(bad).name} value"\n    )\n'''
+          if old not in s:
+              raise SystemExit('missing bitwise error context')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Commit repair
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/luapyre/opdispatch.py
+          git commit -m 'Unify bitwise integer conversion diagnostics'
+          git push origin HEAD:v0.12-official-suite-expansion
