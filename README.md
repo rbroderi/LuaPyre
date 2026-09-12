@@ -51,6 +51,27 @@ assert result == 42
 
 Host capabilities are explicit. The default runtime does not expose filesystem, networking, process execution, Python import/eval, package loading, `io`, `os`, `debug`, or Python object introspection.
 
+## 0.7 safe standard libraries
+
+The 0.7 tranche fills out the deterministic, in-memory part of Lua 5.5's standard library while keeping the default runtime sandboxed:
+
+- expanded base library with `tostring`/`__tostring`, `tonumber`, `select`, `pcall`, `xpcall`, `warn`, and text-mode `load`
+- `pairs` honors `__pairs` and Lua 5.5's four-result iterator protocol
+- `ipairs` uses ordinary indexing, including `__index`
+- string values use the standard string metatable, so method syntax such as `("text"):upper()` works
+- `table.concat`, `table.create`, `table.insert`, `table.move`, `table.pack`, `table.remove`, `table.sort`, and `table.unpack`
+- the safe `math` library, including integer-aware helpers and Lua 5.5-compatible explicit-seed xoshiro256** random sequences
+- the safe `string` library, including byte-string operations, Lua pattern matching, replacement callbacks/tables, formatting, and `pack`/`packsize`/`unpack`
+- native Lua-pattern support for captures, sets/classes, greedy and minimal repetition, balanced matches, frontier patterns, backreferences, and position captures
+- Lua 5.5 `%q` literal serialization, including exact control-character/newline treatment, minimum-integer handling, and hexadecimal floating-point literals
+- the `utf8` library with `char`, `charpattern`, `codes`, `codepoint`, `len`, and Lua 5.5's two-result `offset`
+- synchronous Lua callbacks from library functions reuse the existing shared opcode handlers and remain visible to the Lua-aware GC root tracer
+- `load(..., env)` correctly initializes the loaded chunk's lexical `_ENV`
+
+The default sandbox still deliberately omits `io`, `os`, `package`, and `debug`, along with file loaders and unrestricted host output. `string.dump` is deferred until LuaPyre has binary-chunk loading, so the runtime does not advertise a bytecode format that it cannot consume.
+
+Standard-library callbacks are currently synchronous continuation boundaries. Calling Lua from `__pairs`, `__tostring`, `table.sort`, `pcall`/`xpcall`, pattern replacements, and similar library paths is supported, but yielding through one of those native-library callback boundaries is rejected. Full C/API-style yieldable continuations remain a later compatibility tranche rather than being approximated unsafely.
+
 ## 0.6 weak tables and finalization
 
 The 0.6 tranche adds the GC-observable semantics needed by Lua programs while leaving physical memory ownership to Python:
@@ -103,9 +124,9 @@ The 0.4 tranche already provides `goto`/labels, local `<const>`/`<close>`, Lua 5
 
 CI runs on Python 3.13 and 3.14 and installs Lupa 2.8+, then explicitly imports `lupa.lua55`. This gives the differential suite an in-process PUC-Lua 5.5 oracle without compiling or launching a separate Lua executable. CI verifies that the selected backend reports `_VERSION == "Lua 5.5"` before running tests.
 
-GC differential cases cover weak keys/values, ephemerons, finalizer ordering, resurrection interactions, and weak-table behavior across finalization. For exact micro-release conformance, LuaPyre targets Lua 5.5.1 and the official 5.5.1 tests/reference implementation remain the final authority. Lupa is the fast per-commit differential oracle; release-level conformance will additionally be checked against the exact 5.5.1 distribution.
+Differential coverage now includes the safe standard libraries, Lua patterns, packing/unpacking, explicit-seed random output, UTF-8 iteration/offsets, `__pairs`, protected calls, text loading environments, weak keys/values, ephemerons, finalizer ordering, resurrection interactions, and weak-table behavior across finalization. For exact micro-release conformance, LuaPyre targets Lua 5.5.1 and the official 5.5.1 tests/reference implementation remain the final authority. Lupa is the fast per-commit differential oracle; release-level conformance will additionally be checked against the exact 5.5.1 distribution.
 
-The full official Lua test suite is **not** expected to pass yet. Major remaining work includes automatic incremental/generational GC pacing, the remaining safe standard libraries and library-level metamethod details such as `__pairs`, binary chunks, detailed debug/error compatibility, userdata/C-API GC behavior outside the sandbox value model, and substantially broader coverage of the official Lua 5.5.1 suite. Coroutine behavior is implemented for normal Lua code, including close-aware suspension/error paths, but C-API/debug-hook yield compatibility remains outside the current sandbox-oriented scope.
+The full official Lua test suite is **not** expected to pass yet. Major remaining work includes automatic incremental/generational GC pacing, binary chunks/`string.dump`, detailed source-location/error/debug compatibility, yieldable native-library/C-API continuations, userdata/C-API GC behavior outside the sandbox value model, and substantially broader coverage of the official Lua 5.5.1 suite. The unsafe host-facing libraries remain intentionally absent from the default sandbox rather than being treated as missing semantic work.
 
 ## Performance roadmap
 
