@@ -91,7 +91,7 @@ lua = LuaRuntime()
 
 Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default hotness threshold is 32 loop entries/calls and can be changed with `jit_threshold=`. Live counters are available through `lua.jit_stats`.
 
-0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14 added fully typed branch regions. 0.15 added promoted-local structured loops, nested AST super-regions, static typed-call inlining, direct compiled recursion, dense compiler-side opcode emitters, and semantic AST lowering. 0.16 made the optimizer boundary explicit: certified typed table/global regions and whole functions lower through a compact backend-neutral typed IR with CFG propagation, table/global specialization, cache facts, invariance analysis, and exact deopt rematerialization. **0.17 adds an SSA-like value/expression IR above that layer:** copies become aliases, pure typed expressions are value-numbered, scalar constant subgraphs fold with exact signed-64 semantics, dead pure values disappear, and statically resolved non-escaping lexical calls can splice the callee value DAG into the caller. Dynamic, captured, recursive, vararg, effectful, or escaping calls fail closed to the proven older function tiers. See [`docs/jit-0.13.md`](docs/jit-0.13.md), [`docs/typed-jit-0.14.md`](docs/typed-jit-0.14.md), [`docs/typed-jit-0.15.md`](docs/typed-jit-0.15.md), [`docs/typed-ir-0.16.md`](docs/typed-ir-0.16.md), and [`docs/value-ir-0.17.md`](docs/value-ir-0.17.md).
+0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14 added fully typed branch regions. 0.15 added promoted-local structured loops, nested AST super-regions, static typed-call inlining, direct compiled recursion, dense compiler-side opcode emitters, and semantic AST lowering. 0.16 made the optimizer boundary explicit: certified typed table/global regions and whole functions lower through a compact backend-neutral typed IR with CFG propagation, table/global specialization, cache facts, invariance analysis, and exact deopt rematerialization. **0.17 adds an SSA-like value/expression and CALL IR above that layer:** copies become aliases, pure typed expressions are value-numbered, scalar constant subgraphs fold with exact signed-64 semantics, dead pure values disappear, tiny statically resolved non-escaping lexical calls can splice the callee value DAG into the caller, and larger statically resolved lexical calls can retain real Lua closures/frames while using the same shared-meter direct-call machinery. Captured, recursive, dynamic, vararg, escaping, or otherwise unsupported calls fail closed to the proven older function tiers. See [`docs/jit-0.13.md`](docs/jit-0.13.md), [`docs/typed-jit-0.14.md`](docs/typed-jit-0.14.md), [`docs/typed-jit-0.15.md`](docs/typed-jit-0.15.md), [`docs/typed-ir-0.16.md`](docs/typed-ir-0.16.md), and [`docs/value-ir-0.17.md`](docs/value-ir-0.17.md).
 
 ### Output and warnings
 
@@ -168,8 +168,8 @@ LuaPyre currently includes substantial Lua 5.5 behavior, including:
 - validated PUC-Lua 5.5 binary chunk input translated into LuaPyre bytecode
 - source/chunk names, line information, structured host tracebacks, and PUC debug-line reconstruction
 - selected Lua-style field/global/upvalue attribution in runtime errors
-- guarded generated-Python JIT execution for supported hot loops, nested/branch regions, typed calls, recursive functions, typed-IR table/global regions, and pure value-IR whole functions
-- SSA-like typed value numbering with exact scalar folding, CSE/DSE, and static non-escaping lexical-call inlining
+- guarded generated-Python JIT execution for supported hot loops, nested/branch regions, typed calls, recursive functions, typed-IR table/global regions, pure value-IR whole functions, and direct static CALL-IR functions
+- SSA-like typed value numbering with exact scalar folding, CSE/DSE, static non-escaping lexical-call inlining, and real-frame direct lexical calls
 - opt-in fully typed source certification for aggressive optimization
 
 The VM uses explicit Lua frames rather than Python recursion for ordinary Lua calls. ASTs are compile-time only and are never interpreted directly.
@@ -266,7 +266,7 @@ Unsafe host-facing libraries are not treated as default-sandbox requirements.
 
 ## Performance roadmap
 
-0.17 extends the small typed optimizer IR into an SSA-like value/call compiler while retaining Tier 0 as the semantic oracle:
+0.17 extends the small typed optimizer IR into an SSA-like value/CALL compiler while retaining Tier 0 as the semantic oracle:
 
 1. exact table-dispatched interpreter as Tier 0 and universal deoptimization target
 2. source certification and type inference for `-- luapyre: typed`
@@ -274,10 +274,10 @@ Unsafe host-facing libraries are not treated as default-sandbox requirements.
 4. compact backend-neutral typed IR with CFG fixed-point value/type propagation
 5. SSA-like scalar value graph where copies are aliases and expressions have stable value numbers
 6. exact signed-64 constant folding, CSE, graph-liveness DSE, and expression rematerialization
-7. backend-neutral static CALL records and IR-level inlining for pure non-escaping typed lexical children
-8. promoted-local Python AST lowering with exact aggregate fuel accounting and pc-0 fallback when a fixed-cost graph cannot fit
-9. proven 0.15/0.16 structured loops, dynamic calls, recursion, captured closures, and table/global tiers retained whenever the new value tier cannot prove a stronger exact path
-10. next: CFG-aware value merges, guarded side-exit rematerialization, direct non-inlined CALL nodes, and recursive-call/trampoline lowering from CALL IR
-11. later: native x86-64/AArch64 or LLVM backend consuming the same typed/value IR and deoptimization contract
+7. backend-neutral CALL IR with two policies: value-DAG inlining for tiny pure lexical children and direct real-frame lowering for larger statically resolved lexical callees
+8. promoted-local Python AST lowering with exact aggregate fuel for pure graphs and shared incremental fuel for real-frame direct calls
+9. proven 0.15/0.16 structured loops, recursion, captured closures, dynamic calls, and table/global tiers retained whenever the new value/CALL tiers cannot prove a stronger exact path
+10. next: CFG-aware value merges, guarded side-exit rematerialization, captured/static closure materialization in CALL IR, and recursive/self-call identity in CALL IR
+11. later: native x86-64/AArch64 or LLVM backend consuming the same typed/value/CALL IR and deoptimization contract
 
 CPython's own optimizer/JIT can accelerate generated Python when available, but it is never a LuaPyre correctness dependency.
