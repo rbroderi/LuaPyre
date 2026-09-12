@@ -1,0 +1,29 @@
+name: one-shot 0.14 benchmark validation
+
+on:
+  push:
+    branches: [v0.14-typed-jit]
+    paths:
+      - '.github/workflows/_v014-benchmark-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install LuaPyre and benchmark dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Validate all four-way benchmark workloads
+        run: |
+          python benchmarks/compare_runtimes.py \
+            --repeats 1 \
+            --warmups 0 \
+            --require-all \
+            --json benchmark-results.json
+          python -m json.tool benchmark-results.json >/dev/null
