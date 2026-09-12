@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from copy import copy
 
 from .bytecode import Op, Proto
 from .function_jit import CompiledAstFunction, _FUNC_RETURN, _FUNC_SUSPEND
@@ -38,13 +39,26 @@ class ValueIRFunctionJITMixin:
         return f"_v{node.id}"
 
     def _compile_ast_function(self, proto: Proto) -> CompiledAstFunction | None:
-        blocks = self._function_blocks(proto)
-        if blocks is None or proto.children or len(blocks) != 1:
+        if proto.children:
             return super()._compile_ast_function(proto)
 
-        block_code = tuple(block.instructions for block in blocks)
-        typed_plan = TypedIRCompiler(proto).compile(block_code)
-        plan = ValueIRCompiler(proto, typed_plan).compile()
+        # Native source compilation always appends a fallback RETURN after the
+        # body, even when an explicit straight-line RETURN already makes it
+        # unreachable. Value IR compiles only the actually reachable prefix.
+        # Any control-flow opcode before that terminal is unsupported by the
+        # value compiler and therefore falls through to the older exact tier.
+        terminal_pc = next(
+            (pc for pc, ins in enumerate(proto.code) if ins.op in (Op.RETURN, Op.HALT)),
+            None,
+        )
+        if terminal_pc is None:
+            return super()._compile_ast_function(proto)
+        reachable_code = list(proto.code[: terminal_pc + 1])
+        analysis_proto = copy(proto)
+        analysis_proto.code = reachable_code
+        block_code = (tuple(enumerate(reachable_code)),)
+        typed_plan = TypedIRCompiler(analysis_proto).compile(block_code)
+        plan = ValueIRCompiler(analysis_proto, typed_plan).compile()
         if plan is None:
             return super()._compile_ast_function(proto)
 
