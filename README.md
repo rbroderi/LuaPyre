@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that can feed later optimization without creating a second runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.11.0a1**
+**Python 3.13+** · **current pre-alpha: 0.12.0a1**
 
 LuaPyre is not yet a complete Lua 5.5.1 implementation. Correct semantics come first; the runtime is deliberately built around a register VM and explicit Lua frames so later quickening and JIT work can specialize stable behavior instead of replacing an AST interpreter.
 
@@ -96,7 +96,7 @@ files = {
 }
 
 lua = LuaRuntime(file_loader=files.get)
-assert lua.execute("return dofile('answer.lua')") == 42
+assert lua.execute("return dofile('answer.lua') == 42")
 assert lua.execute("return require('game.vector').x") == 1
 ```
 
@@ -104,7 +104,7 @@ The loader receives a logical UTF-8 name and may return `bytes`, `str`, or `None
 
 The capability can be changed dynamically with `set_file_loader()`. Removing it removes `loadfile`, `dofile`, and the file searcher again while leaving preload-only `require` available.
 
-See [`docs/embedding-0.11.md`](docs/embedding-0.11.md) for the complete 0.11 embedding contract.
+See [`docs/embedding-0.11.md`](docs/embedding-0.11.md) for the embedding contract introduced in 0.11; 0.12 does not broaden the default host-capability boundary.
 
 ## Implemented runtime semantics
 
@@ -175,7 +175,9 @@ da07b543872dc0bb2ff12aabd0c248578d78df3eb6b67efdc537a46d455c7f31
 
 The harness bounds archive/download/extraction sizes, rejects traversal paths and links/devices, classifies the upstream suite by dependency type, and runs selected files in fresh LuaPyre runtimes. Its read-only suite access is supplied through the same production `file_loader` capability used by embedders; it no longer replaces `package`, `require`, `loadfile`, `dofile`, or `print` with test-only Lua implementations.
 
-The committed 0.11 release gate contains only unchanged upstream test files that are currently proven to pass. Additional official files remain explicit probes until their semantic gaps are fixed; the baseline is never weakened by marking failures as expected passes.
+The committed 0.12 release gate contains seven unchanged upstream files: `bwcoercion.lua`, `pm.lua`, `tpack.lua`, `vararg.lua`, `bitwise.lua`, `math.lua`, and `utf8.lua`. Additional official files remain explicit probes until their semantic gaps are fixed; the baseline is never weakened by copying or patching upstream tests, skipping assertions, or marking failures as expected passes.
+
+See [`docs/conformance-0.12.md`](docs/conformance-0.12.md) for the exact 0.12 tranche and its focused compatibility work.
 
 The complete official suite does **not** pass yet. Some upstream tests depend on Lua's internal C test API, debug/io/os/native-module facilities, allocator details, or stress behavior that is outside the default sandbox. Other failures identify genuine remaining Lua semantics and are tracked through explicit suite runs.
 
