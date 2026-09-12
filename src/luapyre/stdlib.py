@@ -2,6 +2,15 @@ from __future__ import annotations
 
 import warnings
 
+from .binary_chunks import (
+    BinaryChunkError,
+    NATIVE_MAGIC,
+    PUC_MAGIC,
+    dump_native_chunk,
+    fresh_loaded_closure,
+    load_native_chunk,
+    load_puc55_chunk,
+)
 from .bytecode import Closure
 from .compiler import Compiler
 from .errors import LuaPyreError, LuaQuotaError, LuaRaisedError, LuaRuntimeError
@@ -229,8 +238,8 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
                 mode = b"bt"
             if not isinstance(mode, bytes):
                 raise LuaRuntimeError("bad argument #3 to 'load' (string expected)")
-            if b"t" not in mode:
-                return MultiValue((None, b"attempt to load a text chunk (mode is 'b')"))
+            if any(char not in b"bt" for char in mode) or not mode:
+                raise LuaRuntimeError("bad argument #3 to 'load' (invalid mode)")
 
             if isinstance(chunk, bytes):
                 source = chunk
@@ -250,15 +259,24 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
                     pieces.append(piece)
                 source = b"".join(pieces)
 
+            binary = source.startswith(b"\x1b")
+            if binary and b"b" not in mode:
+                return MultiValue((None, b"attempt to load a binary chunk (mode is 't')"))
+            if not binary and b"t" not in mode:
+                return MultiValue((None, b"attempt to load a text chunk (mode is 'b')"))
+
+            environment = globals_table if env is None else env
             try:
-                text = source.decode("utf-8")
-                proto = Compiler().compile(Parser(text).parse())
+                if source.startswith(NATIVE_MAGIC):
+                    proto = load_native_chunk(source)
+                elif source.startswith(PUC_MAGIC) or binary:
+                    proto = load_puc55_chunk(source)
+                else:
+                    text = source.decode("utf-8")
+                    proto = Compiler().compile(Parser(text).parse())
             except (UnicodeDecodeError, LuaPyreError) as error:
                 return MultiValue((None, str(error).encode("utf-8", "replace")))
-            environment = globals_table if env is None else env
-            if not isinstance(environment, LuaTable):
-                raise LuaRuntimeError("bad argument #4 to 'load' (table expected)")
-            return Closure(proto, [], environment)
+            return fresh_loaded_closure(proto, environment)
 
         put("load", load)
 
@@ -286,7 +304,15 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
         if hasattr(vm, "gc"):
             put("collectgarbage", vm.gc.command)
 
-        install_string_library(globals_table, vm)
+        stringlib = install_string_library(globals_table, vm)
+
+        def string_dump(fn, strip=False):
+            if not isinstance(fn, Closure):
+                raise LuaRuntimeError("bad argument #1 to 'dump' (function expected)")
+            return dump_native_chunk(fn.proto, strip=truthy(strip))
+
+        stringlib.rawset(b"dump", HostFunction(string_dump, "string.dump"))
+
         install_utf8_library(globals_table, vm)
         install_table_library(globals_table, vm)
         install_math_library(globals_table, vm)
