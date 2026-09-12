@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from .diagnostics import format_traceback
+from .diagnostic_stdlib import install_diagnostic_stdlib
+from .errors import LuaRuntimeError
+from .gcvm import GarbageCollectedVM
 from .parser import Parser
 from .source_compiler import SourceCompiler
-from .table import LuaTable
-from .values import MultiValue, i64
-from .threadvm import LuaThread
-from .gcvm import GarbageCollectedVM
-from .vm import HostFunction
 from .stdlib import install_safe_stdlib
-from .diagnostic_stdlib import install_diagnostic_stdlib
+from .table import LuaTable
+from .threadvm import LuaThread
+from .values import MultiValue, i64
+from .vm import HostFunction
 
 
 class LuaRuntime:
@@ -79,6 +81,13 @@ class LuaRuntime:
 
     def execute(self, source: str, *, fuel=None, chunkname: str | bytes = "=(luapyre)"):
         return self.vm.run(self.compile(source, chunkname=chunkname), fuel=fuel)
+
+    @staticmethod
+    def traceback(error: LuaRuntimeError, *, include_message: bool = True) -> bytes:
+        """Format the structured Lua stack captured on a runtime exception."""
+        if not isinstance(error, LuaRuntimeError):
+            raise TypeError("traceback expects a LuaRuntimeError")
+        return format_traceback(error, include_message=include_message)
 
     def collect(self):
         """Run one full Lua-level collection cycle."""
