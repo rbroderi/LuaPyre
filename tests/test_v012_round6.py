@@ -34,3 +34,9 @@ def test_tonumber_leading_zero_decimal_matches_source_arithmetic():
     assert run("return tonumber('-012')") == -12
     assert run("return -010-2") == -12
     assert run("return tonumber('-012') == -010-2") is True
+
+
+def test_tonumber_plain_hexadecimal_overflow_wraps_to_lua_integer():
+    assert run('return tonumber("0x1000000000000000000000000000000")') == 0
+    assert run('return tonumber("0xffffffffffffffff")') == -1
+    assert run('return tonumber("-0xffffffffffffffff")') == 1
