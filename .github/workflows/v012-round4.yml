@@ -1,0 +1,30 @@
+name: apply 0.12 round-four semantic fixes
+
+on:
+  push:
+    branches:
+      - v0.12-official-suite-expansion
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.12-official-suite-expansion
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply patch
+        run: python tools/_v012_round4.py
+      - name: Commit semantic fixes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/luapyre/compiler.py src/luapyre/vm.py src/luapyre/stdlib_string.py
+          git commit -m 'Match Lua const pow and pack size semantics'
+          git push origin HEAD:v0.12-official-suite-expansion
