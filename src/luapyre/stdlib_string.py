@@ -518,6 +518,7 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
         search_pos = 0
         copied = 0
         count = 0
+        changed = False
         while count < limit and search_pos <= len(s):
             match = matcher.search(s, search_pos)
             if match is None:
@@ -573,6 +574,8 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                     raise LuaRuntimeError(
                         f"invalid replacement value (a {lua_type_name(replacement)})"
                     )
+            else:
+                changed = True
             output.extend(rendered)
             count += 1
             copied = match.end
@@ -586,7 +589,7 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
             else:
                 search_pos = match.end
         output.extend(s[copied:])
-        return MultiValue((bytes(output), count))
+        return MultiValue((bytes(output) if changed else s, count))
 
     def rep(s, n, sep=b""):
         s = need_bytes(s, 1, "rep")

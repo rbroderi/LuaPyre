@@ -144,7 +144,7 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
 
     put("setmetatable", setmetatable)
 
-    def next_fn(table, key=None):
+    def next_fn(table, key=None, *_ignored):
         if not isinstance(table, LuaTable):
             raise LuaRuntimeError("bad argument #1 to 'next' (table expected)")
         items = list(table.items())
