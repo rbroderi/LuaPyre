@@ -129,7 +129,8 @@ def test_suite_capabilities_are_read_only_and_not_default_runtime_globals(tmp_pa
     (tmp_path / "outside.lua").write_text("return 99", encoding="utf-8")
 
     ordinary = LuaRuntime()
-    for name in ("print", "loadfile", "dofile", "require", "package"):
+    assert ordinary.get("print") is not None
+    for name in ("loadfile", "dofile", "require", "package"):
         assert ordinary.get(name) is None
 
     lua = suite.make_suite_runtime(root)
