@@ -29,9 +29,10 @@ def parse_lua_number(value):
     """Return Lua's numeric interpretation of a number/string, or ``None``.
 
     Lua arithmetic coercion accepts complete numeral strings with surrounding
-    ASCII whitespace.  Integral hexadecimal strings use Lua's unsigned parsing
-    and therefore wrap into the signed 64-bit ``lua_Integer`` domain, while an
-    overflowing decimal integer becomes a float when representable.
+    ASCII whitespace. Integral hexadecimal strings use Lua's unsigned parsing
+    and therefore wrap into the signed 64-bit ``lua_Integer`` domain. Decimal
+    integer overflow becomes a float, and valid hexadecimal floating overflow
+    follows Lua's numeric conversion by producing signed infinity.
     """
     if type(value) in (int, float):
         return value
@@ -48,7 +49,10 @@ def parse_lua_number(value):
         if _HEX_NUMBER.fullmatch(text):
             lower = text.lower()
             if "." in lower or "p" in lower:
-                return float.fromhex(text)
+                try:
+                    return float.fromhex(text)
+                except OverflowError:
+                    return -math.inf if text.startswith("-") else math.inf
             sign = -1 if text.startswith("-") else 1
             digits = text[1:] if text[:1] in "+-" else text
             integer = sign * int(digits[2:], 16)
