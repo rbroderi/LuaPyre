@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import math
 
 from .table import LuaTable
-from .typesys import ANY, BOOLEAN, FLOAT, FUNCTION, INTEGER, NIL, STRING, TABLE, LuaType
+from .typesys import ANY, BOOLEAN, FLOAT, FUNCTION, INTEGER, NIL, STRING, TABLE, THREAD, LuaType
 
 MASK64 = (1 << 64) - 1
 SIGN64 = 1 << 63
@@ -31,6 +31,14 @@ def lua_equal(a, b) -> bool:
     return a is b
 
 
+def _is_thread(value) -> bool:
+    try:
+        from .threadvm import LuaThread
+    except ImportError:
+        return False
+    return isinstance(value, LuaThread)
+
+
 def lua_type_name(value) -> str:
     if value is None:
         return "nil"
@@ -42,6 +50,8 @@ def lua_type_name(value) -> str:
         return "string"
     if isinstance(value, LuaTable):
         return "table"
+    if _is_thread(value):
+        return "thread"
     from .bytecode import Closure
     from .vm import HostFunction
     if isinstance(value, (Closure, HostFunction)):
@@ -62,6 +72,8 @@ def static_value_type(value) -> LuaType:
         return STRING
     if isinstance(value, LuaTable):
         return TABLE
+    if _is_thread(value):
+        return THREAD
     from .bytecode import Closure
     from .vm import HostFunction
     if isinstance(value, (Closure, HostFunction)):
