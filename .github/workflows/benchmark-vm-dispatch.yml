@@ -1,0 +1,21 @@
+name: benchmark-vm
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e .
+      - name: Dispatch microbenchmarks
+        run: python benchmarks/vm_dispatch.py
+      - name: Whole-program VM benchmarks
+        run: python benchmarks/vm_programs.py
