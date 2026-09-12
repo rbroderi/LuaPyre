@@ -9,8 +9,8 @@ from .binary_chunks import (
     dump_native_chunk,
     fresh_loaded_closure,
     load_native_chunk,
-    load_puc55_chunk,
 )
+from .puc55 import load_puc55_chunk
 from .bytecode import Closure
 from .compiler import Compiler
 from .errors import LuaPyreError, LuaQuotaError, LuaRaisedError, LuaRuntimeError
