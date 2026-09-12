@@ -210,7 +210,9 @@ def test_safe_stdlib_has_no_io_or_os():
     lua = LuaRuntime()
     assert lua.execute('return type(_G), _VERSION') == (b"table", b"Lua 5.5")
     assert lua.get("io") is None and lua.get("os") is None
-    assert lua.get("debug") is None and lua.get("package") is None
+    assert lua.get("debug") is None
+    assert lua.get("package") is not None and lua.get("require") is not None
+    assert lua.get("loadfile") is None and lua.get("dofile") is None
 
 
 def test_rawlen_table_and_string():
