@@ -15,6 +15,14 @@ class Op(IntEnum):
     TBC = auto(); CLOSE = auto(); CHECKNIL = auto()
     RETURN = auto(); RETURNV = auto(); GUARD = auto(); HALT = auto()
 
+    # Compatibility instructions used only by translated PUC-Lua 5.5 chunks.
+    # Keeping them distinct from LuaPyre's compiler opcodes avoids bending the
+    # native VM layout around PUC's register conventions.
+    PFORPREP = auto(); PFORLOOP = auto()
+    PTFORPREP = auto(); PTFORLOOP = auto()
+    PTBC = auto(); PCLOSE = auto()
+    PVARARG = auto(); PGETVARG = auto()
+
 
 @dataclass(frozen=True, slots=True)
 class Ins:
