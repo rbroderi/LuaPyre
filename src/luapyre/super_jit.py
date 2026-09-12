@@ -26,15 +26,19 @@ class SuperPythonJIT(
 ):
     """Typed compiler pipeline ending in the optimized Python-AST backend.
 
-    0.18 gives merge-aware acyclic scalar CFGs first refusal before the 0.17
-    straight-line value/CALL IR. Forward branches use explicit phi-like merge
-    values and exact block-entry rematerialization on a fuel side exit. The 0.17
-    value tier still owns straight-line pure functions and lexical-call inlining;
-    larger static calls retain real Lua closures/frames through CALL IR.
+    0.19 gives dominance-aware reducible scalar CFGs first refusal. Forward
+    branches retain the 0.18 phi/side-exit contract, while natural backedges now
+    introduce loop-carried phi values in the same backend-neutral value graph.
+    Simple whole-function natural loops lower directly to Python ``while``;
+    branchy/nested reducible loops use the generic predecessor-tracked CFG
+    backend. The older structured hot-loop tier remains as a region/top-level
+    fallback for shapes that do not enter whole-function CFG Value IR.
 
-    The important boundary remains architectural: optimization decisions live in
-    typed/value/CALL IR. Python AST is a backend, and every unsupported shape
-    fails closed to an earlier exact tier or the interpreter.
+    The 0.17 value tier still owns straight-line pure functions and lexical-call
+    inlining; larger static calls retain real Lua closures/frames through CALL
+    IR. Optimization decisions live in typed/value/CALL/CFG IR. Python AST is a
+    backend, and every unsupported shape fails closed to an earlier exact tier or
+    the interpreter.
     """
 
     _IR_PRIMARY_OPS = frozenset({Op.GETUPVAL, Op.GETTABLE, Op.SETTABLE})
