@@ -51,10 +51,13 @@ def _need_number(value):
 def _to_int(value):
     if type(value) is int:
         return i64(value)
-    if type(value) is float and math.isfinite(value) and value.is_integer():
-        iv = int(value)
-        if -(1 << 63) <= iv <= (1 << 63) - 1:
-            return iv
+    if type(value) is float:
+        if math.isfinite(value) and value.is_integer():
+            iv = int(value)
+            if -(1 << 63) <= iv <= (1 << 63) - 1:
+                return iv
+        if math.isinf(value):
+            raise LuaRuntimeError("number (field 'huge') has no integer representation")
     raise LuaRuntimeError("number has no integer representation")
 
 

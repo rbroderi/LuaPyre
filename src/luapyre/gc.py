@@ -284,7 +284,7 @@ class LuaGC:
         pc = max(0, min(frame.pc, len(live) - 1))
         return live[pc]
 
-    def _trace(self, extra_roots=()):
+    def _trace(self, extra_roots=(), *, physical_regs: bool = False):
         marked: dict[int, object] = {}
         weak_tables: dict[int, tuple[LuaTable, bytes]] = {}
         ephemerons: list[tuple[object, object]] = []
@@ -298,7 +298,8 @@ class LuaGC:
             excluded = excluded or set()
 
             mark(frame.closure)
-            for reg in self._live_regs(frame):
+            regs_to_scan = range(len(frame.regs)) if physical_regs else self._live_regs(frame)
+            for reg in regs_to_scan:
                 if reg in excluded or reg < 0 or reg >= len(frame.regs):
                     continue
                 cell = frame.cells.get(reg)
@@ -606,7 +607,10 @@ class LuaGC:
         return total
 
     def count_kbytes(self) -> float:
-        marked, _ = self._trace()
+        # Approximate allocator-visible memory, so include physical register
+        # contents even when bytecode liveness says a slot is semantically dead.
+        # Real collection continues to use semantic liveness in _trace().
+        marked, _ = self._trace(physical_regs=True)
         return self._estimate_bytes(marked.values()) / 1024.0
 
     @staticmethod
