@@ -154,7 +154,7 @@ class StructuredTypedLoopJITMixin:
             sequence = self._leaf_sequence(fn)
             if sequence is None:
                 return None
-            # Hoisting the identity guard is valid only if the loop body cannot
+            # Hoisting the callee guard is valid only if the loop body cannot
             # overwrite the register containing the function object.
             if any(self._writes_register(other, ins.b) for other in body):
                 return None
@@ -172,6 +172,7 @@ class StructuredTypedLoopJITMixin:
             lines.append(f"    _r{reg} = regs[{reg}]")
 
         namespace: dict[str, object] = {
+            "_Closure": Closure,
             "_MASK64": _MASK64,
             "_SIGN64": _SIGN64,
             "_TWO64": _TWO64,
@@ -180,9 +181,17 @@ class StructuredTypedLoopJITMixin:
             "_type_matches": type_matches,
         }
         for pc, (closure, _sequence) in calls.items():
-            expected = f"_expected_{pc}"
-            namespace[expected] = closure
-            lines.append(f"    if _r{body[pc - start_pc].b} is not {expected}:")
+            expected = f"_expected_proto_{pc}"
+            # A local function declaration creates a fresh Closure every time
+            # the top-level Proto runs.  For the leaf shapes admitted here there
+            # are no upvalues/children, so the executable semantics are fully
+            # determined by the immutable Proto.  Guarding the Proto rather than
+            # the transient Closure keeps the compiled loop valid across runs.
+            namespace[expected] = closure.proto
+            function_reg = body[pc - start_pc].b
+            lines.append(
+                f"    if not isinstance(_r{function_reg}, _Closure) or _r{function_reg}.proto is not {expected}:"
+            )
             lines.extend(self._spill_lines(registers, "        "))
             lines.extend(
                 [
