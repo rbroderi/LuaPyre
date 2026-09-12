@@ -180,10 +180,14 @@ class _PackFormat:
         if op == "x":
             return ("padding", op, 1, 1)
         if op == "X":
+            if self.index >= len(text) or text[self.index] == " ":
+                raise LuaRuntimeError("invalid next option for option 'X'")
             following = self._raw_option()
-            while following is not None and following[0] == "config":
-                following = self._raw_option()
-            if following is None or following[0] in ("zero", "padding"):
+            if (
+                following is None
+                or following[0] in ("config", "fixed", "zero", "align")
+                or following[3] == 0
+            ):
                 raise LuaRuntimeError("invalid next option for option 'X'")
             return ("align", op, 0, following[3])
         raise LuaRuntimeError(f"invalid format option '{op}'")
