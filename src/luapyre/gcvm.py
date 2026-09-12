@@ -45,6 +45,16 @@ class GarbageCollectedVM(CoroutineVM):
         mt = self.metatable_for(value)
         return mt.rawget(name) if isinstance(mt, LuaTable) else None
 
+    def _new_frame(self, closure, args, return_reg, return_want):
+        frame = super()._new_frame(closure, args, return_reg, return_want)
+        # Top-level compiled chunks bind globals through a lexical _ENV register.
+        # A chunk returned by load() enters through the ordinary Closure call path,
+        # so initialise that register from the closure's explicit environment just
+        # as VM.run() does for the main chunk.
+        if frame.proto.env_reg >= 0:
+            frame.regs[frame.proto.env_reg] = closure.env
+        return frame
+
     def _invoke(self, frames, parent, fn, args, dest, want, tail=False):
         previous_frames = self._active_frames
         previous_result = self._active_call_result
