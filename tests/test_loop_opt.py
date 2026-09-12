@@ -43,9 +43,9 @@ def _child(runtime: LuaRuntime, source: str, name: str):
     return next(child for child in root.children if child.name == name)
 
 
-def _compiled_function_filenames(runtime: LuaRuntime) -> set[str]:
+def _compiled_function_names(runtime: LuaRuntime) -> set[str]:
     return {
-        compiled.runner.__code__.co_filename
+        compiled.runner.__name__
         for _proto, compiled in runtime.vm.jit._function_cache.values()
         if compiled is not None
     }
@@ -73,13 +73,13 @@ def test_loop_optimizer_proves_licm_and_integer_induction():
 def test_optimized_cfg_loop_executes_licm_and_direct_induction_backend():
     runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
     assert runtime.execute(_SOURCE) == 660
-    assert "<luapyre-cfg-value-ir-loop-opt>" in _compiled_function_filenames(runtime)
+    assert "_jit_cfg_value_ir_loop_opt" in _compiled_function_names(runtime)
 
 
 def test_licm_does_not_change_zero_trip_result():
     runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
     assert runtime.execute(_ZERO_TRIP) == 10
-    assert "<luapyre-cfg-value-ir-loop-opt>" in _compiled_function_filenames(runtime)
+    assert "_jit_cfg_value_ir_loop_opt" in _compiled_function_names(runtime)
 
 
 def _outcome(source: str, *, jit: bool, fuel: int):
