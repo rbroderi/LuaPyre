@@ -96,7 +96,7 @@ files = {
 }
 
 lua = LuaRuntime(file_loader=files.get)
-assert lua.execute("return dofile('answer.lua') == 42")
+assert lua.execute("return dofile('answer.lua')") == 42
 assert lua.execute("return require('game.vector').x") == 1
 ```
 
