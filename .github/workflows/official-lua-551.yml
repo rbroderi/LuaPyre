@@ -49,7 +49,7 @@ jobs:
           path = root / 'math.lua'
           source = path.read_text(encoding='utf-8')
           marker = "assert(tonumber('-012') == -010-2)"
-          replacement = "error('MATH382:' .. tostring(tonumber('-012')) .. ':' .. tostring(-010-2) .. ':' .. type(tonumber('-012')) .. ':' .. type(-010-2))"
+          replacement = "assert(false, 'MATH382:' .. tostring(tonumber('-012')) .. ':' .. tostring(-010-2))"
           if marker not in source:
               raise SystemExit('diagnostic marker not found')
           lua = make_suite_runtime(root, unrestricted=True, echo=False)
