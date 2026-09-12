@@ -15,6 +15,7 @@ from .function_jit import (
 from .opdispatch import _float_divide, _float_modulo
 from .table import LuaTable, _ABSENT, _hash_key
 from .typed_ir import IRValue, IRValueKind, TypedIRCompiler, TypedIRPlan
+from .typed_ir_passes import eliminate_rematerializable_dead_defs
 from .values import lua_equal, static_value_type, type_matches
 
 
@@ -30,8 +31,8 @@ class TypedIRFunctionJITMixin:
     """Whole-function backend for the small statically typed optimizer IR.
 
     This backend intentionally handles only functions whose dynamic call edges do
-    not need the existing recursive/direct-call machinery.  Unsupported shapes
-    fall through to ``TypedFunctionJITMixin``.  That keeps the semantic frame and
+    not need the existing recursive/direct-call machinery. Unsupported shapes
+    fall through to ``TypedFunctionJITMixin``. That keeps the semantic frame and
     fuel model unchanged while moving table/global optimization, value
     propagation, DSE, and deopt rematerialization into the shared IR.
     """
@@ -58,13 +59,15 @@ class TypedIRFunctionJITMixin:
             return super()._compile_ast_function(proto)
 
         # Direct/recursive calls already have exact shared-meter semantics in the
-        # proven 0.15 function backend.  Keep those there until CALL is represented
+        # proven 0.15 function backend. Keep those there until CALL is represented
         # explicitly in the typed IR rather than duplicating call semantics here.
         if any(ins.op is Op.CALL for ins in proto.code):
             return super()._compile_ast_function(proto)
 
         block_code = tuple(block.instructions for block in blocks)
-        plan = TypedIRCompiler(proto).compile(block_code)
+        plan = eliminate_rematerializable_dead_defs(
+            TypedIRCompiler(proto).compile(block_code), block_code
+        )
         interesting = any(
             item.dead_definition
             or item.specialization
@@ -202,7 +205,7 @@ class TypedIRFunctionJITMixin:
             lines.append(f"    _r{reg} = regs[{reg}]")
 
         # The IR may prove a root _ENV read invariant across the whole compiled
-        # function.  Hoist only raw-table reads.  A metatable/dynamic receiver
+        # function. Hoist only raw-table reads. A metatable/dynamic receiver
         # fails closed before any Lua instruction executes, so Tier 0 resumes at
         # pc 0 without duplicate side effects or fuel consumption.
         for pc in plan.invariant_sites:
