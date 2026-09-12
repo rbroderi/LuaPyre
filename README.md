@@ -139,7 +139,7 @@ files = {
 
 lua = LuaRuntime(file_loader=files.get)
 assert lua.execute("return dofile('answer.lua')") == 42
-assert lua.execute("return require('game.vector').x == 1") is True
+assert lua.execute("return require('game.vector').x") == 1
 ```
 
 The loader receives a logical UTF-8 name and may return `bytes`, `str`, or `None`. LuaPyre never turns that name into a Python filesystem operation itself. Applications can back the capability with a real filesystem, virtual filesystem, zip/archive, database, package resources, or anything else they choose.
