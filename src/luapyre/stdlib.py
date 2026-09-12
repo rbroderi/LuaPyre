@@ -102,6 +102,8 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
             raise LuaRuntimeError("cannot change a protected metatable")
         table.metatable = mt
         table.version += 1
+        if vm is not None and hasattr(vm, "gc"):
+            vm.gc.mark_finalizable(table, mt)
         return table
     put("setmetatable", setmetatable)
 
@@ -138,6 +140,9 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
     put("ipairs", ipairs)
 
     if vm is not None:
+        if hasattr(vm, "gc"):
+            put("collectgarbage", vm.gc.command)
+
         coroutine = LuaTable()
         coroutine.rawset(b"create", HostFunction(vm.create_thread, "coroutine.create"))
         coroutine.rawset(b"resume", HostFunction(vm.resume_thread, "coroutine.resume"))
