@@ -51,6 +51,30 @@ assert result == 42
 
 Host capabilities are explicit. The default runtime does not expose filesystem, networking, process execution, Python import/eval, package loading, `io`, `os`, `debug`, or Python object introspection.
 
+## 0.6 weak tables and finalization
+
+The 0.6 tranche adds the GC-observable semantics needed by Lua programs while leaving physical memory ownership to Python:
+
+- Lua-aware tracing from globals, active Lua frames, suspended coroutine stacks, closures/upvalues, varargs, and pending `<close>` state
+- bytecode liveness analysis for GC roots, so stale physical VM register slots do not keep logically dead Lua objects alive
+- weak-value tables with `__mode = "v"`
+- weak-key tables with `__mode = "k"`
+- all-weak tables with `__mode = "kv"`
+- Lua-compatible treatment of strings and other non-object values in weak tables
+- ephemeron semantics for weak-key/strong-value tables, including fixed-point convergence
+- two-phase weak-table processing around finalization, including the different resurrection rules for weak keys and weak values
+- table `__gc` finalizers when the metatable already contains `__gc` at `setmetatable` time
+- reverse finalization order for objects collected in the same cycle
+- resurrection and explicit re-marking for later finalization
+- non-yieldable finalizers; attempts to collect recursively from a finalizer are rejected
+- finalizer errors become warnings instead of propagating as ordinary Lua errors
+- `collectgarbage` support for `collect`, `stop`, `restart`, `isrunning`, `count`, `step`, `incremental`, `generational`, and `param`
+- `LuaRuntime.collect()` for embedders that want an explicit full Lua-observable collection cycle
+
+LuaPyre intentionally uses its own Lua reachability model instead of Python weak references or refcounts. This is required for ephemerons, resurrection, finalizer ordering, and suspended Lua stacks to match Lua semantics even though Python remains responsible for reclaiming the underlying Python objects.
+
+In 0.6, collection is explicit and deterministic at `collectgarbage`/host collection safe points. `collectgarbage("step")` completes a full observable cycle, `count` is an approximate Lua-reachable-memory estimate, and incremental/generational mode parameters are represented by the compatibility control surface; automatic byte-debt scheduling of Lua's incremental/generational collectors is not yet modeled.
+
 ## 0.5 coroutine core
 
 The 0.5 tranche adds persistent Lua threads on top of the explicit-frame VM:
@@ -79,9 +103,9 @@ The 0.4 tranche already provides `goto`/labels, local `<const>`/`<close>`, Lua 5
 
 CI runs on Python 3.13 and 3.14 and installs Lupa 2.8+, then explicitly imports `lupa.lua55`. This gives the differential suite an in-process PUC-Lua 5.5 oracle without compiling or launching a separate Lua executable. CI verifies that the selected backend reports `_VERSION == "Lua 5.5"` before running tests.
 
-For exact micro-release conformance, LuaPyre targets Lua 5.5.1 and the official 5.5.1 tests/reference implementation remain the final authority. Lupa is the fast per-commit differential oracle; release-level conformance will additionally be checked against the exact 5.5.1 distribution.
+GC differential cases cover weak keys/values, ephemerons, finalizer ordering, resurrection interactions, and weak-table behavior across finalization. For exact micro-release conformance, LuaPyre targets Lua 5.5.1 and the official 5.5.1 tests/reference implementation remain the final authority. Lupa is the fast per-commit differential oracle; release-level conformance will additionally be checked against the exact 5.5.1 distribution.
 
-The full official Lua test suite is **not** expected to pass yet. Major remaining work includes weak tables and ephemeron behavior, `__gc` finalization and other GC-observable semantics, the remaining safe standard libraries and library-level metamethod details such as `__pairs`, binary chunks, detailed debug/error compatibility, and substantially broader coverage of the official Lua 5.5.1 suite. Coroutine behavior is now implemented for normal Lua code, including close-aware suspension/error paths, but C-API/debug-hook yield compatibility remains outside the current sandbox-oriented scope.
+The full official Lua test suite is **not** expected to pass yet. Major remaining work includes automatic incremental/generational GC pacing, the remaining safe standard libraries and library-level metamethod details such as `__pairs`, binary chunks, detailed debug/error compatibility, userdata/C-API GC behavior outside the sandbox value model, and substantially broader coverage of the official Lua 5.5.1 suite. Coroutine behavior is implemented for normal Lua code, including close-aware suspension/error paths, but C-API/debug-hook yield compatibility remains outside the current sandbox-oriented scope.
 
 ## Performance roadmap
 
