@@ -4,7 +4,8 @@ from .parser import Parser
 from .compiler import Compiler
 from .table import LuaTable
 from .values import MultiValue, i64
-from .threadvm import CoroutineVM, LuaThread
+from .threadvm import LuaThread
+from .gcvm import GarbageCollectedVM
 from .vm import HostFunction
 from .stdlib import install_safe_stdlib
 
@@ -19,7 +20,7 @@ class LuaRuntime:
 
     def __init__(self, *, fuel=1_000_000, max_frames=1000, safe_stdlib=True):
         self.globals = LuaTable()
-        self.vm = CoroutineVM(self.globals, fuel=fuel, max_frames=max_frames)
+        self.vm = GarbageCollectedVM(self.globals, fuel=fuel, max_frames=max_frames)
         if safe_stdlib:
             install_safe_stdlib(self.globals, self.vm)
 
@@ -69,6 +70,10 @@ class LuaRuntime:
 
     def execute(self, source: str, *, fuel=None):
         return self.vm.run(self.compile(source), fuel=fuel)
+
+    def collect(self):
+        """Run one full Lua-level collection cycle."""
+        return self.vm.gc.collect()
 
     def disassemble(self, source: str):
         return self.compile(source).disassemble()
