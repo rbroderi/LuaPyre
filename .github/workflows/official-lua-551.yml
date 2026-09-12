@@ -43,6 +43,7 @@ jobs:
           python tools/official_551.py \
             --work-dir .official-lua-551 \
             --no-download \
+            --echo \
             --files pm.lua tpack.lua vararg.lua bitwise.lua math.lua utf8.lua
       - name: Run explicitly selected upstream files
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.files != '' }}
