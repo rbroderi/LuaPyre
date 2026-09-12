@@ -1,0 +1,30 @@
+name: apply 0.12 round-three semantic fixes
+
+on:
+  push:
+    branches:
+      - v0.12-official-suite-expansion
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.12-official-suite-expansion
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply patch
+        run: python tools/_v012_round3.py
+      - name: Commit semantic fixes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/luapyre/source_compiler.py src/luapyre/compiler.py src/luapyre/vm.py src/luapyre/stdlib_utf8.py
+          git commit -m 'Fix loaded-chunk varargs integer idiv and UTF-8 offsets'
+          git push origin HEAD:v0.12-official-suite-expansion
