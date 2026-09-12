@@ -103,11 +103,8 @@ def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
 
     def length_fn(s, i=1, j=-1, lax=False):
         s = need_bytes(s, 1, "len")
-        try:
-            i = _position(need_integer(i, 2, "len"), len(s), allow_end=True)
-            j = _position(need_integer(j, 3, "len"), len(s), allow_end=True)
-        except LuaRuntimeError:
-            raise
+        i = _position(need_integer(i, 2, "len"), len(s), allow_end=True)
+        j = _position(need_integer(j, 3, "len"), len(s), allow_end=True)
         if i > j:
             return 0
         pos = i - 1
@@ -177,10 +174,16 @@ def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
 
         def iterator(state, control):
             control = need_integer(control, 2, "codes iterator")
-            pos = 0 if control == 0 else control
+            if control == 0:
+                pos = 0
+            else:
+                previous_start = control - 1
+                if previous_start < 0 or previous_start >= len(state):
+                    return None
+                _previous_cp, pos = _decode(state, previous_start, lax)
             if pos >= len(state):
                 return None
-            cp, end = _decode(state, pos, lax)
+            cp, _end = _decode(state, pos, lax)
             return MultiValue((pos + 1, cp))
 
         return MultiValue((HostFunction(iterator, "utf8.codes iterator"), s, 0))
