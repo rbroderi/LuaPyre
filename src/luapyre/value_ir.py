@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import dataclass
 from enum import Enum
 import math
 import struct
 
 from .bytecode import Op, Proto
-from .typed_ir import TypedIRPlan
+from .call_ir import StaticCallSite, StaticClosureRef
+from .typed_ir import TypedIRCompiler, TypedIRPlan
+from .typesys import accepts, parse_simple_type
 
 
 _MASK64 = (1 << 64) - 1
@@ -15,7 +18,7 @@ _TWO64 = 1 << 64
 
 
 class ValueKind(str, Enum):
-    """Backend-neutral SSA-like values layered on the 0.16 typed IR."""
+    """Kinds of immutable SSA-like values understood by the 0.17 optimizer."""
 
     ARGUMENT = "argument"
     CONSTANT = "constant"
@@ -36,13 +39,14 @@ class ValueNode:
 
 @dataclass(frozen=True, slots=True)
 class ValueIRPlan:
-    """Pure-expression value graph for one straight-line fully typed function.
+    """Backend-neutral value graph layered on the 0.16 typed IR.
 
-    LOADK/MOVE/LOCAL are represented as aliases, typed pure operations produce
-    immutable SSA values, identical expressions share a value number, and scalar
-    constant expressions fold to LITERAL nodes. Only live EXPRESSION nodes need
-    runtime assignments; dead definitions and copy traffic disappear while Lua
-    instruction fuel is still charged from ``instruction_count``.
+    LOADK/MOVE/LOCAL are aliases, typed pure operations produce immutable SSA
+    values, identical expressions share a value number, scalar constant
+    subgraphs fold to LITERAL nodes, and eligible static CALLs splice the
+    callee's value graph into the caller. Only live EXPRESSION nodes need runtime
+    assignments. ``instruction_count`` retains the exact Lua cost, including
+    inlined callee bytecode, even when generated Python operations disappear.
     """
 
     typed_plan: TypedIRPlan
@@ -56,13 +60,19 @@ class ValueIRPlan:
     folded_pcs: tuple[int, ...]
     cse_pcs: tuple[int, ...]
     eliminated_pcs: tuple[int, ...]
+    call_sites: tuple[StaticCallSite, ...] = ()
 
     def node(self, node_id: int) -> ValueNode:
         return self.nodes[node_id]
 
     @property
     def has_optimization(self) -> bool:
-        return bool(self.folded_pcs or self.cse_pcs or self.eliminated_pcs)
+        return bool(
+            self.folded_pcs
+            or self.cse_pcs
+            or self.eliminated_pcs
+            or self.call_sites
+        )
 
 
 _INT_BINOPS = {
@@ -85,9 +95,17 @@ _COMPARE_OPS = {
     Op.LE: "le",
 }
 _PURE_VALUE_OPS = frozenset(
-    {Op.LOADK, Op.MOVE, Op.LOCAL, *_INT_BINOPS, *_FLOAT_BINOPS, *_BOOL_UNARY, *_COMPARE_OPS}
+    {
+        Op.LOADK,
+        Op.MOVE,
+        Op.LOCAL,
+        *_INT_BINOPS,
+        *_FLOAT_BINOPS,
+        *_BOOL_UNARY,
+        *_COMPARE_OPS,
+    }
 )
-_SUPPORTED = _PURE_VALUE_OPS | frozenset({Op.RETURN, Op.HALT})
+_SUPPORTED = _PURE_VALUE_OPS | frozenset({Op.CLOSURE, Op.CALL, Op.RETURN, Op.HALT})
 
 
 def _i64(value: int) -> int:
@@ -123,15 +141,31 @@ def _safe_scalar_type(type_name: str) -> bool:
     return type_name in {"nil", "boolean", "integer", "float", "number", "string"}
 
 
-class ValueIRCompiler:
-    """Build an SSA-ish pure value graph on top of ``TypedIRPlan``.
+def _safe_literal(value: object) -> bool:
+    return value is None or type(value) in (bool, int, float) or isinstance(value, bytes)
 
-    This first 0.17 lowering is deliberately fail-closed: it accepts only one
-    straight-line, side-effect-free typed function ending in RETURN/HALT. That
-    makes CSE, DSE, folding and expression rematerialization exact without yet
-    needing side-exit frame reconstruction. Branches, tables, calls, closures,
-    potentially throwing arithmetic and dynamic guards stay on the proven 0.16
-    / 0.15 backends.
+
+def _reachable_prefix(proto: Proto) -> Proto | None:
+    terminal = next(
+        (pc for pc, ins in enumerate(proto.code) if ins.op in (Op.RETURN, Op.HALT)),
+        None,
+    )
+    if terminal is None:
+        return None
+    result = copy(proto)
+    result.code = list(proto.code[: terminal + 1])
+    return result
+
+
+class ValueIRCompiler:
+    """Build an SSA-ish value graph on top of ``TypedIRPlan``.
+
+    The admitted domain is deliberately exact rather than broad. Pure typed
+    scalar operations are value-numbered. A lexical CALL is admitted only when
+    its function register is statically traced to a child CLOSURE, the child is a
+    fully typed non-vararg leaf with no upvalues/children, every argument type is
+    statically compatible, and the child's reachable body recursively compiles
+    to this pure value IR. Any escaping/dynamic function use fails closed.
     """
 
     def __init__(self, proto: Proto, typed_plan: TypedIRPlan):
@@ -142,6 +176,8 @@ class ValueIRCompiler:
         self._definition_pcs: dict[int, int] = {}
         self._folded_pcs: set[int] = set()
         self._cse_pcs: set[int] = set()
+        self._call_sites: list[StaticCallSite] = []
+        self._extra_instruction_cost = 0
 
     def _new_node(
         self,
@@ -159,9 +195,7 @@ class ValueIRCompiler:
             if existing is not None:
                 return existing
         node_id = len(self._nodes)
-        self._nodes.append(
-            ValueNode(node_id, kind, type_name, op, args, payload, def_pc)
-        )
+        self._nodes.append(ValueNode(node_id, kind, type_name, op, args, payload, def_pc))
         if key is not None:
             self._intern[key] = node_id
         return node_id
@@ -176,6 +210,8 @@ class ValueIRCompiler:
 
     def _constant(self, index: int) -> int:
         value = self.proto.constants[index]
+        if not _safe_literal(value):
+            raise ValueError("non-scalar constant in value IR")
         return self._new_node(
             ValueKind.CONSTANT,
             _literal_type(value),
@@ -184,6 +220,8 @@ class ValueIRCompiler:
         )
 
     def _literal(self, value: object) -> int:
+        if not _safe_literal(value):
+            raise ValueError("non-scalar literal in value IR")
         return self._new_node(
             ValueKind.LITERAL,
             _literal_type(value),
@@ -197,7 +235,7 @@ class ValueIRCompiler:
             return True, node.payload
         if node.kind is ValueKind.CONSTANT:
             value = self.proto.constants[int(node.payload)]
-            if value is None or type(value) in (bool, int, float) or isinstance(value, bytes):
+            if _safe_literal(value):
                 return True, value
         return False, None
 
@@ -290,6 +328,63 @@ class ValueIRCompiler:
             stack.extend(self._nodes[node_id].args)
         return frozenset(live)
 
+    @staticmethod
+    def _node_ref(value: int | StaticClosureRef) -> int | None:
+        return value if type(value) is int else None
+
+    def _child_plan(self, child: Proto) -> tuple[Proto, ValueIRPlan] | None:
+        if (
+            not child.jit_fully_typed
+            or child.is_vararg
+            or child.upvalues
+            or child.children
+        ):
+            return None
+        analysis_child = _reachable_prefix(child)
+        if analysis_child is None:
+            return None
+        block = (tuple(enumerate(analysis_child.code)),)
+        typed = TypedIRCompiler(analysis_child).compile(block)
+        plan = ValueIRCompiler(analysis_child, typed).compile()
+        if plan is None or plan.call_sites:
+            return None
+        return analysis_child, plan
+
+    def _clone_child_value(
+        self,
+        pc: int,
+        child: Proto,
+        child_plan: ValueIRPlan,
+        args: tuple[int, ...],
+    ) -> tuple[int, ...] | None:
+        mapping: dict[int, int] = {}
+        for node in child_plan.nodes:
+            if node.kind is ValueKind.ARGUMENT:
+                index = int(node.payload)
+                if index >= len(args):
+                    return None
+                mapping[node.id] = args[index]
+            elif node.kind is ValueKind.CONSTANT:
+                value = child.constants[int(node.payload)]
+                if not _safe_literal(value):
+                    return None
+                mapping[node.id] = self._literal(value)
+            elif node.kind is ValueKind.LITERAL:
+                mapping[node.id] = self._literal(node.payload)
+            elif node.kind is ValueKind.EXPRESSION:
+                mapped = tuple(mapping[arg] for arg in node.args)
+                if len(mapped) == 1:
+                    mapping[node.id] = self._unary(pc, node.op or "", mapped[0], node.type_name)
+                elif len(mapped) == 2:
+                    mapping[node.id] = self._binary(
+                        pc, node.op or "", mapped[0], mapped[1], node.type_name
+                    )
+                else:
+                    return None
+            else:
+                return None
+        return tuple(mapping[node_id] for node_id in child_plan.return_values)
+
     def compile(self) -> ValueIRPlan | None:
         code = self.proto.code
         if not code or code[-1].op not in (Op.RETURN, Op.HALT):
@@ -299,7 +394,12 @@ class ValueIRCompiler:
         if any(ins.op in (Op.RETURN, Op.HALT) for ins in code[:-1]):
             return None
 
-        regs = {index: self._literal(None) for index in range(self.proto.register_count)}
+        try:
+            regs: dict[int, int | StaticClosureRef] = {
+                index: self._literal(None) for index in range(self.proto.register_count)
+            }
+        except ValueError:
+            return None
         for index in range(min(self.proto.param_count, self.proto.register_count)):
             typ = (
                 self.proto.param_types[index].name
@@ -310,32 +410,61 @@ class ValueIRCompiler:
                 return None
             regs[index] = self._argument(index, typ)
 
+        inlined_call_pcs: set[int] = set()
+        closure_pcs: set[int] = set()
+
         for pc, ins in enumerate(code[:-1]):
             op = ins.op
             if op is Op.LOADK:
-                regs[ins.a] = self._constant(ins.b)
+                try:
+                    regs[ins.a] = self._constant(ins.b)
+                except ValueError:
+                    return None
                 continue
             if op in (Op.MOVE, Op.LOCAL):
                 regs[ins.a] = regs[ins.b]
                 continue
+            if op is Op.CLOSURE:
+                if ins.b < 0 or ins.b >= len(self.proto.children):
+                    return None
+                child = self.proto.children[ins.b]
+                # Capturing lexical cells is observable state and must stay on
+                # the existing exact closure/cell compiler for now.
+                if child.upvalues or child.is_vararg:
+                    return None
+                regs[ins.a] = StaticClosureRef(ins.b)
+                closure_pcs.add(pc)
+                continue
             if op in _INT_BINOPS:
-                left, right = regs[ins.b], regs[ins.c]
+                left = self._node_ref(regs[ins.b])
+                right = self._node_ref(regs[ins.c])
+                if left is None or right is None:
+                    return None
                 if self._nodes[left].type_name != "integer" or self._nodes[right].type_name != "integer":
                     return None
                 regs[ins.a] = self._binary(pc, _INT_BINOPS[op], left, right, "integer")
                 continue
             if op in _FLOAT_BINOPS:
-                left, right = regs[ins.b], regs[ins.c]
+                left = self._node_ref(regs[ins.b])
+                right = self._node_ref(regs[ins.c])
+                if left is None or right is None:
+                    return None
                 numeric = {"integer", "float", "number"}
                 if self._nodes[left].type_name not in numeric or self._nodes[right].type_name not in numeric:
                     return None
                 regs[ins.a] = self._binary(pc, _FLOAT_BINOPS[op], left, right, "float")
                 continue
             if op in _BOOL_UNARY:
-                regs[ins.a] = self._unary(pc, _BOOL_UNARY[op], regs[ins.b], "boolean")
+                source = self._node_ref(regs[ins.b])
+                if source is None:
+                    return None
+                regs[ins.a] = self._unary(pc, _BOOL_UNARY[op], source, "boolean")
                 continue
             if op in _COMPARE_OPS:
-                left, right = regs[ins.b], regs[ins.c]
+                left = self._node_ref(regs[ins.b])
+                right = self._node_ref(regs[ins.c])
+                if left is None or right is None:
+                    return None
                 left_type = self._nodes[left].type_name
                 right_type = self._nodes[right].type_name
                 if not (_safe_scalar_type(left_type) and _safe_scalar_type(right_type)):
@@ -349,6 +478,52 @@ class ValueIRCompiler:
                         return None
                 regs[ins.a] = self._binary(pc, _COMPARE_OPS[op], left, right, "boolean")
                 continue
+            if op is Op.CALL:
+                function_value = regs[ins.b]
+                if not isinstance(function_value, StaticClosureRef):
+                    return None
+                if ins.e < 0:
+                    return None
+                child_index = function_value.child_index
+                child = self.proto.children[child_index]
+                child_pair = self._child_plan(child)
+                if child_pair is None or ins.d != child.param_count:
+                    return None
+                analysis_child, child_plan = child_pair
+                arg_values: list[int] = []
+                for arg_index in range(ins.d):
+                    node_id = self._node_ref(regs[ins.c + arg_index])
+                    if node_id is None:
+                        return None
+                    actual = parse_simple_type(self._nodes[node_id].type_name)
+                    expected = child.param_types[arg_index]
+                    if not accepts(expected, actual):
+                        return None
+                    arg_values.append(node_id)
+                returned = self._clone_child_value(
+                    pc, analysis_child, child_plan, tuple(arg_values)
+                )
+                if returned is None:
+                    return None
+                nil_value = self._literal(None)
+                for result_index in range(ins.e):
+                    regs[ins.a + result_index] = (
+                        returned[result_index]
+                        if result_index < len(returned)
+                        else nil_value
+                    )
+                self._extra_instruction_cost += child_plan.instruction_count
+                self._call_sites.append(
+                    StaticCallSite(
+                        pc,
+                        child_index,
+                        ins.d,
+                        ins.e,
+                        child_plan.instruction_count,
+                    )
+                )
+                inlined_call_pcs.add(pc)
+                continue
             return None
 
         terminal = code[-1]
@@ -356,32 +531,45 @@ class ValueIRCompiler:
         if terminal.op is Op.HALT:
             return_values = ()
         else:
-            return_values = tuple(
-                regs[index]
-                for index in range(terminal.a, terminal.a + max(0, terminal.b))
-            )
+            values: list[int] = []
+            for index in range(terminal.a, terminal.a + max(0, terminal.b)):
+                node_id = self._node_ref(regs[index])
+                # Returning a function value would make closure allocation and
+                # identity observable, so that shape must stay in the old tier.
+                if node_id is None:
+                    return None
+                values.append(node_id)
+            return_values = tuple(values)
+
         live = self._mark_live(return_values)
-        definition_pcs = tuple(
-            sorted((node_id, pc) for node_id, pc in self._definition_pcs.items())
-        )
-        live_definition_pcs = {
-            pc for node_id, pc in definition_pcs if node_id in live
-        }
+        definition_pcs = tuple(sorted((node_id, pc) for node_id, pc in self._definition_pcs.items()))
+        live_definition_pcs = {pc for node_id, pc in definition_pcs if node_id in live}
         eliminated = tuple(
             pc
             for pc, ins in enumerate(code[:-1])
-            if ins.op in _PURE_VALUE_OPS and pc not in live_definition_pcs
+            if (
+                (ins.op in _PURE_VALUE_OPS and pc not in live_definition_pcs)
+                or pc in closure_pcs
+                or pc in inlined_call_pcs
+            )
         )
         return ValueIRPlan(
             self.typed_plan,
             tuple(self._nodes),
-            tuple(sorted(regs.items())),
+            tuple(
+                sorted(
+                    (reg, node_id)
+                    for reg, value in regs.items()
+                    if (node_id := self._node_ref(value)) is not None
+                )
+            ),
             return_values,
             len(code) - 1,
-            len(code),
+            len(code) + self._extra_instruction_cost,
             live,
             definition_pcs,
             tuple(sorted(self._folded_pcs)),
             tuple(sorted(self._cse_pcs)),
             eliminated,
+            tuple(self._call_sites),
         )
