@@ -84,66 +84,56 @@ class ControlFlowAnalyzer:
         close_depth = initial_close_depth
 
         for stmt in body:
-            if isinstance(stmt, A.LabelStmt):
-                for existing in self._labels:
-                    if existing.stmt.name == stmt.name and self._is_ancestor(existing.block_id, block_id):
-                        raise LuaSyntaxError(
-                            f"line {stmt.line}: label '{stmt.name}' already defined and visible"
-                        )
-                stmt.label_id = self._next_label
-                self._next_label += 1
-                stmt.close_depth = close_depth
-                self._labels.append(
-                    _LabelInfo(stmt, block_id, frozenset(active), close_depth)
+            handler = _WALK_HANDLERS.get(type(stmt))
+            if handler is not None:
+                close_depth = handler(self, stmt, block_id, active, close_depth)
+
+    def _walk_label(self, stmt, block_id, active, close_depth):
+        for existing in self._labels:
+            if existing.stmt.name == stmt.name and self._is_ancestor(existing.block_id, block_id):
+                raise LuaSyntaxError(
+                    f"line {stmt.line}: label '{stmt.name}' already defined and visible"
                 )
-                continue
+        stmt.label_id = self._next_label
+        self._next_label += 1
+        stmt.close_depth = close_depth
+        self._labels.append(_LabelInfo(stmt, block_id, frozenset(active), close_depth))
+        return close_depth
 
-            if isinstance(stmt, A.GotoStmt):
-                self._gotos.append(
-                    _GotoInfo(stmt, block_id, frozenset(active))
-                )
-                continue
+    def _walk_goto(self, stmt, block_id, active, close_depth):
+        self._gotos.append(_GotoInfo(stmt, block_id, frozenset(active)))
+        return close_depth
 
-            if isinstance(stmt, A.LocalDecl):
-                for declared in stmt.names:
-                    active.add(self._new_local(declared.name))
-                    if declared.attribute == "close":
-                        close_depth += 1
-                continue
+    def _walk_local(self, stmt, block_id, active, close_depth):
+        for declared in stmt.names:
+            active.add(self._new_local(declared.name))
+            if declared.attribute == "close":
+                close_depth += 1
+        return close_depth
 
-            if isinstance(stmt, A.FunctionDef) and stmt.local:
-                active.add(self._new_local(stmt.name))
-                continue
+    def _walk_function(self, stmt, block_id, active, close_depth):
+        if stmt.local:
+            active.add(self._new_local(stmt.name))
+        return close_depth
 
-            if isinstance(stmt, A.DoStmt):
-                self._walk_child(stmt.body, block_id, active, close_depth)
-                continue
+    def _walk_simple_child(self, stmt, block_id, active, close_depth):
+        self._walk_child(stmt.body, block_id, active, close_depth)
+        return close_depth
 
-            if isinstance(stmt, A.WhileStmt):
-                self._walk_child(stmt.body, block_id, active, close_depth)
-                continue
+    def _walk_numeric_for(self, stmt, block_id, active, close_depth):
+        self._walk_child(stmt.body, block_id, active, close_depth, (stmt.name,))
+        return close_depth
 
-            if isinstance(stmt, A.RepeatStmt):
-                self._walk_child(stmt.body, block_id, active, close_depth)
-                continue
+    def _walk_generic_for(self, stmt, block_id, active, close_depth):
+        self._walk_child(stmt.body, block_id, active, close_depth, tuple(stmt.names))
+        return close_depth
 
-            if isinstance(stmt, A.NumericForStmt):
-                self._walk_child(
-                    stmt.body, block_id, active, close_depth, (stmt.name,)
-                )
-                continue
-
-            if isinstance(stmt, A.GenericForStmt):
-                self._walk_child(
-                    stmt.body, block_id, active, close_depth, tuple(stmt.names)
-                )
-                continue
-
-            if isinstance(stmt, A.IfStmt):
-                for _, clause in stmt.clauses:
-                    self._walk_child(clause, block_id, active, close_depth)
-                if stmt.else_body:
-                    self._walk_child(stmt.else_body, block_id, active, close_depth)
+    def _walk_if(self, stmt, block_id, active, close_depth):
+        for _, clause in stmt.clauses:
+            self._walk_child(clause, block_id, active, close_depth)
+        if stmt.else_body:
+            self._walk_child(stmt.else_body, block_id, active, close_depth)
+        return close_depth
 
     def _resolve_gotos(self):
         for goto in self._gotos:
@@ -169,6 +159,20 @@ class ControlFlowAnalyzer:
                 )
             goto.stmt.target_id = target.stmt.label_id
             goto.stmt.close_depth = target.close_depth
+
+
+_WALK_HANDLERS = {
+    A.LabelStmt: ControlFlowAnalyzer._walk_label,
+    A.GotoStmt: ControlFlowAnalyzer._walk_goto,
+    A.LocalDecl: ControlFlowAnalyzer._walk_local,
+    A.FunctionDef: ControlFlowAnalyzer._walk_function,
+    A.DoStmt: ControlFlowAnalyzer._walk_simple_child,
+    A.WhileStmt: ControlFlowAnalyzer._walk_simple_child,
+    A.RepeatStmt: ControlFlowAnalyzer._walk_simple_child,
+    A.NumericForStmt: ControlFlowAnalyzer._walk_numeric_for,
+    A.GenericForStmt: ControlFlowAnalyzer._walk_generic_for,
+    A.IfStmt: ControlFlowAnalyzer._walk_if,
+}
 
 
 def analyze_control_flow(body: list[A.Stmt]) -> None:
