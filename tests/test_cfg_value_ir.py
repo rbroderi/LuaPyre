@@ -40,10 +40,10 @@ def test_cfg_value_ir_builds_phi_for_branch_merge():
     assert any(node.type_name == "integer" for node in plan.phi_nodes)
 
 
-def test_cfg_value_ir_executes_both_merge_predecessors():
+def test_cfg_value_ir_executes_both_merge_predecessors_through_structured_diamond():
     runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
     assert runtime.execute(_SOURCE) == 64
-    assert "<luapyre-cfg-value-ir-function>" in _compiled_function_filenames(runtime)
+    assert "<luapyre-cfg-value-ir-diamond>" in _compiled_function_filenames(runtime)
 
 
 def _outcome(*, jit: bool, fuel: int):
