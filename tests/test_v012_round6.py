@@ -40,3 +40,9 @@ def test_tonumber_plain_hexadecimal_overflow_wraps_to_lua_integer():
     assert run('return tonumber("0x1000000000000000000000000000000")') == 0
     assert run('return tonumber("0xffffffffffffffff")') == -1
     assert run('return tonumber("-0xffffffffffffffff")') == 1
+
+
+def test_tonumber_long_hexadecimal_float_overflow_returns_infinity():
+    assert run("return tonumber('0x' .. string.rep('f', 300) .. '.0') == math.huge") is True
+    assert run("return tonumber('-0x' .. string.rep('f', 300) .. '.0') == -math.huge") is True
+    assert run("return tonumber('0xe03' .. string.rep('0', 1000) .. 'p-4000')") == 3587.0
