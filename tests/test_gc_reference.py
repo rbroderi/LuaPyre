@@ -69,6 +69,18 @@ collectgarbage()
 local second = next(weak) ~= nil
 return during, first, second
 ''',
+    '''
+local weak = setmetatable({}, {__mode = "v"})
+local seen
+local mt = {__gc = function(self) seen = weak[1] end}
+local function seed()
+  local value = setmetatable({}, mt)
+  weak[1] = value
+end
+seed()
+collectgarbage()
+return seen == nil
+''',
 ]
 
 
