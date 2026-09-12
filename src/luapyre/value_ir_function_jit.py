@@ -81,14 +81,29 @@ class ValueIRFunctionJITMixin:
             if node.kind is ValueKind.LITERAL:
                 namespace[f"_lit_{node.id}"] = node.payload
 
-        lines = [
-            "def _jit_value_ir_function(vm, frames, frame, budget, meter):",
-            "    if budget - meter[0] < _cost:",
-            "        frame.pc = 0",
-            "        return _FUNC_SUSPEND, None",
-            "    regs = frame.regs",
-            "    consts = frame.proto.constants",
-        ]
+        lines = ["def _jit_value_ir_function(vm, frames, frame, budget, meter):"]
+        if plan.call_sites:
+            # An inlined child would have pushed exactly one additional frame.
+            # The admitted children cannot recursively/nested-call, so when that
+            # one frame would exceed max_frames, abandon the optimized function
+            # before pc 0. Tier 0 then reaches the real CALL and raises stack
+            # overflow with the original fuel/pc/traceback semantics.
+            lines.extend(
+                [
+                    "    if len(frames) >= vm.max_frames:",
+                    "        frame.pc = 0",
+                    "        return _FUNC_SUSPEND, None",
+                ]
+            )
+        lines.extend(
+            [
+                "    if budget - meter[0] < _cost:",
+                "        frame.pc = 0",
+                "        return _FUNC_SUSPEND, None",
+                "    regs = frame.regs",
+                "    consts = frame.proto.constants",
+            ]
+        )
         for index in range(proto.param_count):
             lines.append(f"    _arg{index} = regs[{index}]")
 
