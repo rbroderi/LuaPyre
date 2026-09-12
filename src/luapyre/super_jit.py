@@ -3,6 +3,7 @@ from __future__ import annotations
 from .ast_jit import AstPythonJIT
 from .bytecode import Op
 from .dense_jit import DenseEmitterJITMixin
+from .direct_call_ir_function_jit import DirectCallIRFunctionJITMixin
 from .function_jit import TypedFunctionJITMixin
 from .region_jit import RegionPythonJIT
 from .structured_jit import StructuredTypedLoopJITMixin
@@ -13,6 +14,7 @@ from .value_ir_function_jit import ValueIRFunctionJITMixin
 
 class SuperPythonJIT(
     ValueIRFunctionJITMixin,
+    DirectCallIRFunctionJITMixin,
     TypedIRFunctionJITMixin,
     TypedFunctionJITMixin,
     StructuredTypedLoopJITMixin,
@@ -20,16 +22,18 @@ class SuperPythonJIT(
     TypedIRLoopJITMixin,
     AstPythonJIT,
 ):
-    """Typed optimizer pipeline ending in the Python-AST backend.
+    """Typed compiler pipeline ending in the optimized Python-AST backend.
 
-    0.17 layers SSA-like pure-expression value numbering over the 0.16 typed IR.
-    Straight-line fully typed leaf functions can therefore fold constants, share
-    common expressions, eliminate dead pure definitions and bypass Lua register
-    copy traffic entirely. Table/global functions retain the 0.16 typed-IR
-    backend; call-heavy/recursive functions and numeric regions retain the proven
-    0.15 backends until their value/call IR lowering is at least as exact and fast.
-    Earlier tiers remain fail-closed fallbacks for unsupported shapes and ordinary
-    Lua.
+    0.17 layers SSA-like value numbering and backend-neutral CALL facts over the
+    0.16 typed IR. Tiny pure lexical calls may disappear into the value graph;
+    larger statically resolved lexical calls retain real Lua closures/frames and
+    run through the same shared-meter direct-call machinery used by the proven
+    function compiler. Table/global functions retain the 0.16 typed-IR backend,
+    while specialized numeric regions keep the faster structured tiers.
+
+    The important boundary is architectural: optimization decisions live in the
+    typed/value/CALL IR. Python AST is a backend, and every unsupported shape
+    fails closed to an earlier exact tier or the interpreter.
     """
 
     _IR_PRIMARY_OPS = frozenset({Op.GETUPVAL, Op.GETTABLE, Op.SETTABLE})
