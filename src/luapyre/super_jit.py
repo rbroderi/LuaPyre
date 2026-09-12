@@ -3,10 +3,15 @@ from __future__ import annotations
 from .ast_jit import AstPythonJIT
 from .function_jit import TypedFunctionJITMixin
 from .region_jit import RegionPythonJIT
+from .structured_jit import StructuredTypedLoopJITMixin
 
 
-class SuperPythonJIT(TypedFunctionJITMixin, AstPythonJIT):
-    """0.15 Python backend: super-regions plus whole typed functions."""
+class SuperPythonJIT(
+    TypedFunctionJITMixin,
+    StructuredTypedLoopJITMixin,
+    AstPythonJIT,
+):
+    """0.15 Python backend: structured loops, super-regions, and functions."""
 
     def _emit_instruction(self, *args, **kwargs):
         """Route the two deliberately different region-emitter protocols.
