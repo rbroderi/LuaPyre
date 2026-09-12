@@ -8,6 +8,9 @@ import time
 from luapyre import LuaRuntime
 
 
+# Focused same-runner comparison against the merged release baseline. These are
+# compiler-architecture probes: pure value-graph optimization, IR-level inline
+# calls, and real-frame DirectCallSite lowering.
 WORKLOADS = {
     "pure_leaf_cse": (
         """-- luapyre: typed
