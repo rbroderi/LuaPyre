@@ -65,8 +65,7 @@ def where(frame, *, pc: int | None = None) -> bytes:
 def where_from_frames(frames, level: int) -> bytes:
     if level <= 0 or not frames or level > len(frames):
         return b""
-    frame = frames[-level]
-    return where(frame)
+    return where(frames[-level])
 
 
 def error_value(error: LuaRuntimeError):
@@ -81,8 +80,7 @@ def attach_runtime_context(error: LuaRuntimeError, frame, *, pc: int | None = No
     Explicit Lua ``error`` objects are preserved verbatim. VM/host runtime
     failures get Lua's ordinary source:line prefix exactly once.
     """
-    tf = trace_frame(frame, pc=pc)
-    error.add_trace_frame(tf)
+    error.add_trace_frame(trace_frame(frame, pc=pc))
 
     if isinstance(error, LuaRaisedError):
         return error
@@ -90,14 +88,21 @@ def attach_runtime_context(error: LuaRuntimeError, frame, *, pc: int | None = No
         return error
 
     raw = error_value(error)
-    if frame.proto.source is None:
-        prefix = b"?:?: "
-    else:
-        prefix = where(frame, pc=pc)
+    prefix = b"?:?: " if frame.proto.source is None else where(frame, pc=pc)
     value = prefix + raw
     error.value = value
     error.located = True
     error.args = (value.decode("utf-8", "replace"),)
+    return error
+
+
+def capture_error(error: LuaRuntimeError, frames) -> LuaRuntimeError:
+    """Capture an origin plus its Lua callers before protected unwinding."""
+    if not frames:
+        return error
+    attach_runtime_context(error, frames[-1])
+    for frame in reversed(frames[:-1]):
+        error.add_trace_frame(trace_frame(frame))
     return error
 
 
