@@ -198,8 +198,6 @@ def prepare_suite(archive: Path, extract_to: Path, *, allow_download: bool) -> P
     archive = ensure_archive(archive, allow_download=allow_download)
     expected_root = extract_to / SUITE_ROOT
     if expected_root.is_dir():
-        # Always re-verify the archive; reuse the already extracted tree only as
-        # a convenience for manual runs. A clean CI checkout extracts afresh.
         verify_archive(archive)
         return expected_root.resolve()
     return safe_extract(archive, extract_to)
@@ -237,118 +235,23 @@ def resolve_suite_asset(suite_root: Path, name: str) -> Path:
     return _resolve_suite_path(suite_root, name, lua_only=False)
 
 
-def _display_lua_value(value) -> str:
-    if value is None:
-        return "nil"
-    if value is True:
-        return "true"
-    if value is False:
-        return "false"
-    if isinstance(value, bytes):
-        return value.decode("utf-8", "replace")
-    return str(value)
-
-
-_SUITE_PRELUDE = r'''
-local __suite_read <const> = __luapyre_suite_read
-
-function loadfile(filename, mode, env)
-  if type(filename) ~= "string" then
-    error("bad argument #1 to 'loadfile' (string expected)", 2)
-  end
-  local source, err = __suite_read(filename)
-  if source == nil then return nil, err end
-  return load(source, "@" .. filename, mode or "bt", env)
-end
-
-function dofile(filename)
-  local f, err = loadfile(filename)
-  if f == nil then error(err, 2) end
-  return f()
-end
-
-package = {
-  loaded = {},
-  preload = {},
-  path = "./?.lua;./?/init.lua",
-}
-
-for _, name in ipairs({"coroutine", "math", "string", "table", "utf8"}) do
-  if _G[name] ~= nil then package.loaded[name] = _G[name] end
-end
-
-function package.searchpath(name, path, sep, rep)
-  sep = sep or "."
-  rep = rep or "/"
-  local escaped = string.gsub(sep, "(%W)", "%%%1")
-  local module = string.gsub(name, escaped, rep)
-  local errors = {}
-  for template in string.gmatch(path, "[^;]+") do
-    local candidate = string.gsub(template, "%?", module)
-    candidate = string.gsub(candidate, "^%./", "")
-    local source = __suite_read(candidate)
-    if source ~= nil then return candidate end
-    errors[#errors + 1] = "\n\tno file '" .. candidate .. "'"
-  end
-  return nil, table.concat(errors)
-end
-
-function require(name)
-  if type(name) ~= "string" then
-    error("bad argument #1 to 'require' (string expected)", 2)
-  end
-  local loaded = package.loaded[name]
-  if loaded ~= nil then return loaded end
-
-  local loader = package.preload[name]
-  local loader_data = ":preload:"
-  if loader == nil then
-    local filename, err = package.searchpath(name, package.path)
-    if filename == nil then
-      error("module '" .. name .. "' not found:" .. (err or ""), 2)
-    end
-    loader, err = loadfile(filename)
-    if loader == nil then error(err, 2) end
-    loader_data = filename
-  end
-
-  -- Mark before entering the loader so simple recursive requires terminate.
-  package.loaded[name] = true
-  local result = loader(name, loader_data)
-  if result ~= nil then package.loaded[name] = result end
-  return package.loaded[name]
-end
-'''
-
-
 def install_suite_capabilities(lua, suite_root: Path, *, echo: bool = False) -> None:
-    """Install read-only capabilities needed by upstream user-mode tests.
-
-    These names exist only in the fresh conformance runtime. The normal
-    ``LuaRuntime`` environment remains sandboxed and does not gain filesystem,
-    package, or output access.
-    """
+    """Install only host capabilities; Lua library semantics stay production-real."""
     root = suite_root.resolve()
 
-    def suite_read(name):
-        if not isinstance(name, bytes):
-            return lua.multi_return(None, b"filename must be a string")
+    def suite_loader(name: str):
         try:
-            text = name.decode("utf-8")
-            path = resolve_suite_asset(root, text)
-            return path.read_bytes()
-        except (UnicodeDecodeError, OSError, SuiteError) as error:
-            return lua.multi_return(None, str(error).encode("utf-8", "replace"))
+            return resolve_suite_asset(root, name).read_bytes()
+        except (OSError, SuiteError):
+            return None
 
-    def suite_print(*values):
+    def output_sink(data: bytes):
         if echo:
-            print("\t".join(_display_lua_value(value) for value in values))
-        return None
+            print(data.decode("utf-8", "replace"), end="")
 
-    lua.expose("__luapyre_suite_read", suite_read)
-    lua.expose("print", suite_print)
+    lua.set_file_loader(suite_loader)
+    lua.set_output_sink(output_sink)
     lua.set("arg", [])
-    lua.execute(_SUITE_PRELUDE, chunkname="=LuaPyre official-suite harness")
 
 
 def make_suite_runtime(
@@ -420,7 +323,7 @@ def run_files(
             continue
         try:
             lua.execute(text, chunkname="@" + name)
-        except Exception as error:  # developer harness: report exact failing boundary
+        except Exception as error:
             result = RunResult(name, "fail", type(error).__name__, str(error))
             results.append(result)
             print(f"FAIL {name}: {type(error).__name__}: {error}", file=sys.stderr)
