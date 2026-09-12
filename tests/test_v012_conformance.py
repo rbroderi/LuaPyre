@@ -34,7 +34,7 @@ return
 
 def test_nonintegral_wide_hex_float_does_not_bitwise_coerce():
     with pytest.raises(LuaRuntimeError):
-        run('return "0xffffffffffffffff.0" | 0')
+        run('return "0xffffffffffffffff.0" | 0;')
 
 
 def test_named_varargs_are_backed_by_mutable_vararg_table():
