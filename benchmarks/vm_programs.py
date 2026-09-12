@@ -52,6 +52,28 @@ end
 return s
 """
 
+_CALLS = """
+local function bump(x)
+    return x + 1
+end
+local s = 0
+for i = 1, 8000 do
+    s = bump(s)
+end
+return s
+"""
+
+_TYPED_CALLS = """-- luapyre: typed
+local function bump(x: integer): integer
+    return x + 1
+end
+local s = 0
+for i = 1, 8000 do
+    s = bump(s)
+end
+return s
+"""
+
 _BRANCHES = """
 local s = 0
 for i = 1, 30000 do
@@ -366,18 +388,12 @@ WORKLOADS: dict[str, Workload] = {
         """,
         96012000,
     ),
-    "calls": Workload(
-        """
-        local function bump(x)
-            return x + 1
-        end
-        local s = 0
-        for i = 1, 8000 do
-            s = bump(s)
-        end
-        return s
-        """,
+    "calls": Workload(_CALLS, 8000),
+    "typed_calls": Workload(
+        _CALLS,
         8000,
+        group="typed",
+        luapyre_source=_TYPED_CALLS,
     ),
     "branches": Workload(_BRANCHES, 225000000),
     "typed_branch": Workload(
