@@ -10,7 +10,7 @@ from luapyre import LuaRuntime
 
 # Focused same-runner comparison against the merged release baseline. These are
 # compiler-architecture probes: pure value-graph optimization, IR-level inline
-# calls, and real-frame DirectCallSite lowering.
+# calls, real-frame DirectCallSite lowering, and CFG merge-value lowering.
 WORKLOADS = {
     "pure_leaf_cse": (
         """-- luapyre: typed
@@ -84,6 +84,27 @@ end
 return s
 """,
         72018000,
+    ),
+    "cfg_phi_branch": (
+        """-- luapyre: typed
+local function choose(flag: boolean, a: integer, b: integer): integer
+    local value = a
+    if flag then
+        value = b + 1
+    else
+        value = a + 1
+    end
+    local doubled = value + value
+    return doubled
+end
+local s = 0
+for i = 1, 8000 do
+    s = s + choose(true, i, i + 3)
+    s = s + choose(false, i, i + 3)
+end
+return s
+""",
+        128096000,
     ),
 }
 
