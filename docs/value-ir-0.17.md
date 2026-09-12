@@ -1,47 +1,49 @@
 # LuaPyre 0.17 value/expression IR
 
-LuaPyre 0.17 adds an SSA-like value layer above the backend-neutral typed IR introduced in 0.16. The optimization pipeline for certified source is now:
+LuaPyre 0.17 establishes the optimizer architecture as a **small statically typed IR compiler targeting optimized Python AST**. The Python representation is a backend; optimization semantics live in reusable IR.
+
+The certified-source pipeline is now:
 
 ```text
 -- luapyre: typed source
         ↓
-LuaPyre bytecode / typed facts
+LuaPyre bytecode / static type facts
         ↓
-0.16 TypedIRPlan (CFG, aliases, deopt facts, table/global specialization)
+0.16 TypedIRPlan
+  CFG facts / aliases / table-global specialization / deopt state
         ↓
 0.17 ValueIRPlan + CALL IR
+  value numbering / folds / liveness / static call identity
         ↓
-constant folding / copy elimination / CSE / DSE / call classification
+constant + copy propagation / exact folding / CSE / DSE
         ↓
-inline tiny pure calls OR direct real-frame calls
+inline tiny pure calls OR direct real-frame static calls
         ↓
 optimized Python AST backend
+        ↓
+CPython
 ```
 
-The exact Lua 5.5.1 interpreter remains Tier 0 and the universal fallback. Python AST is a backend, not the optimizer's semantic representation.
+The exact Lua 5.5.1 interpreter remains Tier 0 and the universal fallback/deoptimization oracle. The IR is intentionally independent of Python syntax so a later native backend can consume the same facts and correctness contract.
 
 ## Value graph
 
-`ValueIRPlan` assigns stable value numbers to:
+`ValueIRPlan` assigns stable value numbers to typed arguments, constant-pool scalar values, folded scalar literals, and pure typed expressions.
 
-- typed function arguments
-- constant-pool scalar values
-- folded scalar literals
-- pure typed expressions
+`MOVE` and `LOCAL` become aliases instead of generated assignments. Typed integer, float, boolean, and scalar operations become expression nodes. Identical expressions share a value number. The Python backend emits only nodes reachable from observable results.
 
-`MOVE` and `LOCAL` become aliases rather than generated assignments. Typed integer, float, boolean, and scalar-comparison operations become expression nodes. Identical expressions share a value number, and only expressions reachable from a function result are emitted by the Python backend.
-
-This makes several optimizations consequences of the representation rather than separate Python peepholes:
+This makes several optimizations consequences of the IR rather than Python peepholes:
 
 - copy propagation is value aliasing
+- constant propagation follows immutable value identities
 - common-subexpression elimination is expression interning
 - dead-store elimination is graph liveness
-- computed-value rematerialization is the expression DAG itself
-- constant folding replaces an expression with an immutable literal node
+- computed-value rematerialization is the expression DAG
+- constant folding replaces a pure expression with an immutable literal value
 
 ### Exact Lua integers
 
-Integer folding and generated integer expressions preserve Lua's signed 64-bit wraparound. Python's unbounded integer arithmetic is masked and sign-corrected rather than trusted directly.
+Integer folding and generated integer expressions preserve Lua's signed 64-bit wraparound. Python's unbounded integer arithmetic is never treated as equivalent without the explicit mask/sign correction.
 
 ## CALL IR
 
@@ -60,7 +62,7 @@ A lexical call can disappear into the value graph only when all of the following
 - every argument's static type is accepted by the corresponding parameter type
 - the child's reachable body itself lowers to pure value IR
 
-The child's value DAG is cloned into the caller DAG, with child arguments mapped to caller values. Folding, CSE and DSE can then cross the former function boundary.
+The child's value DAG is cloned into the caller DAG with child arguments mapped to caller values. Folding, CSE and DSE can then cross the former function boundary.
 
 ### Direct non-inlined calls
 
@@ -72,17 +74,17 @@ Unlike pure inlining, direct lowering **does not erase Lua call semantics**:
 - the child receives a real Lua `Frame`
 - `max_frames` is enforced by the normal frame machinery
 - caller and child share the same exact fuel meter
-- the caller PC is advanced before child execution exactly as in the proven 0.15 function backend
+- the caller PC advances before child execution exactly as in the proven function backend
 - child suspension leaves the real child frame on the VM stack and resumes through Tier 0
-- child errors/unwinds retain the normal frame/trace path
+- child errors/unwinds retain normal frame/trace state
 
-The Python backend reuses `run_compiled_child`; CALL IR provides the static identity/classification, not a second call stack.
+The Python backend reuses `run_compiled_child`; CALL IR supplies static identity and lowering policy rather than implementing a second call stack.
 
-Captured, recursive, dynamic, vararg, escaping, or otherwise unsupported calls still fail closed to the proven 0.15/0.16 compiler/interpreter paths. Recursive direct compiled calls therefore retain their existing real-frame/shared-meter implementation until recursive identity itself is represented safely in CALL IR.
+Captured, recursive, dynamic, vararg, escaping, or otherwise unsupported calls fail closed to the proven 0.15/0.16 compiler/interpreter paths. Recursive direct compiled calls therefore retain the existing real-frame implementation until recursive identity itself is represented safely in CALL IR.
 
 ## Closure identity and allocation
 
-A lexical child closure is omitted only in the pure static-inline tier where the optimizer proves that the closure value cannot escape and the child captures no cells. In that admitted domain, closure identity and allocation are not observable by Lua code.
+A lexical child closure is omitted only in the pure static-inline tier where the optimizer proves that closure identity/allocation cannot be observed and the child captures no cells.
 
 Direct CALL IR deliberately keeps real closure allocation. Any use that could make identity, capture, or lifetime observable outside the pure-inline proof either stays materialized or rejects the new tier.
 
@@ -90,46 +92,36 @@ Direct CALL IR deliberately keeps real closure allocation. Any use that could ma
 
 Optimization never discounts Lua bytecode.
 
-For pure value graphs, `ValueIRPlan.instruction_count` contains every reachable caller instruction plus every reachable instruction of each inlined callee. A compiled pure function runs only when the complete fixed instruction cost fits in the remaining budget. If it does not fit, the optimized function suspends before pc 0 without consuming fuel or performing side effects, and Tier 0 reaches the same quota boundary instruction-by-instruction.
+For pure value graphs, `ValueIRPlan.instruction_count` contains every reachable caller instruction plus every reachable instruction of each inlined callee. A compiled pure function runs only when the complete fixed instruction cost fits in the remaining budget. If it does not fit, the optimized function suspends before pc 0 without consuming fuel or performing side effects; Tier 0 then reaches the same quota boundary instruction-by-instruction.
 
-Direct CALL IR uses incremental accounting instead: caller work is committed to the shared meter before entering the real child frame, and the child accounts for its own instructions through the same meter. Differential tests cover every nearby quota boundary for both inlined and direct calls.
+Direct CALL IR uses incremental accounting. Caller work is committed to the shared meter before entering the real child frame, and the child accounts for its own instructions through the same meter. Differential tests cover nearby quota boundaries and frame-limit behavior for both inlined and direct calls.
 
 ## Fail-closed boundary
 
-The first 0.17 value tier remains intentionally narrow. It does not value-compile:
+The first 0.17 value tier remains intentionally narrow. It does not value-compile branches/loops inside the pure whole-function graph, mutable table operations, generic/metamethod-sensitive arithmetic, division/modulo or other extra-error-path operations, upvalue/cell access, dynamic calls, recursive calls, varargs, dynamic multi-results, or escaping function values.
 
-- branches or loops inside the pure whole-function value graph
-- mutable table operations
-- generic/metamethod-sensitive arithmetic
-- division/modulo or other operations that introduce additional error paths
-- upvalue/cell access
-- dynamic calls
-- recursive calls
-- varargs or multi-result dynamic calls
-- escaping function values
-
-Direct CALL IR widens only call classification/execution, not those value-graph assumptions. Its first caller backend is straight-line and helper/metamethod-free; complex callers continue through older exact tiers.
+Direct CALL IR widens call classification/execution, not those value-graph assumptions. Its first caller backend is straight-line and helper/metamethod-free; complex callers continue through older exact tiers.
 
 ## Performance
 
-Focused same-runner CPython 3.13 comparison against merged 0.16 on the final implementation direction showed:
+Focused same-runner CPython 3.13 comparison against merged 0.16 showed:
 
-- pure nested lexical call: about **124.08 ms -> 53.10 ms**, roughly **57.2% faster** / **2.34x speedup**
-- branchy non-inline lexical child through direct CALL IR: about **113.07 ms -> 82.52 ms**, roughly **27.0% faster** / **1.37x speedup**
+- pure nested lexical call: **124.08 ms -> 53.10 ms**, about **57.2% faster** / **2.34x speedup**
+- branchy non-inline lexical child through direct CALL IR: **113.07 ms -> 82.52 ms**, about **27.0% faster** / **1.37x speedup**
 
-Simple leaf CSE/constant-fold microbenchmarks remain approximately flat because the older structured-loop compiler already handles those hot loop shapes efficiently. The value IR is retained because it centralizes optimization facts and enables cross-function transformations rather than because every isolated fold is faster by itself.
+Simple leaf CSE/constant-fold microbenchmarks remain approximately flat because the older structured-loop compiler already handles those hot loop shapes efficiently. The value IR is retained because it centralizes compiler facts and enables cross-function transformations rather than because every isolated fold must beat a highly specialized older tier.
 
-The standard 3-warmup / 7-sample four-way suite remains green. Native Lua 5.5/LuaJIT are still substantially faster on most workloads, which is why the optimizer remains backend-neutral instead of treating generated Python as the final architecture.
+The standard 3-warmup / 7-sample four-way suite remains green. Representative 0.17 medians on CPython 3.13.15 include typed calls at **1.575 ms vs 34.535 ms interpreter**, recursive Fibonacci at **45.875 vs 110.419 ms**, Sieve at **12.733 vs 31.473 ms**, binary trees at **89.847 vs 221.302 ms**, string build at **2.479 vs 9.830 ms**, and spectral norm at **62.642 vs 223.217 ms**. Native Lua 5.5/LuaJIT remain substantially faster on most workloads, reinforcing the decision to keep the optimizer backend-neutral.
 
-## Next value-IR work
+## Next compiler work
 
 The representation can now grow without changing Lua semantics or tying optimization to Python syntax. Natural next steps are:
 
-1. CFG-aware value graphs with explicit merge/phi values where profitable
-2. side-exit expression rematerialization for guarded regions
+1. CFG-aware value graphs with explicit merge/phi values where they pay for themselves
+2. guarded side-exit expression rematerialization
 3. table-value and shape facts in the value graph
-4. broaden direct CALL IR to captured/static closures with exact cell materialization
-5. represent recursive/self-call identity in CALL IR and lower it through the existing frame/trampoline machinery
+4. captured/static closure materialization in CALL IR
+5. recursive/self-call identity in CALL IR lowered through the existing real-frame/trampoline machinery
 6. broader cross-function inlining budgets and hotness weighting
 7. native x86-64/AArch64 or LLVM lowering from the same typed/value/CALL IR
 
