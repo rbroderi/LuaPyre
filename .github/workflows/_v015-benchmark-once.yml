@@ -1,0 +1,38 @@
+name: 0.15 benchmark validation
+
+on:
+  push:
+    branches:
+      - v0.15-ast-superjit
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Install LuaPyre and benchmark dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Run four-way validation benchmark
+        run: |
+          python benchmarks/compare_runtimes.py \
+            --repeats 1 \
+            --warmups 1 \
+            --require-all \
+            --json benchmark-results.json \
+            | tee benchmark-results.txt
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v015-validation-${{ github.run_id }}
+          path: |
+            benchmark-results.txt
+            benchmark-results.json
+          if-no-files-found: warn
