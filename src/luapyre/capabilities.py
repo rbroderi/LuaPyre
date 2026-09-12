@@ -24,8 +24,8 @@ def default_warning_sink(data: bytes) -> None:
 class RuntimeCapabilities:
     """Mutable host capabilities shared by the installed standard library.
 
-    Output and warning sinks receive already Lua-formatted bytes.  The default
-    output sink simply delegates to Python ``print``.  Filesystem access is
+    Output and warning sinks receive already Lua-formatted bytes. The default
+    output sink simply delegates to Python ``print``. Filesystem access is
     absent unless ``file_loader`` is explicitly supplied by the embedder.
     """
 
@@ -34,9 +34,13 @@ class RuntimeCapabilities:
     file_loader: FileLoader | None = None
 
     def set_output_sink(self, sink: OutputSink | None) -> None:
+        if sink is not None and not callable(sink):
+            raise TypeError("output sink must be callable or None")
         self.output_sink = default_output_sink if sink is None else sink
 
     def set_warning_sink(self, sink: WarningSink | None) -> None:
+        if sink is not None and not callable(sink):
+            raise TypeError("warning sink must be callable or None")
         self.warning_sink = default_warning_sink if sink is None else sink
 
     def set_file_loader(self, loader: FileLoader | None) -> None:
