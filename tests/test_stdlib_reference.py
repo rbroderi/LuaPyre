@@ -38,8 +38,8 @@ return total
 ''',
     '''
 local ok,a,b = pcall(function(x) return x,x+2 end,40)
-local ok2,e = pcall(function() error("boom") end)
-local ok3,msg = xpcall(function() error("bad") end, function(err) return "handled:"..err end)
+local ok2,e = pcall(function() error("boom",0) end)
+local ok3,msg = xpcall(function() error("bad",0) end, function(err) return "handled:"..err end)
 return ok,a,b,ok2,type(e),ok3,msg
 ''',
     '''
@@ -101,6 +101,10 @@ return a,b,c,nextpos,#packed,string.packsize("<i4I2c3")
 ''',
     '''
 return string.format("%04d %.2f %s %q %%",7,2.5,"ok","a\\nb")
+''',
+    '''
+return string.format("%q|%q|%q|%q|%q",
+  "a\\nb", string.char(1).."2", math.mininteger, 2.5, -0.0)
 ''',
     '''
 local s=utf8.char(65,8364,128578)
