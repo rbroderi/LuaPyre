@@ -55,9 +55,10 @@ def trace_frame(frame, *, pc: int | None = None) -> LuaTraceFrame:
 
 
 def where(frame, *, pc: int | None = None) -> bytes:
+    """Equivalent of luaL_where: no prefix when current line is unavailable."""
     source = frame.proto.source
     line = frame_line(frame, pc=pc)
-    if source is None:
+    if source is None or line <= 0:
         return b""
     return chunk_id(source) + b":" + str(line).encode("ascii") + b": "
 
@@ -78,7 +79,8 @@ def attach_runtime_context(error: LuaRuntimeError, frame, *, pc: int | None = No
     """Attach the originating source location and one structured Lua frame.
 
     Explicit Lua ``error`` objects are preserved verbatim. VM/host runtime
-    failures get Lua's ordinary source:line prefix exactly once.
+    failures follow luaG_addinfo, which prints ``?:?:`` only when the source is
+    absent and otherwise prints the source plus even an unavailable (-1) line.
     """
     error.add_trace_frame(trace_frame(frame, pc=pc))
 
@@ -88,7 +90,11 @@ def attach_runtime_context(error: LuaRuntimeError, frame, *, pc: int | None = No
         return error
 
     raw = error_value(error)
-    prefix = b"?:?: " if frame.proto.source is None else where(frame, pc=pc)
+    line = frame_line(frame, pc=pc)
+    if frame.proto.source is None:
+        prefix = b"?:?: "
+    else:
+        prefix = chunk_id(frame.proto.source) + b":" + str(line).encode("ascii") + b": "
     value = prefix + raw
     error.value = value
     error.located = True
@@ -122,12 +128,15 @@ def format_traceback(error: LuaRuntimeError, *, include_message: bool = True) ->
     parts.append(b"stack traceback:")
     for frame in error.trace:
         loc = chunk_id(frame.source)
-        line = b"?" if frame.line < 0 else str(frame.line).encode("ascii")
-        if frame.name == "<chunk>":
-            desc = b"in main chunk"
-        elif frame.name == "<anonymous>":
-            desc = b"in function <?>"
+        if frame.line <= 0:
+            prefix = b"\t" + loc + b": in "
         else:
-            desc = b"in function '" + frame.name.encode("utf-8", "replace") + b"'"
-        parts.append(b"\t" + loc + b":" + line + b": " + desc)
+            prefix = b"\t" + loc + b":" + str(frame.line).encode("ascii") + b": in "
+        if frame.name == "<chunk>":
+            desc = b"main chunk"
+        elif frame.name == "<anonymous>":
+            desc = b"function <?>"
+        else:
+            desc = b"function '" + frame.name.encode("utf-8", "replace") + b"'"
+        parts.append(prefix + desc)
     return b"\n".join(parts)
