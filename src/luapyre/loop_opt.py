@@ -11,6 +11,26 @@ _MASK64 = (1 << 64) - 1
 _SIGN64 = 1 << 63
 _TWO64 = 1 << 64
 
+# LICM is deliberately fail-closed.  These are the only CFG Value-IR operations
+# currently proven pure, deterministic, and non-throwing for their certified
+# scalar operand types.  Extending Value IR does not automatically make a new
+# operation hoistable; it must be audited and added here explicitly.
+_LICM_SAFE_OPS = frozenset(
+    {
+        "add_i",
+        "sub_i",
+        "mul_i",
+        "add_f",
+        "sub_f",
+        "mul_f",
+        "not",
+        "tobool",
+        "eq",
+        "lt",
+        "le",
+    }
+)
+
 
 def _i64(value: int) -> int:
     value &= _MASK64
@@ -119,7 +139,7 @@ class CFGLoopOptimizer:
                 if (
                     node.id in invariant
                     or node.kind is not ValueKind.EXPRESSION
-                    or node.op == "phi"
+                    or node.op not in _LICM_SAFE_OPS
                 ):
                     continue
                 block = self._def_block.get(node.id)
