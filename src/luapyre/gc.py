@@ -13,7 +13,10 @@ from .values import MultiValue
 from .vm import Frame
 
 
-_COLLECTABLE_TYPES = (LuaTable, Closure)
+_COLLECTABLE_TYPES = (LuaTable, Closure, Cell)
+_GC_NEW = 0
+_GC_SURVIVAL = 1
+_GC_OLD = 2
 _VALID_WEAK_MODES = {b"k", b"v", b"kv"}
 
 _BINARY_OPS = {
@@ -271,6 +274,13 @@ if set(_RW_HANDLERS) != set(Op) or set(_SUCCESSOR_HANDLERS) != set(Op):
 @dataclass(slots=True)
 class GCStats:
     cycles: int = 0
+    minor_cycles: int = 0
+    major_cycles: int = 0
+    automatic_cycles: int = 0
+    allocations: int = 0
+    allocated_bytes: int = 0
+    remembered_writes: int = 0
+    python_young_steps: int = 0
     reachable_objects: int = 0
     approximate_bytes: int = 0
     weak_entries_cleared: int = 0
@@ -299,10 +309,17 @@ class LuaGC:
     def __init__(self, vm):
         self.vm = vm
         self.running = True
-        self.mode = b"incremental"
+        self.mode = b"generational"
         self.params = dict(self.DEFAULT_PARAMS)
         self.stats = GCStats()
         self.in_finalizer = False
+        self.in_collection = False
+        self.debt = 0
+        self.pending = False
+        self._remembered: dict[int, object] = {}
+        self._allocated_since_major = 0
+        self._last_major_bytes = 0
+        self._observable = False
 
         # Lua keeps marked-for-finalization objects alive until their finalizer
         # has run. Strong Python references here model that internal Lua list;
@@ -311,6 +328,108 @@ class LuaGC:
         self._finalizable_ids: set[int] = set()
         self._finalized_ids: set[int] = set()
         self._liveness_cache: dict[int, tuple[Proto, tuple[frozenset[int], ...]]] = {}
+
+    @staticmethod
+    def _object_size(value) -> int:
+        try:
+            size = sys.getsizeof(value)
+            if isinstance(value, LuaTable):
+                size += sys.getsizeof(value.array) + sys.getsizeof(value.hash)
+            elif isinstance(value, Closure):
+                size += sys.getsizeof(value.upvalues)
+            return size
+        except TypeError:
+            return 64
+
+    def _threshold(self) -> int:
+        # A Python-level semantic trace has a larger fixed cost than Lua's C
+        # collector step. Amortize it over at least 64 KiB while preserving the
+        # public logarithmic step-size control for larger requested intervals.
+        step = max(64 * 1024, 1 << min(self.params[b"stepsize"], 30))
+        if self.mode == b"generational":
+            baseline = self._last_major_bytes or step
+            return max(step, baseline * self.params[b"minormul"] // 100)
+        baseline = self.stats.approximate_bytes or step
+        return max(step, baseline * self.params[b"pause"] // 100)
+
+    def account_bytes(self, amount: int) -> None:
+        if amount <= 0:
+            return
+        self.debt += amount
+        self._allocated_since_major += amount
+        self.stats.allocated_bytes += amount
+        if self.debt >= self._threshold():
+            self.pending = True
+
+    def adopt(self, value) -> None:
+        """Attach a newly reachable Lua object graph to this collector."""
+        stack = [value]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, MultiValue):
+                stack.extend(current.values)
+                continue
+            if not self._is_collectable(current):
+                continue
+            owner = current._gc_owner
+            if owner is self:
+                continue
+            if owner is not None:
+                continue
+            current._gc_owner = self
+            current._gc_age = _GC_NEW
+            self.stats.allocations += 1
+            self.account_bytes(self._object_size(current))
+            if isinstance(current, LuaTable):
+                stack.append(current.metatable)
+                for key, item in current.items():
+                    stack.extend((key, item))
+            elif isinstance(current, Closure):
+                stack.append(current.env)
+                stack.extend(current.upvalues)
+            elif isinstance(current, Cell):
+                stack.append(current.value)
+            else:
+                stack.append(current.entry)
+                stack.extend(current.frames)
+                stack.extend(current.yielded)
+
+    def write_barrier(self, parent, value) -> None:
+        if not self._is_collectable(parent):
+            return
+        self.adopt(value)
+        if (
+            parent._gc_owner is self
+            and parent._gc_age == _GC_OLD
+            and self._is_collectable(value)
+            and value._gc_owner is self
+            and value._gc_age != _GC_OLD
+            and id(parent) not in self._remembered
+        ):
+            self._remembered[id(parent)] = parent
+            self.stats.remembered_writes += 1
+
+    def safepoint(self, extra_roots=()) -> bool:
+        if not self.running or not self.pending or self.in_collection or self.in_finalizer:
+            return False
+        if not self._observable:
+            python_gc.collect(0)
+            self.stats.python_young_steps += 1
+            self.debt = 0
+            self.pending = False
+            return True
+
+        kind = b"major"
+        if self.mode == b"generational" and self._last_major_bytes:
+            step = max(64 * 1024, 1 << min(self.params[b"stepsize"], 30))
+            major_limit = max(
+                step * 8,
+                self._last_major_bytes * (100 + self.params[b"minormajor"]) // 100,
+            )
+            if self._allocated_since_major < major_limit:
+                kind = b"minor"
+        self.collect(kind=kind, extra_roots=extra_roots, automatic=True)
+        return True
 
     @staticmethod
     def _is_thread(value) -> bool:
@@ -336,6 +455,8 @@ class LuaGC:
             return
         if metatable.rawget(b"__gc") is None:
             return
+        self._observable = True
+        self.pending = True
         ident = id(table)
         if ident in self._finalizable_ids:
             return
@@ -344,6 +465,13 @@ class LuaGC:
         self._finalized_ids.discard(ident)
         self._finalizable_ids.add(ident)
         self._finalizable.append(table)
+
+    def observe_weak_table(self, table: LuaTable) -> None:
+        if self._weak_mode(table) is not None:
+            self._observable = True
+            # Establish an old-generation baseline before the next allocation.
+            # Writes after that baseline are protected by the remembered set.
+            self.pending = True
 
     @staticmethod
     def _call_result_regs(dest: int, want: int) -> set[int]:
@@ -396,11 +524,12 @@ class LuaGC:
         pc = max(0, min(frame.pc, len(live) - 1))
         return live[pc]
 
-    def _trace(self, extra_roots=(), *, physical_regs: bool = False):
+    def _trace(self, extra_roots=(), *, physical_regs: bool = False, minor: bool = False):
         marked: dict[int, object] = {}
         weak_tables: dict[int, tuple[LuaTable, bytes]] = {}
         ephemerons: list[tuple[object, object]] = []
         seen_frames: set[int] = set()
+        expanded: set[int] = set()
 
         def mark_frame(frame: Frame, excluded: set[int] | None = None) -> None:
             ident = id(frame)
@@ -444,14 +573,22 @@ class LuaGC:
                             excluded.update(self._call_result_regs(dest, want))
                 mark_frame(frame, excluded)
 
-        def mark(value) -> bool:
+        def mark(value, *, force: bool = False) -> bool:
             if isinstance(value, MultiValue):
                 changed = False
                 for item in value.values:
                     changed = mark(item) or changed
                 return changed
             if isinstance(value, Cell):
-                return mark(value.value)
+                ident = id(value)
+                if ident in marked and not (force and ident not in expanded):
+                    return False
+                marked[ident] = value
+                if minor and value._gc_age == _GC_OLD and not force:
+                    return True
+                expanded.add(ident)
+                mark(value.value)
+                return True
             if isinstance(value, Frame):
                 mark_frame(value)
                 return False
@@ -461,9 +598,12 @@ class LuaGC:
             if not self._is_collectable(value):
                 return False
             ident = id(value)
-            if ident in marked:
+            if ident in marked and not (force and ident not in expanded):
                 return False
             marked[ident] = value
+            if minor and value._gc_age == _GC_OLD and not force:
+                return True
+            expanded.add(ident)
 
             if isinstance(value, LuaTable):
                 mark(value.metatable)
@@ -517,13 +657,16 @@ class LuaGC:
 
         current = getattr(self.vm, "current_thread", None)
         if current is not None:
-            mark(current)
+            mark(current, force=True)
         mark(self.vm.globals)
         main = getattr(self.vm, "main_thread", None)
         if main is not None and main is not current:
-            mark(main)
+            mark(main, force=True)
         for value in extra_roots:
             mark(value)
+        if minor:
+            for value in tuple(self._remembered.values()):
+                mark(value, force=True)
 
         # Ephemeron convergence must reach a fixed point because marking a
         # value can make a key in another ephemeron reachable.
@@ -548,6 +691,7 @@ class LuaGC:
         keys: bool,
         values: bool,
         dead_value_ids: set[int] | None = None,
+        minor: bool = False,
     ) -> int:
         marked_ids = set(marked)
         dead_value_ids = dead_value_ids or set()
@@ -560,12 +704,14 @@ class LuaGC:
                     keys
                     and b"k" in mode
                     and self._is_collectable(key)
+                    and not (minor and key._gc_age == _GC_OLD)
                     and id(key) not in marked_ids
                 )
                 dead_value = (
                     values
                     and b"v" in mode
                     and self._is_collectable(value)
+                    and not (minor and value._gc_age == _GC_OLD)
                     and (id(value) not in marked_ids or id(value) in dead_value_ids)
                 )
                 if dead_key or dead_value:
@@ -645,27 +791,43 @@ class LuaGC:
                 self.vm.current_thread = previous_thread
             self.in_finalizer = False
 
-    def collect(self) -> None:
+    def collect(self, *, kind: bytes = b"major", extra_roots=(), automatic: bool = False) -> None:
         if self.in_finalizer:
             raise LuaRuntimeError("cannot run garbage collector from a finalizer")
+        if kind not in (b"minor", b"major"):
+            raise LuaRuntimeError("invalid garbage-collector cycle kind")
+        minor = kind == b"minor"
+        self.in_collection = True
+        try:
+            self._collect_cycle(minor=minor, extra_roots=extra_roots, automatic=automatic)
+        finally:
+            self.in_collection = False
+
+    def _collect_cycle(self, *, minor: bool, extra_roots, automatic: bool) -> None:
 
         # Phase 1 mirrors Lua's atomic mark phase: find the strongly reachable
         # graph and clear weak values before objects are moved to finalization.
-        marked, weak_tables = self._trace()
+        marked, weak_tables = self._trace(extra_roots, minor=minor)
         cleared = self._clear_weak_tables(
             weak_tables,
             marked,
             keys=False,
             values=True,
+            minor=minor,
         )
 
-        dead = [table for table in self._finalizable if id(table) not in marked]
+        dead = [
+            table for table in self._finalizable
+            if id(table) not in marked and (not minor or table._gc_age != _GC_OLD)
+        ]
         dead_ids = {id(table) for table in dead}
 
         # Phase 2 resurrects objects selected for finalization and everything
         # reachable through them. This can discover weak tables that themselves
         # were unreachable in phase 1 (e.g. captured only by a __gc closure).
-        resurrected_marked, resurrected_weak_tables = self._trace(dead)
+        resurrected_marked, resurrected_weak_tables = self._trace(
+            (*extra_roots, *dead), minor=minor
+        )
         resurrected_only = set(resurrected_marked) - set(marked)
 
         # Lua treats the resurrected graph asymmetrically: it is alive for weak
@@ -677,6 +839,7 @@ class LuaGC:
             keys=True,
             values=True,
             dead_value_ids=resurrected_only,
+            minor=minor,
         )
 
         if dead_ids:
@@ -690,14 +853,33 @@ class LuaGC:
             finalized += 1
 
         dead.clear()
-        python_gc.collect()
+        python_gc.collect(0 if minor else 2)
 
-        final_marked, _ = self._trace()
+        final_marked, _ = self._trace(extra_roots, minor=minor)
+        for value in final_marked.values():
+            if not self._is_collectable(value):
+                continue
+            if minor:
+                if value._gc_age == _GC_NEW:
+                    value._gc_age = _GC_SURVIVAL
+                elif value._gc_age == _GC_SURVIVAL:
+                    value._gc_age = _GC_OLD
+            else:
+                value._gc_age = _GC_OLD
         self.stats.cycles += 1
+        self.stats.minor_cycles += int(minor)
+        self.stats.major_cycles += int(not minor)
+        self.stats.automatic_cycles += int(automatic)
         self.stats.reachable_objects = len(final_marked)
         self.stats.approximate_bytes = self._estimate_bytes(final_marked.values())
         self.stats.weak_entries_cleared += cleared
         self.stats.finalized_objects += finalized
+        self.debt = 0
+        self.pending = False
+        if not minor:
+            self._last_major_bytes = self.stats.approximate_bytes
+            self._allocated_since_major = 0
+            self._remembered.clear()
 
     @staticmethod
     def _estimate_bytes(values) -> int:
@@ -750,9 +932,8 @@ class LuaGC:
         if option == b"count":
             return self.count_kbytes()
         if option == b"step":
-            # Explicit stepping is deterministic in 0.6: a step completes one
-            # full observable cycle. Automatic incremental pacing is future work.
-            self.collect()
+            kind = b"minor" if self.mode == b"generational" and self._last_major_bytes else b"major"
+            self.collect(kind=kind)
             return True
         if option in (b"incremental", b"generational"):
             previous = self.mode

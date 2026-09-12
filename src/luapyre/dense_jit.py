@@ -123,7 +123,7 @@ class DenseEmitterJITMixin:
 
         trusted = bool(proto.jit_trust_types)
         lines = [
-            "def _jit_leaf(frame):",
+            "def _jit_leaf(vm, frame):",
             "    regs = frame.regs",
             "    consts = frame.proto.constants",
             "    cells = frame.cells",

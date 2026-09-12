@@ -31,13 +31,15 @@ def _hash_key(key):
 class LuaTable:
     """Lua table with dense array storage, tagged hash keys, and a metatable."""
 
-    __slots__ = ("array", "hash", "metatable", "version")
+    __slots__ = ("array", "hash", "metatable", "version", "_gc_owner", "_gc_age")
 
     def __init__(self):
         self.array: list[object | None] = []
         self.hash: dict[object, tuple[object, object]] = {}
         self.metatable: LuaTable | None = None
         self.version = 0
+        self._gc_owner = None
+        self._gc_age = 0
 
     def rawget(self, key):
         h = _hash_key(key)
@@ -68,6 +70,12 @@ class LuaTable:
         if h is None:
             raise LuaRuntimeError("table index is nil")
         self.version += 1
+        collector = self._gc_owner
+        if collector is not None:
+            collector.adopt(key)
+            collector.adopt(value)
+            collector.write_barrier(self, key)
+            collector.write_barrier(self, value)
         if h[0] is _NUM and type(h[1]) is int and h[1] >= 1:
             index = h[1]
             if index <= len(self.array):
@@ -78,6 +86,8 @@ class LuaTable:
                 return
             if index == len(self.array) + 1 and value is not None:
                 self.array.append(value)
+                if collector is not None:
+                    collector.account_bytes(8)
                 while True:
                     next_h = (_NUM, len(self.array) + 1)
                     item = self.hash.pop(next_h, _ABSENT)
@@ -88,6 +98,8 @@ class LuaTable:
         if value is None:
             self.hash.pop(h, None)
         else:
+            if collector is not None and h not in self.hash:
+                collector.account_bytes(32)
             self.hash[h] = (key, value)
 
     def rawlen(self) -> int:

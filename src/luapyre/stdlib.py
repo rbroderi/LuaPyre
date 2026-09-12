@@ -117,6 +117,9 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
         table.metatable = mt
         table.version += 1
         if vm is not None and hasattr(vm, "gc"):
+            vm.gc.adopt(mt)
+            vm.gc.write_barrier(table, mt)
+            vm.gc.observe_weak_table(table)
             vm.gc.mark_finalizable(table, mt)
         return table
 

@@ -72,7 +72,7 @@ class LuaRuntime:
                 self.globals, self.vm, self.capabilities
             )
 
-    def _to_lua(self, value):
+    def _to_lua(self, value, *, _adopt=True):
         if value is None or type(value) in (bool, float) or isinstance(value, bytes):
             return value
         if type(value) is int:
@@ -80,16 +80,27 @@ class LuaRuntime:
         if isinstance(value, str):
             return value.encode("utf-8")
         if isinstance(value, (LuaTable, LuaThread, Closure, HostFunction)):
+            if _adopt and not isinstance(value, HostFunction):
+                self.vm.gc.adopt(value)
             return value
         if isinstance(value, (list, tuple)):
             t = LuaTable()
             for i, item in enumerate(value, 1):
-                t.rawset(i, self._to_lua(item))
+                t.rawset(i, self._to_lua(item, _adopt=False))
+            if _adopt:
+                self.vm.gc.safepoint()
+                self.vm.gc.adopt(t)
             return t
         if isinstance(value, dict):
             t = LuaTable()
             for key, item in value.items():
-                t.rawset(self._to_lua(key), self._to_lua(item))
+                t.rawset(
+                    self._to_lua(key, _adopt=False),
+                    self._to_lua(item, _adopt=False),
+                )
+            if _adopt:
+                self.vm.gc.safepoint()
+                self.vm.gc.adopt(t)
             return t
 
         # Opaque host userdata is represented by the Python object itself.

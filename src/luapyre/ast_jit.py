@@ -457,11 +457,14 @@ class AstPythonJIT(RegionPythonJIT):
                 out.extend(
                     [
                         f"{indent}if {ins.a} in cells:",
+                        f"{indent}    vm.gc.write_barrier(cells[{ins.a}], {a})",
                         f"{indent}    cells[{ins.a}].value = {a}",
                     ]
                 )
         elif op is Op.NEWTABLE:
-            out.extend([f"{indent}used += 1", f"{indent}{a} = _LuaTable()"])
+            out.append(f"{indent}used += 1")
+            out.extend(self._spill_lines(registers, indent))
+            out.append(f"{indent}{a} = vm._new_table()")
         elif op is Op.GETTABLE:
             deopt(f"not isinstance({b}, _LuaTable) or {b}.metatable is not None")
             out.extend([f"{indent}used += 1", f"{indent}{a} = {b}.rawget({c})"])

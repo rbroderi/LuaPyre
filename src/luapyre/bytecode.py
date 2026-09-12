@@ -109,6 +109,8 @@ class Proto:
 @dataclass(slots=True)
 class Cell:
     value: object = None
+    _gc_owner: object = None
+    _gc_age: int = 0
 
 
 @dataclass(slots=True)
@@ -116,3 +118,5 @@ class Closure:
     proto: Proto
     upvalues: list[Cell] = field(default_factory=list)
     env: object = None
+    _gc_owner: object = None
+    _gc_age: int = 0

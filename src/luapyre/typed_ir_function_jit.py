@@ -294,9 +294,15 @@ class TypedIRFunctionJITMixin:
                 elif op is Op.GETUPVAL:
                     lines.extend([f"{indent}used += 1", f"{indent}{a} = upvalues[{ins.b}].value"])
                 elif op is Op.SETUPVAL:
-                    lines.extend([f"{indent}used += 1", f"{indent}upvalues[{ins.a}].value = {b}"])
+                    lines.extend([
+                        f"{indent}used += 1",
+                        f"{indent}vm.gc.write_barrier(upvalues[{ins.a}], {b})",
+                        f"{indent}upvalues[{ins.a}].value = {b}",
+                    ])
                 elif op is Op.NEWTABLE:
-                    lines.extend([f"{indent}used += 1", f"{indent}{a} = _LuaTable()"])
+                    lines.append(f"{indent}used += 1")
+                    lines.extend(spill(pc, indent))
+                    lines.append(f"{indent}{a} = vm._new_table()")
                 elif op is Op.GETTABLE and site.specialization in (
                     "global_get",
                     "table_get_const",

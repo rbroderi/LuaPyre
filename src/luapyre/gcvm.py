@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .bytecode import Closure, Proto
+from .bytecode import Cell, Closure, Proto
 from .diagnostics import capture_error, error_value
 from .errors import LuaQuotaError, LuaRuntimeError
 from .gc import LuaGC
@@ -14,10 +14,10 @@ from .vm import Frame
 class GarbageCollectedVM(CoroutineVM):
     """Coroutine VM with Lua-level GC root tracking and source diagnostics.
 
-    Host calls are the safe points where ``collectgarbage`` can run. Keeping the
-    active frame list and actual host-call arguments visible while a host
-    function executes lets the collector trace semantic roots without changing
-    the hot opcode loop.
+    Allocation polls and host calls are safe points where ``collectgarbage`` can
+    run. Keeping the active frame list and actual host-call arguments visible
+    lets the collector trace semantic roots without adding a check to every
+    opcode.
 
     Standard-library helpers sometimes need to call back into Lua synchronously
     (for example ``__pairs``, ``__tostring``, table sort comparators, and
@@ -34,6 +34,29 @@ class GarbageCollectedVM(CoroutineVM):
         self._sync_frame_prefixes: list[list[Frame]] = []
         self.type_metatables: dict[bytes, LuaTable] = {}
         self.gc = LuaGC(self)
+        self.gc.adopt(self.globals)
+        self.gc.adopt(self.main_thread)
+
+    def _new_table(self, frames=()):
+        roots = frames or self._active_frames or ()
+        self.gc.safepoint(roots)
+        table = LuaTable()
+        self.gc.adopt(table)
+        return table
+
+    def _new_cell(self, value=None, frames=()):
+        roots = frames or self._active_frames or ()
+        self.gc.safepoint(roots)
+        cell = Cell(value)
+        self.gc.adopt(cell)
+        return cell
+
+    def _new_closure(self, proto, upvalues, env, frames=()):
+        roots = frames or self._active_frames or ()
+        self.gc.safepoint(roots)
+        closure = Closure(proto, upvalues, env)
+        self.gc.adopt(closure)
+        return closure
 
     @staticmethod
     def _error_value(error):
@@ -80,21 +103,28 @@ class GarbageCollectedVM(CoroutineVM):
         previous = self._active_host_values
         self._active_host_values = (fn, *args)
         try:
-            return super()._host_values(fn, args)
+            values = super()._host_values(fn, args)
+            for value in values:
+                self.gc.adopt(value)
+            self.gc.safepoint((*(self._active_frames or ()), *values))
+            return values
         finally:
             self._active_host_values = previous
 
     def run(self, proto: Proto, fuel=None):
         previous_thread = self.current_thread
+        previous_frames = self._active_frames
         self.current_thread = self.main_thread
         self.main_thread.status = "running"
         try:
             remaining = self.default_fuel if fuel is None else fuel
             root = Closure(proto, [], self.globals)
+            self.gc.adopt(root)
             root_regs = [None] * max(1, proto.register_count)
             if proto.env_reg >= 0:
                 root_regs[proto.env_reg] = self.globals
             frames = [Frame(root, root_regs)]
+            self._active_frames = frames
             final_values = ()
             handlers = OPCODE_HANDLERS
 
@@ -132,12 +162,14 @@ class GarbageCollectedVM(CoroutineVM):
                     capture_error(exc, frames)
                     frames[-1].pending_error = exc
 
+            self.gc.safepoint(final_values)
             if len(final_values) == 0:
                 return None
             if len(final_values) == 1:
                 return final_values[0]
             return final_values
         finally:
+            self._active_frames = previous_frames
             self.current_thread = previous_thread
 
     def call_sync(self, fn, args=()):
@@ -148,7 +180,9 @@ class GarbageCollectedVM(CoroutineVM):
         native-library boundary is deliberately rejected for now.
         """
         proto = Proto("<stdlib-callback>", register_count=1, source=None)
-        parent = Frame(Closure(proto, [], self.globals), [None])
+        parent_closure = Closure(proto, [], self.globals)
+        self.gc.adopt(parent_closure)
+        parent = Frame(parent_closure, [None])
         frames = [parent]
         prefix = list(self._active_frames or ())
         self._sync_frame_prefixes.append(prefix)

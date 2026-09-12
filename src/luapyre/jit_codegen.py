@@ -40,13 +40,13 @@ def _loop_local(lines, item, offset, trusted):
     lines.append(f"        _v = regs[{ins.b}]")
     lines.append(f"        regs[{ins.a}] = _v")
     lines.append(f"        if {ins.a} in cells:")
-    lines.append(f"            cells[{ins.a}] = _Cell(_v)")
+    lines.append(f"            cells[{ins.a}] = vm._new_cell(_v)")
     return True
 
 
 def _loop_newtable(lines, item, offset, trusted):
     ins = item.ins
-    lines.append(f"        regs[{ins.a}] = _LuaTable()")
+    lines.append(f"        regs[{ins.a}] = vm._new_table()")
     return True
 
 
@@ -230,7 +230,7 @@ def _leaf_local(lines, item, offset, trusted):
     lines.append(f"    _v = regs[{ins.b}]")
     lines.append(f"    regs[{ins.a}] = _v")
     lines.append(f"    if {ins.a} in cells:")
-    lines.append(f"        cells[{ins.a}] = _Cell(_v)")
+    lines.append(f"        cells[{ins.a}] = vm._new_cell(_v)")
     return True
 
 

@@ -276,9 +276,9 @@ class PythonJIT:
                 lines.append(f"        _v = regs[{ins.b}]")
                 lines.append(f"        regs[{ins.a}] = _v")
                 lines.append(f"        if {ins.a} in cells:")
-                lines.append(f"            cells[{ins.a}] = _Cell(_v)")
+                lines.append(f"            cells[{ins.a}] = vm._new_cell(_v)")
             elif op is Op.NEWTABLE:
-                lines.append(f"        regs[{ins.a}] = _LuaTable()")
+                lines.append(f"        regs[{ins.a}] = vm._new_table()")
             elif op is Op.GETTABLE:
                 self._guard_deopt(
                     lines,
@@ -460,7 +460,7 @@ class PythonJIT:
             return None
         trusted = bool(proto.jit_trust_types)
         lines = [
-            "def _jit_leaf(frame):",
+            "def _jit_leaf(vm, frame):",
             "    regs = frame.regs",
             "    consts = frame.proto.constants",
             "    cells = frame.cells",
@@ -477,7 +477,7 @@ class PythonJIT:
                 lines.append(f"    _v = regs[{ins.b}]")
                 lines.append(f"    regs[{ins.a}] = _v")
                 lines.append(f"    if {ins.a} in cells:")
-                lines.append(f"        cells[{ins.a}] = _Cell(_v)")
+                lines.append(f"        cells[{ins.a}] = vm._new_cell(_v)")
             elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[op]
                 if not trusted:
