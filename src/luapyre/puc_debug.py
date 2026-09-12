@@ -14,7 +14,7 @@ from .binary_chunks import (
     _PucUpvalue,
     _Translator,
 )
-from .bytecode import Proto, UpvalueDesc
+from .bytecode import Op, Proto, UpvalueDesc
 from .typesys import ANY
 
 
@@ -209,8 +209,19 @@ class _TrackingPCMap(dict[int, int]):
         self.owner.current_puc_pc = key if 0 <= key < len(self.owner._puc_lines) else None
 
 
+_DEST_WRITES = frozenset({
+    Op.NEWTABLE, Op.LEN,
+    Op.ADD, Op.ADD_I, Op.ADD_F, Op.SUB, Op.SUB_I, Op.SUB_F,
+    Op.MUL, Op.MUL_I, Op.MUL_F, Op.DIV, Op.IDIV, Op.MOD, Op.POW,
+    Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR, Op.BNOT, Op.CONCAT,
+    Op.NEG, Op.NOT, Op.TOBOOL, Op.EQ, Op.LT, Op.LE,
+    Op.CLOSURE, Op.CALL, Op.CALLV, Op.VARARG, Op.UNPACK,
+    Op.PVARARG, Op.PGETVARG,
+})
+
+
 class DebugTranslator(_Translator):
-    """Reuse the 0.8 PUC lowering while projecting source lines onto VM ops."""
+    """Reuse the 0.8 PUC lowering while projecting debug facts onto VM ops."""
 
     def __init__(self, source: DebugPucProto):
         self.source = source
@@ -249,6 +260,83 @@ class DebugTranslator(_Translator):
         self.pcmap = _TrackingPCMap(self)
         self.patches: list[tuple[int, str, int]] = []
         self.open_result: tuple[int, int] | None = None
+        self._reg_origins: dict[int, tuple[str, str]] = {}
+        self._reg_constants: dict[int, object] = {}
+
+    @staticmethod
+    def _display_name(value) -> str | None:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", "replace")
+        if isinstance(value, str):
+            return value
+        return None
+
+    def _update_provenance(self, op: Op, a: int, b: int, c: int) -> None:
+        if op is Op.LOADK:
+            self._reg_origins.pop(a, None)
+            try:
+                self._reg_constants[a] = self.proto.constants[b]
+            except IndexError:
+                self._reg_constants.pop(a, None)
+            return
+
+        if op in (Op.MOVE, Op.LOCAL):
+            origin = self._reg_origins.get(b)
+            if origin is None:
+                self._reg_origins.pop(a, None)
+            else:
+                self._reg_origins[a] = origin
+            if b in self._reg_constants:
+                self._reg_constants[a] = self._reg_constants[b]
+            else:
+                self._reg_constants.pop(a, None)
+            return
+
+        if op is Op.GETCELL:
+            origin = self._reg_origins.get(b)
+            if origin is None:
+                self._reg_origins.pop(a, None)
+            else:
+                self._reg_origins[a] = origin
+            self._reg_constants.pop(a, None)
+            return
+
+        if op is Op.GETUPVAL:
+            if 0 <= b < len(self.proto.upvalues):
+                name = self.proto.upvalues[b].name
+                if name != "?":
+                    self._reg_origins[a] = ("upvalue", name)
+                else:
+                    self._reg_origins.pop(a, None)
+            else:
+                self._reg_origins.pop(a, None)
+            self._reg_constants.pop(a, None)
+            return
+
+        if op is Op.GETGLOBAL:
+            name = self._display_name(self.proto.constants[b]) if 0 <= b < len(self.proto.constants) else None
+            if name is None:
+                self._reg_origins.pop(a, None)
+            else:
+                self._reg_origins[a] = ("global", name)
+            self._reg_constants.pop(a, None)
+            return
+
+        if op is Op.GETTABLE:
+            key = self._reg_constants.get(c)
+            name = self._display_name(key)
+            if name is None:
+                self._reg_origins.pop(a, None)
+            else:
+                table_origin = self._reg_origins.get(b)
+                kind = "global" if table_origin == ("upvalue", "_ENV") else "field"
+                self._reg_origins[a] = (kind, name)
+            self._reg_constants.pop(a, None)
+            return
+
+        if op in _DEST_WRITES:
+            self._reg_origins.pop(a, None)
+            self._reg_constants.pop(a, None)
 
     def emit(self, op, a=0, b=0, c=0, d=0, e=0):
         index = super().emit(op, a, b, c, d, e)
@@ -256,4 +344,12 @@ class DebugTranslator(_Translator):
             self.proto.lineinfo.append(-1)
         else:
             self.proto.lineinfo.append(self._puc_lines[self.current_puc_pc])
+
+        used = {a, b, c}
+        self.proto.value_origins.append({
+            reg: origin
+            for reg, origin in self._reg_origins.items()
+            if reg in used
+        })
+        self._update_provenance(op, a, b, c)
         return index
