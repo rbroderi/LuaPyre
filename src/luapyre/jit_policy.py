@@ -37,7 +37,46 @@ JIT_LOOP_BODY_OPS = frozenset({
 })
 
 
+# Fully typed source is LuaPyre's performance target.  Once the compiler has
+# certified a Proto we can admit a substantially larger region and let the 0.15
+# AST backend fail closed if a particular runtime call/table shape is not safe.
+# This set deliberately contains only native-source instructions whose exact
+# semantics the super-region backend understands.
+TYPED_JIT_LOOP_BODY_OPS = JIT_LOOP_BODY_OPS | frozenset({
+    Op.DIV,
+    Op.IDIV,
+    Op.POW,
+    Op.CONCAT,
+    Op.LEN,
+    Op.NEG,
+    Op.BAND,
+    Op.BOR,
+    Op.BXOR,
+    Op.SHL,
+    Op.SHR,
+    Op.BNOT,
+    Op.JMPIFNIL,
+    Op.FORPREP,
+    Op.FORLOOP,
+    Op.JFORLOOP,
+    Op.CALL,
+})
+
+
 def can_jit_natural_loop(code, start_pc: int, end_pc: int) -> bool:
     return start_pc < end_pc and all(
         ins.op in JIT_LOOP_BODY_OPS for ins in code[start_pc:end_pc]
+    )
+
+
+def can_jit_typed_loop(code, start_pc: int, end_pc: int) -> bool:
+    """Return whether a fully typed loop is eligible for 0.15 super-region JIT.
+
+    Eligibility is intentionally structural rather than a guarantee of
+    compilation. Runtime-sensitive operations (notably CALL and table access)
+    still carry guards/deoptimization in the backend.
+    """
+
+    return start_pc < end_pc and all(
+        ins.op in TYPED_JIT_LOOP_BODY_OPS for ins in code[start_pc:end_pc]
     )
