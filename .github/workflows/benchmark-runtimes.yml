@@ -1,0 +1,79 @@
+name: Four-way runtime benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: Timed samples per workload/backend
+        required: true
+        default: '7'
+        type: string
+      warmups:
+        description: Warmup runs per workload/backend
+        required: true
+        default: '3'
+        type: string
+  workflow_call:
+    inputs:
+      repeats:
+        description: Timed samples per workload/backend
+        required: false
+        default: '7'
+        type: string
+      warmups:
+        description: Warmup runs per workload/backend
+        required: false
+        default: '3'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: LuaPyre JIT vs interpreter vs Lua 5.5 vs LuaJIT
+    runs-on: ubuntu-latest
+    env:
+      BENCH_REPEATS: ${{ inputs.repeats || '7' }}
+      BENCH_WARMUPS: ${{ inputs.warmups || '3' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install LuaPyre and benchmark dependencies
+        run: python -m pip install -e '.[dev]'
+
+      - name: Run four-way runtime benchmark
+        run: |
+          python benchmarks/compare_runtimes.py \
+            --repeats "$BENCH_REPEATS" \
+            --warmups "$BENCH_WARMUPS" \
+            --require-all \
+            --json benchmark-results.json \
+            | tee benchmark-results.txt
+
+      - name: Add results to job summary
+        if: always()
+        run: |
+          if [ -f benchmark-results.txt ]; then
+            {
+              echo '## Four-way runtime benchmark'
+              echo
+              echo '```text'
+              cat benchmark-results.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: four-way-runtime-${{ github.run_id }}
+          path: |
+            benchmark-results.txt
+            benchmark-results.json
+          if-no-files-found: warn
