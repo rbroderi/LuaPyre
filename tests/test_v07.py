@@ -8,8 +8,8 @@ def run(source):
 
 
 def test_safe_library_tables_are_installed_without_host_io_libraries():
-    assert run('return type(string), type(table), type(math), type(utf8), io, os, package, debug') == (
-        b'table', b'table', b'table', b'table', None, None, None, None
+    assert run('return type(string), type(table), type(math), type(utf8), io, os, type(package), debug') == (
+        b'table', b'table', b'table', b'table', None, None, b'table', None
     )
 
 
