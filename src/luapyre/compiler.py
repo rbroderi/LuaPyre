@@ -9,6 +9,35 @@ from .semantics import analyze_control_flow
 from .typesys import ANY, BOOLEAN, FLOAT, FUNCTION, INTEGER, NUMBER, STRING, TABLE, LuaType, accepts
 
 
+# Stable compile-time dispatch tables. These are deliberately exact-type maps:
+# the AST is a closed set of concrete node classes, and avoiding repeated
+# isinstance chains keeps dispatch predictable as the language grows.
+_CALL_EXPR_TYPES = frozenset((A.Call, A.MethodCall))
+_MULTI_EXPR_TYPES = frozenset((A.Call, A.MethodCall, A.VarArg))
+
+_GENERIC_ARITH_OPS = {"+": Op.ADD, "-": Op.SUB, "*": Op.MUL}
+_INTEGER_ARITH_OPS = {"+": Op.ADD_I, "-": Op.SUB_I, "*": Op.MUL_I}
+_FLOAT_ARITH_OPS = {"+": Op.ADD_F, "-": Op.SUB_F, "*": Op.MUL_F}
+_BITWISE_OPS = {"&": Op.BAND, "|": Op.BOR, "~": Op.BXOR, "<<": Op.SHL, ">>": Op.SHR}
+_FIXED_BINARY_OPS = {
+    "/": (Op.DIV, FLOAT),
+    "^": (Op.POW, FLOAT),
+    "..": (Op.CONCAT, STRING),
+    "==": (Op.EQ, BOOLEAN),
+    "~=": (Op.EQ, BOOLEAN),
+    "<": (Op.LT, BOOLEAN),
+    ">": (Op.LT, BOOLEAN),
+    "<=": (Op.LE, BOOLEAN),
+    ">=": (Op.LE, BOOLEAN),
+}
+_INTEGER_SENSITIVE_OPS = {"//": Op.IDIV, "%": Op.MOD}
+_COMPARISON_OPS = frozenset(("==", "~=", "<", ">", "<=", ">="))
+_REVERSED_COMPARISON_OPS = frozenset((">", ">="))
+_LOGICAL_JUMPS = {"and": Op.JMPIFNOT, "or": Op.JMPIF}
+_UNARY_OPS = {"-": Op.NEG, "not": Op.NOT, "#": Op.LEN, "~": Op.BNOT}
+_UNARY_RESULT_TYPES = {"not": BOOLEAN, "#": INTEGER, "~": INTEGER}
+
+
 @dataclass(slots=True)
 class Symbol:
     reg: int
@@ -27,7 +56,7 @@ class GlobalBinding:
 @dataclass(slots=True)
 class Scope:
     bindings: dict[str, Symbol | GlobalBinding] = field(default_factory=dict)
-    wildcard: bool | None = None  # None=no explicit wildcard; bool=readonly
+    wildcard: bool | None = None
     implicit_before: bool = True
     close_base: int = 0
 
@@ -116,9 +145,7 @@ class _FunctionCompiler:
             self.patch_a(pc, self.label_pcs[label_id])
 
     def push_scope(self):
-        self.scopes.append(
-            Scope({}, None, self.implicit_global, self.close_depth)
-        )
+        self.scopes.append(Scope({}, None, self.implicit_global, self.close_depth))
 
     def pop_scope(self):
         scope = self.scopes.pop()
@@ -200,9 +227,7 @@ class _FunctionCompiler:
             return Ref("upvalue", idx, self.upvalue_types[idx], name=name)
 
         if self.parent is not None:
-            source = self.parent.capture_for_child(
-                name, allow_implicit=self.implicit_global
-            )
+            source = self.parent.capture_for_child(name, allow_implicit=self.implicit_global)
             if source is not None:
                 if source.kind in ("local", "upvalue"):
                     return self._make_upvalue(name, source)
@@ -255,17 +280,21 @@ class _FunctionCompiler:
         self.emit(Op.SETTABLE, env, key, value)
 
     def _load_ref(self, ref):
-        if ref.kind == "global":
-            return self._emit_global_get(ref.name), ref.typ
-        if ref.kind == "local":
-            if ref.symbol.captured:
+        match ref.kind:
+            case "global":
+                return self._emit_global_get(ref.name), ref.typ
+            case "local":
+                if ref.symbol.captured:
+                    out = self.alloc()
+                    self.emit(Op.GETCELL, out, ref.index)
+                    return out, ref.typ
+                return ref.index, ref.typ
+            case "upvalue":
                 out = self.alloc()
-                self.emit(Op.GETCELL, out, ref.index)
+                self.emit(Op.GETUPVAL, out, ref.index)
                 return out, ref.typ
-            return ref.index, ref.typ
-        out = self.alloc()
-        self.emit(Op.GETUPVAL, out, ref.index)
-        return out, ref.typ
+            case _:
+                raise RuntimeError(f"unknown reference kind: {ref.kind}")
 
     def _store_ref(self, ref, value, line, actual=ANY):
         if ref.readonly or (ref.symbol is not None and ref.symbol.readonly):
@@ -275,15 +304,19 @@ class _FunctionCompiler:
             raise LuaTypeError(f"line {line}: cannot assign {actual} to {ref.typ}")
         if ref.typ is not ANY and actual is ANY:
             self.emit(Op.GUARD, value, self.proto.add_const(ref.typ.name))
-        if ref.kind == "global":
-            self._emit_global_set(ref.name, value)
-        elif ref.kind == "local":
-            if ref.symbol.captured:
-                self.emit(Op.SETCELL, ref.index, value)
-            else:
-                self.emit(Op.MOVE, ref.index, value)
-        else:
-            self.emit(Op.SETUPVAL, ref.index, value)
+
+        match ref.kind:
+            case "global":
+                self._emit_global_set(ref.name, value)
+            case "local":
+                if ref.symbol.captured:
+                    self.emit(Op.SETCELL, ref.index, value)
+                else:
+                    self.emit(Op.MOVE, ref.index, value)
+            case "upvalue":
+                self.emit(Op.SETUPVAL, ref.index, value)
+            case _:
+                raise RuntimeError(f"unknown reference kind: {ref.kind}")
 
     def _global_initialize(self, declarations, values, line):
         prepared = []
@@ -309,143 +342,126 @@ class _FunctionCompiler:
             self.patch_a(jump, end)
 
     def stmt(self, stmt):
-        if isinstance(stmt, A.LocalDecl):
-            values = self.adjust_values(stmt.values, len(stmt.names))
-            for declared, (vr, actual) in zip(stmt.names, values):
-                if declared.typ is not ANY and actual is not ANY and not accepts(declared.typ, actual):
-                    raise LuaTypeError(f"line {stmt.line}: cannot assign {actual} to {declared.typ}")
-                if declared.typ is not ANY and actual is ANY:
-                    self.emit(Op.GUARD, vr, self.proto.add_const(declared.typ.name))
-                r = self.alloc()
-                self.emit(Op.LOCAL, r, vr)
-                readonly = declared.attribute in ("const", "close")
-                self.define_local(declared.name, Symbol(r, declared.typ, readonly=readonly))
-                if declared.attribute == "close":
-                    self.emit(Op.TBC, r)
-                    self.close_depth += 1
-            return
+        handler = _STMT_HANDLERS.get(type(stmt))
+        if handler is None:
+            raise NotImplementedError(type(stmt).__name__)
+        return handler(self, stmt)
 
-        if isinstance(stmt, A.GlobalDecl):
-            if stmt.wildcard:
-                self.declare_wildcard(stmt.wildcard_attribute == "const")
-                return
-            values = self.adjust_values(stmt.values, len(stmt.names)) if stmt.values else []
-            for declared in stmt.names:
-                self.declare_global(
-                    declared.name,
-                    declared.typ,
-                    declared.attribute == "const",
-                )
-            if values:
-                self._global_initialize(stmt.names, values, stmt.line)
-            return
+    def _stmt_local_decl(self, stmt):
+        values = self.adjust_values(stmt.values, len(stmt.names))
+        for declared, (vr, actual) in zip(stmt.names, values):
+            if declared.typ is not ANY and actual is not ANY and not accepts(declared.typ, actual):
+                raise LuaTypeError(f"line {stmt.line}: cannot assign {actual} to {declared.typ}")
+            if declared.typ is not ANY and actual is ANY:
+                self.emit(Op.GUARD, vr, self.proto.add_const(declared.typ.name))
+            r = self.alloc()
+            self.emit(Op.LOCAL, r, vr)
+            readonly = declared.attribute in ("const", "close")
+            self.define_local(declared.name, Symbol(r, declared.typ, readonly=readonly))
+            if declared.attribute == "close":
+                self.emit(Op.TBC, r)
+                self.close_depth += 1
 
-        if isinstance(stmt, A.GlobalFunctionDef):
-            declared = A.DeclaredName(stmt.name, FUNCTION, None)
-            self.declare_global(stmt.name, FUNCTION, False)
-            out = self._new_child(
-                stmt.name, stmt.params, stmt.return_types, stmt.body,
-                stmt.vararg_name, stmt.vararg_type,
-            )
-            self._global_initialize([declared], [(out, FUNCTION)], stmt.line)
+    def _stmt_global_decl(self, stmt):
+        if stmt.wildcard:
+            self.declare_wildcard(stmt.wildcard_attribute == "const")
             return
+        values = self.adjust_values(stmt.values, len(stmt.names)) if stmt.values else []
+        for declared in stmt.names:
+            self.declare_global(declared.name, declared.typ, declared.attribute == "const")
+        if values:
+            self._global_initialize(stmt.names, values, stmt.line)
 
-        if isinstance(stmt, A.Assign):
-            targets = [self.prepare_target(t) for t in stmt.targets]
-            values = self.adjust_values(stmt.values, len(stmt.targets))
-            for target, (vr, actual) in zip(targets, values):
-                self.assign_prepared(target, vr, actual, stmt.line)
-            return
+    def _stmt_global_function_def(self, stmt):
+        declared = A.DeclaredName(stmt.name, FUNCTION, None)
+        self.declare_global(stmt.name, FUNCTION, False)
+        out = self._new_child(
+            stmt.name, stmt.params, stmt.return_types, stmt.body,
+            stmt.vararg_name, stmt.vararg_type,
+        )
+        self._global_initialize([declared], [(out, FUNCTION)], stmt.line)
 
-        if isinstance(stmt, A.Return):
-            self.compile_return(stmt)
-            return
+    def _stmt_assign(self, stmt):
+        targets = [self.prepare_target(t) for t in stmt.targets]
+        values = self.adjust_values(stmt.values, len(stmt.targets))
+        for target, (vr, actual) in zip(targets, values):
+            self.assign_prepared(target, vr, actual, stmt.line)
 
-        if isinstance(stmt, A.ExprStmt):
-            if isinstance(stmt.expr, (A.Call, A.MethodCall)):
-                self.call_expr(stmt.expr, 0)
-            else:
-                self.expr(stmt.expr)
-            return
+    def _stmt_return(self, stmt):
+        self.compile_return(stmt)
 
-        if isinstance(stmt, A.LabelStmt):
-            self.label_pcs[stmt.label_id] = len(self.proto.code)
-            return
+    def _stmt_expr(self, stmt):
+        if type(stmt.expr) in _CALL_EXPR_TYPES:
+            self.call_expr(stmt.expr, 0)
+        else:
+            self.expr(stmt.expr)
 
-        if isinstance(stmt, A.GotoStmt):
-            self.emit_close_to(stmt.close_depth)
-            jump = self.emit(Op.JMP, 0)
-            self.pending_gotos.append((jump, stmt.target_id))
-            return
+    def _stmt_label(self, stmt):
+        self.label_pcs[stmt.label_id] = len(self.proto.code)
 
-        if isinstance(stmt, A.DoStmt):
-            self.compile_block(stmt.body)
-            return
+    def _stmt_goto(self, stmt):
+        self.emit_close_to(stmt.close_depth)
+        jump = self.emit(Op.JMP, 0)
+        self.pending_gotos.append((jump, stmt.target_id))
 
-        if isinstance(stmt, A.WhileStmt):
-            start = len(self.proto.code)
+    def _stmt_do(self, stmt):
+        self.compile_block(stmt.body)
+
+    def _stmt_while(self, stmt):
+        start = len(self.proto.code)
+        cr, _ = self.expr(stmt.condition)
+        jump_false = self.emit(Op.JMPIFNOT, 0, cr)
+        self.loop_breaks.append(LoopContext(self.close_depth))
+        self.compile_block(stmt.body)
+        self.emit(Op.JMP, start)
+        end = len(self.proto.code)
+        self.patch_a(jump_false, end)
+        self._finish_loop(end)
+
+    def _stmt_repeat(self, stmt):
+        base = self.close_depth
+        self.push_scope()
+        start = len(self.proto.code)
+        self.loop_breaks.append(LoopContext(base))
+        try:
+            self.compile_block(stmt.body, scoped=False)
             cr, _ = self.expr(stmt.condition)
-            jump_false = self.emit(Op.JMPIFNOT, 0, cr)
-            self.loop_breaks.append(LoopContext(self.close_depth))
-            self.compile_block(stmt.body)
-            self.emit(Op.JMP, start)
+            self.emit_close_to(base, update=True)
+            self.emit(Op.JMPIFNOT, start, cr)
             end = len(self.proto.code)
-            self.patch_a(jump_false, end)
             self._finish_loop(end)
-            return
+        finally:
+            self.pop_scope()
 
-        if isinstance(stmt, A.RepeatStmt):
-            base = self.close_depth
-            self.push_scope()
-            start = len(self.proto.code)
-            self.loop_breaks.append(LoopContext(base))
-            try:
-                self.compile_block(stmt.body, scoped=False)
-                cr, _ = self.expr(stmt.condition)
-                self.emit_close_to(base, update=True)
-                self.emit(Op.JMPIFNOT, start, cr)
-                end = len(self.proto.code)
-                self._finish_loop(end)
-            finally:
-                self.pop_scope()
-            return
+    def _stmt_numeric_for(self, stmt):
+        self.numeric_for(stmt)
 
-        if isinstance(stmt, A.NumericForStmt):
-            self.numeric_for(stmt)
-            return
+    def _stmt_generic_for(self, stmt):
+        self.generic_for(stmt)
 
-        if isinstance(stmt, A.GenericForStmt):
-            self.generic_for(stmt)
-            return
+    def _stmt_break(self, stmt):
+        if not self.loop_breaks:
+            raise LuaSyntaxError(f"line {stmt.line}: 'break' outside a loop")
+        context = self.loop_breaks[-1]
+        self.emit_close_to(context.close_depth)
+        context.jumps.append(self.emit(Op.JMP, 0))
 
-        if isinstance(stmt, A.BreakStmt):
-            if not self.loop_breaks:
-                raise LuaSyntaxError(f"line {stmt.line}: 'break' outside a loop")
-            context = self.loop_breaks[-1]
-            self.emit_close_to(context.close_depth)
-            context.jumps.append(self.emit(Op.JMP, 0))
-            return
+    def _stmt_if(self, stmt):
+        end_jumps = []
+        for cond, body in stmt.clauses:
+            cr, _ = self.expr(cond)
+            jf = self.emit(Op.JMPIFNOT, 0, cr)
+            self.compile_block(body)
+            end_jumps.append(self.emit(Op.JMP, 0))
+            self.patch_a(jf, len(self.proto.code))
+        if stmt.else_body:
+            self.compile_block(stmt.else_body)
+        end = len(self.proto.code)
+        for jump in end_jumps:
+            self.patch_a(jump, end)
 
-        if isinstance(stmt, A.IfStmt):
-            end_jumps = []
-            for cond, body in stmt.clauses:
-                cr, _ = self.expr(cond)
-                jf = self.emit(Op.JMPIFNOT, 0, cr)
-                self.compile_block(body)
-                end_jumps.append(self.emit(Op.JMP, 0))
-                self.patch_a(jf, len(self.proto.code))
-            if stmt.else_body:
-                self.compile_block(stmt.else_body)
-            end = len(self.proto.code)
-            for jump in end_jumps:
-                self.patch_a(jump, end)
-            return
-
-        if isinstance(stmt, A.FunctionDef):
-            self.function_def(stmt)
-            return
-
-        raise NotImplementedError(type(stmt).__name__)
+    def _stmt_function_def(self, stmt):
+        self.function_def(stmt)
 
     def numeric_for(self, stmt):
         sr, _ = self.expr(stmt.start)
@@ -455,8 +471,12 @@ class _FunctionCompiler:
             self.emit(Op.LOADK, tr, self.proto.add_const(1))
         else:
             tr, _ = self.expr(stmt.step)
-        idx = self.alloc(); limit = self.alloc(); step = self.alloc()
-        self.emit(Op.MOVE, idx, sr); self.emit(Op.MOVE, limit, lr); self.emit(Op.MOVE, step, tr)
+        idx = self.alloc()
+        limit = self.alloc()
+        step = self.alloc()
+        self.emit(Op.MOVE, idx, sr)
+        self.emit(Op.MOVE, limit, lr)
+        self.emit(Op.MOVE, step, tr)
         prep = self.emit(Op.FORPREP, idx, limit, step, 0)
         base = self.close_depth
         self.push_scope()
@@ -564,24 +584,29 @@ class _FunctionCompiler:
         )
 
     def prepare_target(self, target):
-        if isinstance(target, A.Name):
-            return ("name", target.value)
-        if isinstance(target, A.Field):
-            table, _ = self.expr(target.table)
-            key = self.alloc()
-            self.emit(Op.LOADK, key, self.proto.add_const(target.name.encode()))
-            return ("table", table, key)
-        if isinstance(target, A.Index):
-            table, _ = self.expr(target.table)
-            key, _ = self.expr(target.key)
-            return ("table", table, key)
-        raise LuaSyntaxError(f"line {target.line}: invalid assignment target")
+        match target:
+            case A.Name(value=name):
+                return ("name", name)
+            case A.Field(table=table_expr, name=name):
+                table, _ = self.expr(table_expr)
+                key = self.alloc()
+                self.emit(Op.LOADK, key, self.proto.add_const(name.encode()))
+                return ("table", table, key)
+            case A.Index(table=table_expr, key=key_expr):
+                table, _ = self.expr(table_expr)
+                key, _ = self.expr(key_expr)
+                return ("table", table, key)
+            case _:
+                raise LuaSyntaxError(f"line {target.line}: invalid assignment target")
 
     def assign_prepared(self, target, value, actual, line):
-        if target[0] == "table":
-            self.emit(Op.SETTABLE, target[1], target[2], value)
-            return
-        self._store_ref(self.resolve(target[1]), value, line, actual)
+        match target:
+            case ("table", table, key):
+                self.emit(Op.SETTABLE, table, key, value)
+            case ("name", name):
+                self._store_ref(self.resolve(name), value, line, actual)
+            case _:
+                raise RuntimeError(f"unknown prepared target: {target!r}")
 
     def adjust_values(self, exprs, wanted):
         values = []
@@ -601,7 +626,11 @@ class _FunctionCompiler:
             self.emit_close_to(0)
             self.emit(Op.RETURN, 0, 0)
             return
-        if len(stmt.values) == 1 and isinstance(stmt.values[0], (A.Call, A.MethodCall)) and (not self.proto.return_types or self.proto.return_types[0] is ANY):
+        if (
+            len(stmt.values) == 1
+            and type(stmt.values[0]) in _CALL_EXPR_TYPES
+            and (not self.proto.return_types or self.proto.return_types[0] is ANY)
+        ):
             self.tailcall_expr(stmt.values[0])
             return
         fixed = []
@@ -629,12 +658,13 @@ class _FunctionCompiler:
 
     @staticmethod
     def is_multi_expr(expr):
-        return isinstance(expr, (A.Call, A.MethodCall, A.VarArg))
+        return type(expr) in _MULTI_EXPR_TYPES
 
     def multi_expr(self, expr, want):
-        if isinstance(expr, (A.Call, A.MethodCall)):
+        expr_type = type(expr)
+        if expr_type in _CALL_EXPR_TYPES:
             return self.call_expr(expr, want)
-        if isinstance(expr, A.VarArg):
+        if expr_type is A.VarArg:
             if not self.proto.is_vararg:
                 raise LuaSyntaxError(f"line {expr.line}: cannot use '...' outside a variadic function")
             if want == -1:
@@ -650,134 +680,146 @@ class _FunctionCompiler:
         return [first] + [(self.nil_reg(), ANY) for _ in range(want - 1)]
 
     def expr(self, expr):
-        if isinstance(expr, A.Literal):
-            r = self.alloc()
-            self.emit(Op.LOADK, r, self.proto.add_const(expr.value))
-            return r, expr.inferred_type
-        if isinstance(expr, A.Name):
-            return self._load_ref(self.resolve(expr.value))
-        if isinstance(expr, A.VarArg):
-            return self.multi_expr(expr, 1)[0]
-        if isinstance(expr, A.FunctionExpr):
-            return self.function_expr(expr)
-        if isinstance(expr, A.TableCtor):
-            out = self.alloc()
-            self.emit(Op.NEWTABLE, out)
-            array_index = 1
-            for i, field in enumerate(expr.fields):
-                last = i == len(expr.fields) - 1
-                if field.key is None:
-                    if last and self.is_multi_expr(field.value):
-                        mv = self.multi_expr(field.value, -1)[0][0]
-                        self.emit(Op.SETLISTV, out, array_index, mv)
-                    else:
-                        vr, _ = self.expr(field.value)
-                        kr = self.alloc()
-                        self.emit(Op.LOADK, kr, self.proto.add_const(array_index))
-                        self.emit(Op.SETTABLE, out, kr, vr)
-                    array_index += 1
+        handler = _EXPR_HANDLERS.get(type(expr))
+        if handler is None:
+            raise NotImplementedError(type(expr).__name__)
+        return handler(self, expr)
+
+    def _expr_literal(self, expr):
+        r = self.alloc()
+        self.emit(Op.LOADK, r, self.proto.add_const(expr.value))
+        return r, expr.inferred_type
+
+    def _expr_name(self, expr):
+        return self._load_ref(self.resolve(expr.value))
+
+    def _expr_vararg(self, expr):
+        return self.multi_expr(expr, 1)[0]
+
+    def _expr_function(self, expr):
+        return self.function_expr(expr)
+
+    def _expr_table_ctor(self, expr):
+        out = self.alloc()
+        self.emit(Op.NEWTABLE, out)
+        array_index = 1
+        for i, field in enumerate(expr.fields):
+            last = i == len(expr.fields) - 1
+            if field.key is None:
+                if last and self.is_multi_expr(field.value):
+                    mv = self.multi_expr(field.value, -1)[0][0]
+                    self.emit(Op.SETLISTV, out, array_index, mv)
                 else:
-                    if isinstance(field.key, str):
-                        kr = self.alloc()
-                        self.emit(Op.LOADK, kr, self.proto.add_const(field.key.encode()))
-                    else:
-                        kr, _ = self.expr(field.key)
                     vr, _ = self.expr(field.value)
+                    kr = self.alloc()
+                    self.emit(Op.LOADK, kr, self.proto.add_const(array_index))
                     self.emit(Op.SETTABLE, out, kr, vr)
-            return out, TABLE
-        if isinstance(expr, A.Field):
-            table, _ = self.expr(expr.table)
-            key = self.alloc()
-            self.emit(Op.LOADK, key, self.proto.add_const(expr.name.encode()))
-            out = self.alloc()
-            self.emit(Op.GETTABLE, out, table, key)
-            return out, ANY
-        if isinstance(expr, A.Index):
-            table, _ = self.expr(expr.table)
-            key, _ = self.expr(expr.key)
-            out = self.alloc()
-            self.emit(Op.GETTABLE, out, table, key)
-            return out, ANY
-        if isinstance(expr, A.Unary):
-            x, typ = self.expr(expr.operand)
-            out = self.alloc()
-            if expr.op == "-":
-                self.emit(Op.NEG, out, x); return out, typ
-            if expr.op == "not":
-                self.emit(Op.NOT, out, x); return out, BOOLEAN
-            if expr.op == "#":
-                self.emit(Op.LEN, out, x); return out, INTEGER
-            if expr.op == "~":
-                self.emit(Op.BNOT, out, x); return out, INTEGER
-            raise NotImplementedError(expr.op)
-        if isinstance(expr, A.Binary):
-            if expr.op in ("and", "or"):
-                left, left_type = self.expr(expr.left)
-                out = self.alloc()
-                self.emit(Op.MOVE, out, left)
-                jump = self.emit(Op.JMPIFNOT if expr.op == "and" else Op.JMPIF, 0, left)
-                right, right_type = self.expr(expr.right)
-                self.emit(Op.MOVE, out, right)
-                self.patch_a(jump, len(self.proto.code))
-                return out, left_type if left_type == right_type else ANY
-            left, left_type = self.expr(expr.left)
-            right, right_type = self.expr(expr.right)
-            out = self.alloc()
-            if expr.op in ("+", "-", "*"):
-                generic = {"+": Op.ADD, "-": Op.SUB, "*": Op.MUL}[expr.op]
-                if left_type is INTEGER and right_type is INTEGER:
-                    op = {"+": Op.ADD_I, "-": Op.SUB_I, "*": Op.MUL_I}[expr.op]; result_type = INTEGER
-                elif left_type in (INTEGER, FLOAT) and right_type in (INTEGER, FLOAT) and (left_type is FLOAT or right_type is FLOAT):
-                    op = {"+": Op.ADD_F, "-": Op.SUB_F, "*": Op.MUL_F}[expr.op]; result_type = FLOAT
-                else:
-                    op = generic; result_type = ANY if ANY in (left_type, right_type) else NUMBER
-            elif expr.op == "/":
-                op, result_type = Op.DIV, FLOAT
-            elif expr.op == "//":
-                op, result_type = Op.IDIV, INTEGER if left_type is INTEGER and right_type is INTEGER else NUMBER
-            elif expr.op == "%":
-                op, result_type = Op.MOD, INTEGER if left_type is INTEGER and right_type is INTEGER else NUMBER
-            elif expr.op == "^":
-                op, result_type = Op.POW, FLOAT
-            elif expr.op == "..":
-                op, result_type = Op.CONCAT, STRING
-            elif expr.op in ("&", "|", "~", "<<", ">>"):
-                op = {"&": Op.BAND, "|": Op.BOR, "~": Op.BXOR, "<<": Op.SHL, ">>": Op.SHR}[expr.op]; result_type = INTEGER
-            elif expr.op in ("==", "~="):
-                op, result_type = Op.EQ, BOOLEAN
-            elif expr.op in ("<", ">", "<=", ">="):
-                op, result_type = (Op.LT if expr.op in ("<", ">") else Op.LE), BOOLEAN
+                array_index += 1
             else:
+                if isinstance(field.key, str):
+                    kr = self.alloc()
+                    self.emit(Op.LOADK, kr, self.proto.add_const(field.key.encode()))
+                else:
+                    kr, _ = self.expr(field.key)
+                vr, _ = self.expr(field.value)
+                self.emit(Op.SETTABLE, out, kr, vr)
+        return out, TABLE
+
+    def _expr_field(self, expr):
+        table, _ = self.expr(expr.table)
+        key = self.alloc()
+        self.emit(Op.LOADK, key, self.proto.add_const(expr.name.encode()))
+        out = self.alloc()
+        self.emit(Op.GETTABLE, out, table, key)
+        return out, ANY
+
+    def _expr_index(self, expr):
+        table, _ = self.expr(expr.table)
+        key, _ = self.expr(expr.key)
+        out = self.alloc()
+        self.emit(Op.GETTABLE, out, table, key)
+        return out, ANY
+
+    def _expr_unary(self, expr):
+        x, typ = self.expr(expr.operand)
+        op = _UNARY_OPS.get(expr.op)
+        if op is None:
+            raise NotImplementedError(expr.op)
+        out = self.alloc()
+        self.emit(op, out, x)
+        return out, _UNARY_RESULT_TYPES.get(expr.op, typ)
+
+    def _expr_binary(self, expr):
+        logical_jump = _LOGICAL_JUMPS.get(expr.op)
+        if logical_jump is not None:
+            left, left_type = self.expr(expr.left)
+            out = self.alloc()
+            self.emit(Op.MOVE, out, left)
+            jump = self.emit(logical_jump, 0, left)
+            right, right_type = self.expr(expr.right)
+            self.emit(Op.MOVE, out, right)
+            self.patch_a(jump, len(self.proto.code))
+            return out, left_type if left_type == right_type else ANY
+
+        left, left_type = self.expr(expr.left)
+        right, right_type = self.expr(expr.right)
+        out = self.alloc()
+
+        if expr.op in _GENERIC_ARITH_OPS:
+            if left_type is INTEGER and right_type is INTEGER:
+                op = _INTEGER_ARITH_OPS[expr.op]
+                result_type = INTEGER
+            elif (
+                left_type in (INTEGER, FLOAT)
+                and right_type in (INTEGER, FLOAT)
+                and (left_type is FLOAT or right_type is FLOAT)
+            ):
+                op = _FLOAT_ARITH_OPS[expr.op]
+                result_type = FLOAT
+            else:
+                op = _GENERIC_ARITH_OPS[expr.op]
+                result_type = ANY if ANY in (left_type, right_type) else NUMBER
+        elif expr.op in _INTEGER_SENSITIVE_OPS:
+            op = _INTEGER_SENSITIVE_OPS[expr.op]
+            result_type = INTEGER if left_type is INTEGER and right_type is INTEGER else NUMBER
+        elif expr.op in _BITWISE_OPS:
+            op = _BITWISE_OPS[expr.op]
+            result_type = INTEGER
+        else:
+            fixed = _FIXED_BINARY_OPS.get(expr.op)
+            if fixed is None:
                 raise NotImplementedError(expr.op)
-            self.emit(op, out, left, right)
-            if expr.op == ">":
-                self.proto.code[-1] = Ins(Op.LT, out, right, left)
-            elif expr.op == ">=":
-                self.proto.code[-1] = Ins(Op.LE, out, right, left)
-            if expr.op in ("==", "~=", "<", ">", "<=", ">="):
-                self.emit(Op.TOBOOL, out, out)
-            if expr.op == "~=":
-                negated = self.alloc()
-                self.emit(Op.NOT, negated, out)
-                return negated, BOOLEAN
-            return out, result_type
-        if isinstance(expr, (A.Call, A.MethodCall)):
-            return self.call_expr(expr, 1)[0]
-        raise NotImplementedError(type(expr).__name__)
+            op, result_type = fixed
+
+        emit_left, emit_right = (right, left) if expr.op in _REVERSED_COMPARISON_OPS else (left, right)
+        self.emit(op, out, emit_left, emit_right)
+
+        if expr.op in _COMPARISON_OPS:
+            self.emit(Op.TOBOOL, out, out)
+        if expr.op == "~=":
+            negated = self.alloc()
+            self.emit(Op.NOT, negated, out)
+            return negated, BOOLEAN
+        return out, result_type
+
+    def _expr_call(self, expr):
+        return self.call_expr(expr, 1)[0]
 
     def _call_parts(self, expr):
-        if isinstance(expr, A.MethodCall):
-            receiver, _ = self.expr(expr.receiver)
-            key = self.alloc()
-            self.emit(Op.LOADK, key, self.proto.add_const(expr.name.encode()))
-            fn = self.alloc()
-            self.emit(Op.GETTABLE, fn, receiver, key)
-            args = [receiver]
-            source_args = expr.args
-        else:
-            fn, _ = self.expr(expr.func)
-            args = []
-            source_args = expr.args
+        match expr:
+            case A.MethodCall(receiver=receiver_expr, name=name, args=source_args):
+                receiver, _ = self.expr(receiver_expr)
+                key = self.alloc()
+                self.emit(Op.LOADK, key, self.proto.add_const(name.encode()))
+                fn = self.alloc()
+                self.emit(Op.GETTABLE, fn, receiver, key)
+                args = [receiver]
+            case A.Call(func=func, args=source_args):
+                fn, _ = self.expr(func)
+                args = []
+            case _:
+                raise RuntimeError(f"not a call expression: {type(expr).__name__}")
+
         multi_last = None
         for i, arg in enumerate(source_args):
             if i == len(source_args) - 1 and self.is_multi_expr(arg):
@@ -803,7 +845,7 @@ class _FunctionCompiler:
                 self.emit(Op.UNPACK, material, mv, max(0, want))
                 out = material
         typ = ANY
-        if isinstance(expr, A.Call) and isinstance(expr.func, A.Name):
+        if type(expr) is A.Call and type(expr.func) is A.Name:
             ref = self.resolve(expr.func.value)
             if ref.symbol and ref.symbol.returns:
                 typ = ref.symbol.returns[0] if ref.symbol.returns else ANY
@@ -820,3 +862,37 @@ class _FunctionCompiler:
             self.emit(Op.TAILCALL, 0, fn, arg_base, arg_count, 0)
         else:
             self.emit(Op.TAILCALLV, 0, fn, arg_base, arg_count, multi_last)
+
+
+_STMT_HANDLERS = {
+    A.LocalDecl: _FunctionCompiler._stmt_local_decl,
+    A.GlobalDecl: _FunctionCompiler._stmt_global_decl,
+    A.GlobalFunctionDef: _FunctionCompiler._stmt_global_function_def,
+    A.Assign: _FunctionCompiler._stmt_assign,
+    A.Return: _FunctionCompiler._stmt_return,
+    A.ExprStmt: _FunctionCompiler._stmt_expr,
+    A.LabelStmt: _FunctionCompiler._stmt_label,
+    A.GotoStmt: _FunctionCompiler._stmt_goto,
+    A.DoStmt: _FunctionCompiler._stmt_do,
+    A.WhileStmt: _FunctionCompiler._stmt_while,
+    A.RepeatStmt: _FunctionCompiler._stmt_repeat,
+    A.NumericForStmt: _FunctionCompiler._stmt_numeric_for,
+    A.GenericForStmt: _FunctionCompiler._stmt_generic_for,
+    A.BreakStmt: _FunctionCompiler._stmt_break,
+    A.IfStmt: _FunctionCompiler._stmt_if,
+    A.FunctionDef: _FunctionCompiler._stmt_function_def,
+}
+
+_EXPR_HANDLERS = {
+    A.Literal: _FunctionCompiler._expr_literal,
+    A.Name: _FunctionCompiler._expr_name,
+    A.VarArg: _FunctionCompiler._expr_vararg,
+    A.FunctionExpr: _FunctionCompiler._expr_function,
+    A.TableCtor: _FunctionCompiler._expr_table_ctor,
+    A.Field: _FunctionCompiler._expr_field,
+    A.Index: _FunctionCompiler._expr_index,
+    A.Unary: _FunctionCompiler._expr_unary,
+    A.Binary: _FunctionCompiler._expr_binary,
+    A.Call: _FunctionCompiler._expr_call,
+    A.MethodCall: _FunctionCompiler._expr_call,
+}
