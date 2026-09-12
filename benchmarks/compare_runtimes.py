@@ -15,14 +15,15 @@ from typing import Callable
 
 from luapyre import LuaRuntime
 
-from vm_programs import WORKLOADS
+from vm_programs import WORKLOADS, Workload
 
 
 @dataclass(frozen=True, slots=True)
 class Backend:
     name: str
     detail: str
-    prepare: Callable[[str, object], Callable[[], object]]
+    dialect: str
+    prepare: Callable[[str], Callable[[], object]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +35,7 @@ class Timing:
 def _luapyre_backend(*, jit: bool) -> Backend:
     label = "LuaPyre JIT" if jit else "LuaPyre interp"
 
-    def prepare(source: str, expected: object):
+    def prepare(source: str):
         runtime = LuaRuntime(fuel=20_000_000, jit=jit)
         proto = runtime.compile(source)
 
@@ -43,7 +44,7 @@ def _luapyre_backend(*, jit: bool) -> Backend:
 
         return run
 
-    return Backend(label, "native Python runtime", prepare)
+    return Backend(label, "native Python runtime", "luapyre", prepare)
 
 
 def _lupa_backend(label: str, module_name: str) -> Backend | None:
@@ -57,12 +58,12 @@ def _lupa_backend(label: str, module_name: str) -> Backend | None:
     version = getattr(module, "LUA_VERSION", "?")
     detail = f"{implementation} / {version} via {module_name}"
 
-    def prepare(source: str, expected: object):
+    def prepare(source: str):
         lua = module.LuaRuntime(unpack_returned_tuples=True)
         fn = lua.eval("function()\n" + source + "\nend")
         return fn
 
-    return Backend(label, detail, prepare)
+    return Backend(label, detail, "lua", prepare)
 
 
 def discover_backends(require_all: bool = False) -> list[Backend]:
@@ -92,15 +93,15 @@ def discover_backends(require_all: bool = False) -> list[Backend]:
 
 def measure(
     run: Callable[[], object],
-    expected: object,
+    workload: Workload,
     *,
     repeats: int,
     warmups: int,
 ) -> Timing:
     for _ in range(warmups):
         result = run()
-        if result != expected:
-            raise AssertionError(f"expected {expected!r}, got {result!r}")
+        if not workload.validate(result):
+            raise AssertionError(f"expected {workload.expected!r}, got {result!r}")
 
     samples = []
     was_enabled = gc.isenabled()
@@ -110,8 +111,8 @@ def measure(
             start = time.perf_counter_ns()
             result = run()
             elapsed = time.perf_counter_ns() - start
-            if result != expected:
-                raise AssertionError(f"expected {expected!r}, got {result!r}")
+            if not workload.validate(result):
+                raise AssertionError(f"expected {workload.expected!r}, got {result!r}")
             samples.append(elapsed / 1_000_000)
     finally:
         if was_enabled:
@@ -126,47 +127,69 @@ def _ratio(value: float, reference: float | None) -> str:
     return f"{value / reference:6.2f}x"
 
 
+def _selected_workloads(groups: set[str] | None) -> dict[str, Workload]:
+    if not groups:
+        return WORKLOADS
+    return {
+        name: workload
+        for name, workload in WORKLOADS.items()
+        if workload.group in groups
+    }
+
+
 def run_suite(
-    *, repeats: int, warmups: int, require_all: bool
+    *,
+    repeats: int,
+    warmups: int,
+    require_all: bool,
+    groups: set[str] | None = None,
 ) -> tuple[list[Backend], dict[str, dict[str, Timing]]]:
     backends = discover_backends(require_all=require_all)
+    workloads = _selected_workloads(groups)
+    if not workloads:
+        raise RuntimeError("no workloads matched the requested group(s)")
+
     print(sys.version.replace("\n", " "))
     for backend in backends:
         print(f"{backend.name:16s} {backend.detail}")
     print()
 
     results: dict[str, dict[str, Timing]] = {}
-    for workload, (source, expected) in WORKLOADS.items():
+    for name, workload in workloads.items():
         row = {}
         for backend in backends:
-            run = backend.prepare(source, expected)
+            source = workload.source_for(backend.dialect)
+            run = backend.prepare(source)
             row[backend.name] = measure(
                 run,
-                expected,
+                workload,
                 repeats=repeats,
                 warmups=warmups,
             )
-        results[workload] = row
+        results[name] = row
 
     names = [backend.name for backend in backends]
-    header = "workload     " + "  ".join(f"{name:>16s}" for name in names)
+    width = max(16, max(len(name) for name in workloads))
+    header = f"{'workload':{width}s} " + "  ".join(
+        f"{name:>16s}" for name in names
+    )
     print(header)
     print("-" * len(header))
-    for workload, row in results.items():
+    for name, row in results.items():
         values = "  ".join(
-            f"{row[name].median_ms:13.3f} ms" for name in names
+            f"{row[backend].median_ms:13.3f} ms" for backend in names
         )
-        print(f"{workload:12s} {values}")
+        print(f"{name:{width}s} {values}")
 
     print("\nLuaPyre JIT relative performance (lower ratios are better):")
-    print("workload       vs interp   vs Lua 5.5   vs LuaJIT")
-    for workload, row in results.items():
+    print(f"{'workload':{width}s}   vs interp   vs Lua 5.5   vs LuaJIT")
+    for name, row in results.items():
         jit_ms = row["LuaPyre JIT"].median_ms
         interp = row.get("LuaPyre interp")
         lua55 = row.get("Lua 5.5")
         luajit = row.get("LuaJIT 2.1") or row.get("LuaJIT 2.0")
         print(
-            f"{workload:12s} "
+            f"{name:{width}s} "
             f"{_ratio(jit_ms, interp.median_ms if interp else None):>11s} "
             f"{_ratio(jit_ms, lua55.median_ms if lua55 else None):>12s} "
             f"{_ratio(jit_ms, luajit.median_ms if luajit else None):>11s}"
@@ -184,24 +207,33 @@ def write_json_report(
     warmups: int,
 ) -> None:
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "commit": os.environ.get("GITHUB_SHA"),
         "python": sys.version.replace("\n", " "),
         "platform": platform.platform(),
         "repeats": repeats,
         "warmups": warmups,
         "backends": [
-            {"name": backend.name, "detail": backend.detail} for backend in backends
+            {
+                "name": backend.name,
+                "detail": backend.detail,
+                "dialect": backend.dialect,
+            }
+            for backend in backends
         ],
         "workloads": {
-            workload: {
-                backend: {
-                    "median_ms": timing.median_ms,
-                    "best_ms": timing.best_ms,
-                }
-                for backend, timing in row.items()
+            name: {
+                "group": WORKLOADS[name].group,
+                "typed_luapyre_source": WORKLOADS[name].luapyre_source is not None,
+                "timings": {
+                    backend: {
+                        "median_ms": timing.median_ms,
+                        "best_ms": timing.best_ms,
+                    }
+                    for backend, timing in row.items()
+                },
             }
-            for workload, row in results.items()
+            for name, row in results.items()
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -214,6 +246,12 @@ def main() -> None:
     )
     parser.add_argument("--repeats", type=int, default=7)
     parser.add_argument("--warmups", type=int, default=3)
+    parser.add_argument(
+        "--group",
+        action="append",
+        choices=sorted({workload.group for workload in WORKLOADS.values()}),
+        help="run only this workload group; may be supplied more than once",
+    )
     parser.add_argument(
         "--require-all",
         action="store_true",
@@ -232,6 +270,7 @@ def main() -> None:
         repeats=args.repeats,
         warmups=args.warmups,
         require_all=args.require_all,
+        groups=set(args.group) if args.group else None,
     )
     if args.json is not None:
         write_json_report(
