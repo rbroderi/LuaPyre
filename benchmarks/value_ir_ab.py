@@ -10,7 +10,8 @@ from luapyre import LuaRuntime
 
 # Focused same-runner comparison against the merged release baseline. These are
 # compiler-architecture probes: pure value-graph optimization, IR-level inline
-# calls, real-frame DirectCallSite lowering, and CFG merge-value lowering.
+# calls, real-frame DirectCallSite lowering, CFG merge values, dominance-aware
+# cross-block CSE, and loop-carried CFG Value IR.
 WORKLOADS = {
     "pure_leaf_cse": (
         """-- luapyre: typed
@@ -105,6 +106,44 @@ end
 return s
 """,
         128096000,
+    ),
+    "cfg_dominance_cse": (
+        """-- luapyre: typed
+local function reuse(flag: boolean, a: integer, b: integer): integer
+    local base = a + b
+    if flag then
+        local same = a + b
+        return same
+    end
+    return base
+end
+local s = 0
+for i = 1, 8000 do
+    s = s + reuse(true, i, 3)
+    s = s + reuse(false, i, 3)
+end
+return s
+""",
+        64056000,
+    ),
+    "cfg_while_loop": (
+        """-- luapyre: typed
+local function sum_to(n: integer): integer
+    local i: integer = 0
+    local total: integer = 0
+    while i < n do
+        total = total + i
+        i = i + 1
+    end
+    return total
+end
+local s = 0
+for i = 1, 1000 do
+    s = s + sum_to(50)
+end
+return s
+""",
+        1225000,
     ),
 }
 

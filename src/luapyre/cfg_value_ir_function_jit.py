@@ -14,11 +14,12 @@ _TWO64 = 1 << 64
 
 
 class CFGValueIRFunctionJITMixin:
-    """0.18 acyclic CFG value backend with exact block side exits.
+    """Dominance-aware scalar CFG backend with exact block side exits.
 
-    Reducible four-block diamonds lower directly to Python ``if``/``else`` so
-    the common typed branch shape pays no synthetic state-dispatch overhead.
-    More general forward DAGs keep the exact state-machine backend.
+    Reducible four-block diamonds lower directly to Python ``if``/``else``.
+    Simple single-header natural loops lower to a native Python ``while`` from
+    the same CFG/phi representation. More general reducible CFGs, including
+    branchy cyclic ones, use the predecessor-tracked state machine.
     """
 
     @staticmethod
@@ -179,7 +180,7 @@ class CFGValueIRFunctionJITMixin:
     def _compile_structured_diamond(
         self, proto: Proto, plan: CFGValueIRPlan
     ) -> CompiledAstFunction | None:
-        if len(plan.blocks) != 4:
+        if plan.backedges or len(plan.blocks) != 4:
             return None
         entry = plan.blocks[0]
         if entry.condition_value is None or len(entry.successors) != 2:
@@ -247,12 +248,120 @@ class CFGValueIRFunctionJITMixin:
         exec(compile(tree, "<luapyre-cfg-value-ir-diamond>", "exec"), namespace)
         return CompiledAstFunction(proto, namespace["_jit_cfg_value_ir_diamond"])
 
+    def _compile_structured_natural_loop(
+        self, proto: Proto, plan: CFGValueIRPlan
+    ) -> CompiledAstFunction | None:
+        if len(plan.natural_loops) != 1:
+            return None
+        loop = plan.natural_loops[0]
+        header_index = loop.header
+        header = plan.blocks[header_index]
+        if header.condition_value is None or len(header.successors) != 2:
+            return None
+        if len(loop.preheaders) != 1 or len(loop.exits) != 1:
+            return None
+        preheader_index = loop.preheaders[0]
+        exit_source, exit_index = loop.exits[0]
+        if preheader_index != 0 or exit_source != header_index:
+            return None
+        preheader = plan.blocks[preheader_index]
+        exit_block = plan.blocks[exit_index]
+        if preheader.successors != (header_index,):
+            return None
+        if self._emit_return(plan, exit_block, "") is None:
+            return None
+
+        outside = set(range(len(plan.blocks))) - set(loop.blocks)
+        if outside != {preheader_index, exit_index}:
+            return None
+
+        condition = self._value_expr(plan, header.condition_value)
+        jump_test = self._condition_test(header, condition)
+        if jump_test is None:
+            return None
+        target, fallthrough = header.successors
+        if target == exit_index and fallthrough in loop.blocks:
+            exit_test = jump_test
+            body_start = fallthrough
+        elif fallthrough == exit_index and target in loop.blocks:
+            exit_test = f"not ({jump_test})"
+            body_start = target
+        else:
+            return None
+
+        loop_blocks = set(loop.blocks)
+        chain: list[int] = []
+        seen: set[int] = set()
+        current = body_start
+        while current != header_index:
+            if current in seen or current not in loop_blocks:
+                return None
+            seen.add(current)
+            block = plan.blocks[current]
+            if block.condition_value is not None or block.phi_nodes:
+                return None
+            if self._emit_return(plan, block, "") is not None:
+                return None
+            if len(block.successors) != 1:
+                return None
+            chain.append(current)
+            current = block.successors[0]
+        if not chain or chain[-1] != loop.latch:
+            return None
+        if set(chain) != loop_blocks - {header_index}:
+            return None
+
+        nodes_by_pc = self._nodes_by_pc(plan)
+        namespace = self._base_namespace(plan)
+        lines = [
+            "def _jit_cfg_value_ir_loop(vm, frames, frame, budget, meter):",
+            "    regs = frame.regs",
+            "    consts = frame.proto.constants",
+        ]
+        for index in range(proto.param_count):
+            lines.append(f"    _arg{index} = regs[{index}]")
+
+        lines.extend(self._emit_block_preflight(plan, preheader, "    "))
+        lines.extend(self._emit_block_expressions(plan, preheader, nodes_by_pc, "    "))
+        phi = self._emit_phi_for_predecessor(plan, header, preheader_index, "    ")
+        if phi is None:
+            return None
+        lines.extend(phi)
+        lines.append("    while True:")
+        lines.extend(self._emit_block_preflight(plan, header, "        "))
+        lines.extend(self._emit_block_expressions(plan, header, nodes_by_pc, "        "))
+        lines.append(f"        if {exit_test}:")
+        lines.append("            break")
+        for block_index in chain:
+            block = plan.blocks[block_index]
+            lines.extend(self._emit_block_preflight(plan, block, "        "))
+            lines.extend(self._emit_block_expressions(plan, block, nodes_by_pc, "        "))
+        phi = self._emit_phi_for_predecessor(plan, header, loop.latch, "        ")
+        if phi is None:
+            return None
+        lines.extend(phi)
+
+        lines.extend(self._emit_block_preflight(plan, exit_block, "    "))
+        lines.extend(self._emit_block_expressions(plan, exit_block, nodes_by_pc, "    "))
+        returned = self._emit_return(plan, exit_block, "    ")
+        if returned is None:
+            return None
+        lines.extend(returned)
+
+        tree = ast.parse("\n".join(lines))
+        ast.fix_missing_locations(tree)
+        exec(compile(tree, "<luapyre-cfg-value-ir-loop>", "exec"), namespace)
+        return CompiledAstFunction(proto, namespace["_jit_cfg_value_ir_loop"])
+
     def _compile_ast_function(self, proto: Proto) -> CompiledAstFunction | None:
         plan = CFGValueIRCompiler(proto).compile()
         if plan is None:
             return super()._compile_ast_function(proto)
 
         structured = self._compile_structured_diamond(proto, plan)
+        if structured is not None:
+            return structured
+        structured = self._compile_structured_natural_loop(proto, plan)
         if structured is not None:
             return structured
 
