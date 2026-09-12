@@ -4,17 +4,25 @@ from .bytecode import Closure, Op, Proto
 from .diagnostics import capture_error
 from .errors import LuaQuotaError, LuaRuntimeError
 from .gcvm import GarbageCollectedVM
-from .jit import DEOPT, PythonJIT
+from .jit import CompiledLoop, DEOPT, PythonJIT
 from .opdispatch import OPCODE_HANDLERS
 from .threadvm import _CloseSelfSignal, _YieldSignal
 from .vm import Frame
 
 
 def _jit_forloop(vm, frames, frame, ins, regs, constants):
-    """FORLOOP handler that hands only taken backedges to the JIT tier."""
-    if vm._forloop(regs, ins):
-        frame.pc = ins.d
-        vm._jit_backedge(frame)
+    """FORLOOP handler with a low-overhead per-backedge JIT state cache."""
+    if not vm._forloop(regs, ins):
+        return
+    backedge_pc = frame.pc - 1
+    frame.pc = ins.d
+    if not vm.jit.enabled:
+        return
+    key = id(ins)
+    state = vm._jit_loop_states.get(key)
+    if state is False:
+        return
+    vm._jit_backedge(frame, backedge_pc, key, state)
 
 
 _JIT_OPCODE_HANDLERS = dict(OPCODE_HANDLERS)
@@ -28,9 +36,9 @@ class TieredJITVM(GarbageCollectedVM):
     straight-line leaf functions may run as generated Python; every unsupported
     or guard-miss path resumes the ordinary opcode interpreter.
 
-    JIT loop probing happens only after a taken native FORLOOP backedge. Cold
-    and unsupported straight-line code therefore does not pay a per-opcode JIT
-    lookup tax.
+    JIT loop probing happens only after a taken native FORLOOP backedge. Once a
+    loop is proven unjittable, its instruction identity is negative-cached so
+    subsequent iterations pay only one dictionary lookup and branch.
     """
 
     def __init__(
@@ -45,6 +53,7 @@ class TieredJITVM(GarbageCollectedVM):
         super().__init__(globals, fuel=fuel, max_frames=max_frames)
         self.jit = PythonJIT(threshold=jit_threshold, enabled=jit_enabled)
         self._jit_main_fuel = self.default_fuel
+        self._jit_loop_states: dict[int, int | bool | CompiledLoop] = {}
 
     def _jit_budget(self) -> int:
         thread = self.current_thread
@@ -65,12 +74,31 @@ class TieredJITVM(GarbageCollectedVM):
         if self._jit_main_fuel < 0:
             raise LuaQuotaError("execution quota exceeded")
 
-    def _jit_backedge(self, frame) -> None:
-        if not self.jit.enabled:
-            return
-        used, _handled = self.jit.try_loop(self, frame, self._jit_budget())
+    def _jit_backedge(self, frame, backedge_pc: int, key: int, state) -> None:
+        compiled = state if isinstance(state, CompiledLoop) else None
+        if compiled is None:
+            hot = (state if type(state) is int else 0) + 1
+            if hot < self.jit.threshold:
+                self._jit_loop_states[key] = hot
+                return
+            compiled = self.jit._compile_loop(frame, frame.pc, backedge_pc)
+            if compiled is None:
+                self._jit_loop_states[key] = False
+                self.jit.stats.compile_failures += 1
+                return
+            self._jit_loop_states[key] = compiled
+            self.jit.stats.loop_compiles += 1
+
+        used, progressed = compiled.runner(self, frame, self._jit_budget())
         if used:
             self._jit_consume(used)
+            self.jit.stats.loop_executions += 1
+            self.jit.stats.loop_iterations += used // compiled.cost_per_iteration
+        if (not progressed and used == 0) or frame.pc not in (
+            compiled.ir.start_pc,
+            compiled.ir.exit_pc,
+        ):
+            self.jit.stats.deopts += 1
 
     def _invoke(self, frames, parent, fn, args, dest, want, tail=False):
         # Synchronous stdlib callbacks intentionally stay on the interpreter:
