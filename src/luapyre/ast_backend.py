@@ -70,16 +70,11 @@ class ExpressionFunctionInliner(ast.NodeTransformer):
 class SemanticFastPathOptimizer(ast.NodeTransformer):
     """Inline tiny Lua semantic helpers in generated Python AST.
 
-    This pass is intentionally conservative.  Expression helpers are expanded
-    only when their arguments are already locals/constants, so repeated uses in
-    the replacement cannot duplicate observable work.  Table method expansion
-    is similarly restricted to local receivers/arguments and keeps the exact
-    ``LuaTable.rawget/rawset`` calls as side exits for uncommon shapes.
-
-    The common table cases are the ones emitted by fully typed numeric code:
-    positive integer keys into the dense array part, including sequential
-    append and in-place update.  Those paths avoid a Python method call and the
-    key-tagging helper while preserving ``version`` updates exactly.
+    Expression helpers are expanded only for locals/constants, so repeated uses
+    cannot duplicate observable argument work. Dense table paths are guarded by
+    an empty hash-part check: sparse/mixed tables immediately stay on the exact
+    ``LuaTable.rawget/rawset`` implementation, while array-like tables can avoid
+    method/key-tagging overhead for positive integer accesses.
     """
 
     @staticmethod
@@ -104,14 +99,9 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
             [
                 left_bool,
                 right_bool,
-                ast.Compare(
-                    copy.deepcopy(left),
-                    [ast.Is()],
-                    [copy.deepcopy(right)],
-                ),
+                ast.Compare(copy.deepcopy(left), [ast.Is()], [copy.deepcopy(right)]),
             ],
         )
-
         left_number = ast.Compare(
             ast.Call(ast.Name("type", ast.Load()), [copy.deepcopy(left)], []),
             [ast.In()],
@@ -123,24 +113,13 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
             [ast.Name("_NUM_TYPES", ast.Load())],
         )
         number_case = ast.BoolOp(ast.And(), [left_number, right_number])
-        number_value = ast.Compare(
-            copy.deepcopy(left), [ast.Eq()], [copy.deepcopy(right)]
-        )
-
+        number_value = ast.Compare(copy.deepcopy(left), [ast.Eq()], [copy.deepcopy(right)])
         bytes_or_nil = ast.BoolOp(
             ast.Or(),
             [
-                ast.Call(
-                    ast.Name("isinstance", ast.Load()),
-                    [copy.deepcopy(left), ast.Name("bytes", ast.Load())],
-                    [],
-                ),
+                ast.Call(ast.Name("isinstance", ast.Load()), [copy.deepcopy(left), ast.Name("bytes", ast.Load())], []),
                 ast.Compare(copy.deepcopy(left), [ast.Is()], [ast.Constant(None)]),
-                ast.Call(
-                    ast.Name("isinstance", ast.Load()),
-                    [copy.deepcopy(right), ast.Name("bytes", ast.Load())],
-                    [],
-                ),
+                ast.Call(ast.Name("isinstance", ast.Load()), [copy.deepcopy(right), ast.Name("bytes", ast.Load())], []),
                 ast.Compare(copy.deepcopy(right), [ast.Is()], [ast.Constant(None)]),
             ],
         )
@@ -149,22 +128,13 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
             [ast.Is()],
             [ast.Call(ast.Name("type", ast.Load()), [copy.deepcopy(right)], [])],
         )
-        same_value = ast.Compare(
-            copy.deepcopy(left), [ast.Eq()], [copy.deepcopy(right)]
-        )
+        same_value = ast.Compare(copy.deepcopy(left), [ast.Eq()], [copy.deepcopy(right)])
         bytes_nil_value = ast.BoolOp(ast.And(), [same_type, same_value])
-        identity_value = ast.Compare(
-            copy.deepcopy(left), [ast.Is()], [copy.deepcopy(right)]
-        )
-
+        identity_value = ast.Compare(copy.deepcopy(left), [ast.Is()], [copy.deepcopy(right)])
         return ast.IfExp(
             bool_case,
             bool_value,
-            ast.IfExp(
-                number_case,
-                number_value,
-                ast.IfExp(bytes_or_nil, bytes_nil_value, identity_value),
-            ),
+            ast.IfExp(number_case, number_value, ast.IfExp(bytes_or_nil, bytes_nil_value, identity_value)),
         )
 
     @classmethod
@@ -172,10 +142,7 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
         if type_name == "Any":
             return ast.Constant(True)
         if " | " in type_name:
-            parts = [
-                cls._type_matches_expr(part, value)
-                for part in type_name.split(" | ")
-            ]
+            parts = [cls._type_matches_expr(part, value) for part in type_name.split(" | ")]
             if any(part is None for part in parts):
                 return None
             return ast.BoolOp(ast.Or(), [part for part in parts if part is not None])
@@ -192,21 +159,11 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
         if type_name == "boolean":
             return cls._type_is(value, "bool")
         if type_name == "string":
-            return ast.Call(
-                ast.Name("isinstance", ast.Load()),
-                [copy.deepcopy(value), ast.Name("bytes", ast.Load())],
-                [],
-            )
+            return ast.Call(ast.Name("isinstance", ast.Load()), [copy.deepcopy(value), ast.Name("bytes", ast.Load())], [])
         if type_name == "table":
-            return ast.Call(
-                ast.Name("isinstance", ast.Load()),
-                [copy.deepcopy(value), ast.Name("_LuaTable", ast.Load())],
-                [],
-            )
+            return ast.Call(ast.Name("isinstance", ast.Load()), [copy.deepcopy(value), ast.Name("_LuaTable", ast.Load())], [])
         if type_name == "nil":
-            return ast.Compare(
-                copy.deepcopy(value), [ast.Is()], [ast.Constant(None)]
-            )
+            return ast.Compare(copy.deepcopy(value), [ast.Is()], [ast.Constant(None)])
         return None
 
     @staticmethod
@@ -224,7 +181,6 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
 
     def visit_Call(self, node: ast.Call):
         node = self.generic_visit(node)
-
         if (
             isinstance(node.func, ast.Name)
             and node.func.id == "_lua_equal"
@@ -232,10 +188,7 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
             and len(node.args) == 2
             and all(self._cheap(arg) for arg in node.args)
         ):
-            return ast.copy_location(
-                self._lua_equal_expr(node.args[0], node.args[1]), node
-            )
-
+            return ast.copy_location(self._lua_equal_expr(node.args[0], node.args[1]), node)
         if (
             isinstance(node.func, ast.Name)
             and node.func.id == "_type_matches"
@@ -248,23 +201,13 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
             replacement = self._type_matches_expr(node.args[0].value, node.args[1])
             if replacement is not None:
                 return ast.copy_location(replacement, node)
-
         rawlen = self._raw_method(node, "rawlen", 0)
         if rawlen is not None:
             table, _ = rawlen
             return ast.copy_location(
-                ast.Call(
-                    ast.Name("len", ast.Load()),
-                    [
-                        ast.Attribute(
-                            copy.deepcopy(table), "array", ast.Load()
-                        )
-                    ],
-                    [],
-                ),
+                ast.Call(ast.Name("len", ast.Load()), [ast.Attribute(copy.deepcopy(table), "array", ast.Load())], []),
                 node,
             )
-
         return node
 
     def visit_Assign(self, node: ast.Assign):
@@ -274,60 +217,43 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
         rawget = self._raw_method(node.value, "rawget", 1)
         if rawget is None:
             return node
-
         table, args = rawget
         key = args[0]
         target = node.targets[0]
         array = ast.Attribute(copy.deepcopy(table), "array", ast.Load())
         table_hash = ast.Attribute(copy.deepcopy(table), "hash", ast.Load())
+        fallback = ast.Call(
+            ast.Attribute(copy.deepcopy(table), "rawget", ast.Load()),
+            [copy.deepcopy(key)],
+            [],
+        )
         dense_key = ast.BoolOp(
             ast.And(),
             [
                 self._type_is(key, "int"),
                 ast.Compare(copy.deepcopy(key), [ast.GtE()], [ast.Constant(1)]),
+                ast.Compare(
+                    copy.deepcopy(key),
+                    [ast.LtE()],
+                    [ast.Call(ast.Name("len", ast.Load()), [copy.deepcopy(array)], [])],
+                ),
             ],
-        )
-        in_array = ast.Compare(
-            copy.deepcopy(key),
-            [ast.LtE()],
-            [ast.Call(ast.Name("len", ast.Load()), [copy.deepcopy(array)], [])],
         )
         direct_value = ast.Subscript(
             copy.deepcopy(array),
             ast.BinOp(copy.deepcopy(key), ast.Sub(), ast.Constant(1)),
             ast.Load(),
         )
-        fallback = ast.Call(
-            ast.Attribute(copy.deepcopy(table), "rawget", ast.Load()),
-            [copy.deepcopy(key)],
-            [],
-        )
-        inner = ast.If(
-            test=in_array,
-            body=[
-                ast.Assign(
-                    [copy.deepcopy(target)],
-                    direct_value,
-                )
-            ],
-            orelse=[
-                ast.If(
-                    test=ast.UnaryOp(ast.Not(), copy.deepcopy(table_hash)),
-                    body=[ast.Assign([copy.deepcopy(target)], ast.Constant(None))],
-                    orelse=[ast.Assign([copy.deepcopy(target)], fallback)],
-                )
-            ],
+        dense_or_fallback = ast.If(
+            test=dense_key,
+            body=[ast.Assign([copy.deepcopy(target)], direct_value)],
+            orelse=[ast.Assign([copy.deepcopy(target)], copy.deepcopy(fallback))],
         )
         return ast.copy_location(
             ast.If(
-                test=dense_key,
-                body=[inner],
-                orelse=[
-                    ast.Assign(
-                        [copy.deepcopy(target)],
-                        copy.deepcopy(fallback),
-                    )
-                ],
+                test=copy.deepcopy(table_hash),
+                body=[ast.Assign([copy.deepcopy(target)], copy.deepcopy(fallback))],
+                orelse=[dense_or_fallback],
             ),
             node,
         )
@@ -339,12 +265,18 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
         rawset = self._raw_method(node.value, "rawset", 2)
         if rawset is None:
             return node
-
         table, args = rawset
         key, value = args
         array = ast.Attribute(copy.deepcopy(table), "array", ast.Load())
         table_hash = ast.Attribute(copy.deepcopy(table), "hash", ast.Load())
         version = ast.Attribute(copy.deepcopy(table), "version", ast.Store())
+        fallback = ast.Expr(
+            ast.Call(
+                ast.Attribute(copy.deepcopy(table), "rawset", ast.Load()),
+                [copy.deepcopy(key), copy.deepcopy(value)],
+                [],
+            )
+        )
         dense_key_value = ast.BoolOp(
             ast.And(),
             [
@@ -358,25 +290,15 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
             [ast.LtE()],
             [ast.Call(ast.Name("len", ast.Load()), [copy.deepcopy(array)], [])],
         )
-        appendable = ast.BoolOp(
-            ast.And(),
+        appendable = ast.Compare(
+            copy.deepcopy(key),
+            [ast.Eq()],
             [
-                ast.Compare(
-                    copy.deepcopy(key),
-                    [ast.Eq()],
-                    [
-                        ast.BinOp(
-                            ast.Call(
-                                ast.Name("len", ast.Load()),
-                                [copy.deepcopy(array)],
-                                [],
-                            ),
-                            ast.Add(),
-                            ast.Constant(1),
-                        )
-                    ],
-                ),
-                ast.UnaryOp(ast.Not(), copy.deepcopy(table_hash)),
+                ast.BinOp(
+                    ast.Call(ast.Name("len", ast.Load()), [copy.deepcopy(array)], []),
+                    ast.Add(),
+                    ast.Constant(1),
+                )
             ],
         )
         bump_version = ast.AugAssign(version, ast.Add(), ast.Constant(1))
@@ -391,35 +313,30 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
             copy.deepcopy(value),
         )
         append_value = ast.Expr(
-            ast.Call(
-                ast.Attribute(copy.deepcopy(array), "append", ast.Load()),
-                [copy.deepcopy(value)],
-                [],
-            )
-        )
-        fallback = ast.Expr(
-            ast.Call(
-                ast.Attribute(copy.deepcopy(table), "rawset", ast.Load()),
-                [copy.deepcopy(key), copy.deepcopy(value)],
-                [],
-            )
+            ast.Call(ast.Attribute(copy.deepcopy(array), "append", ast.Load()), [copy.deepcopy(value)], [])
         )
         dense_body = ast.If(
-            test=existing,
-            body=[copy.deepcopy(bump_version), store_existing],
-            orelse=[
+            test=dense_key_value,
+            body=[
                 ast.If(
-                    test=appendable,
-                    body=[copy.deepcopy(bump_version), append_value],
-                    orelse=[copy.deepcopy(fallback)],
+                    test=existing,
+                    body=[copy.deepcopy(bump_version), store_existing],
+                    orelse=[
+                        ast.If(
+                            test=appendable,
+                            body=[copy.deepcopy(bump_version), append_value],
+                            orelse=[copy.deepcopy(fallback)],
+                        )
+                    ],
                 )
             ],
+            orelse=[copy.deepcopy(fallback)],
         )
         return ast.copy_location(
             ast.If(
-                test=dense_key_value,
-                body=[dense_body],
-                orelse=[fallback],
+                test=copy.deepcopy(table_hash),
+                body=[copy.deepcopy(fallback)],
+                orelse=[dense_body],
             ),
             node,
         )
@@ -432,32 +349,13 @@ class _ReturnToJump(ast.NodeTransformer):
     def visit_Return(self, node: ast.Return):
         value = node.value if node.value is not None else ast.Constant(-1)
         return [
-            ast.Assign(
-                targets=[ast.Name(self.state_name, ast.Store())],
-                value=value,
-            ),
+            ast.Assign(targets=[ast.Name(self.state_name, ast.Store())], value=value),
             ast.Continue(),
         ]
 
 
 class LocalJumpListInliner(ast.NodeTransformer):
-    """Inline generated local jump-list block functions into a match dispatcher.
-
-    The backend intentionally builds a simple threaded-code shape first::
-
-        def _jump_0(): ...; return 1
-        def _jump_1(): ...; return -1
-        _jump_list = (_jump_0, _jump_1)
-        while _state >= 0:
-            _state = _jump_list[_state]()
-
-    Keeping this intermediate representation makes CFG lowering simple and is a
-    useful non-optimized reference form.  Before CPython compilation this pass
-    removes the Python function calls and the jump-list lookup by splicing each
-    block body directly into a ``match _state`` case.  In other words, the
-    convenient local jump list is the compiler representation; the hot machine
-    receives inlined Python bytecode rather than a function-dispatch loop.
-    """
+    """Inline generated local jump-list block functions into a match dispatcher."""
 
     def __init__(self, layout: JumpListLayout):
         super().__init__()
@@ -486,9 +384,7 @@ class LocalJumpListInliner(ast.NodeTransformer):
         subscript = call.func
         if not isinstance(subscript, ast.Subscript):
             return False
-        if not isinstance(subscript.value, ast.Name):
-            return False
-        if subscript.value.id != self.layout.list_name:
+        if not isinstance(subscript.value, ast.Name) or subscript.value.id != self.layout.list_name:
             return False
         index = subscript.slice
         return isinstance(index, ast.Name) and index.id == self.layout.state_name
@@ -509,23 +405,15 @@ class LocalJumpListInliner(ast.NodeTransformer):
         if not rewritten or not isinstance(rewritten[-1], ast.Continue):
             rewritten.extend(
                 [
-                    ast.Assign(
-                        targets=[ast.Name(self.layout.state_name, ast.Store())],
-                        value=ast.Constant(-1),
-                    ),
+                    ast.Assign(targets=[ast.Name(self.layout.state_name, ast.Store())], value=ast.Constant(-1)),
                     ast.Continue(),
                 ]
             )
-        return ast.match_case(
-            pattern=ast.MatchValue(ast.Constant(index)),
-            guard=None,
-            body=rewritten,
-        )
+        return ast.match_case(pattern=ast.MatchValue(ast.Constant(index)), guard=None, body=rewritten)
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
         if self._inside_target_function:
             return node
-
         block_names = set(self.layout.block_names)
         found = {
             stmt.name: stmt
@@ -534,7 +422,6 @@ class LocalJumpListInliner(ast.NodeTransformer):
         }
         if set(found) != block_names:
             return self.generic_visit(node)
-
         self.blocks = found
         self._inside_target_function = True
         try:
@@ -554,29 +441,18 @@ class LocalJumpListInliner(ast.NodeTransformer):
         node = self.generic_visit(node)
         if not self._is_dispatch_loop(node):
             return node
-        cases = [
-            self._case_for(index, name)
-            for index, name in enumerate(self.layout.block_names)
-        ]
+        cases = [self._case_for(index, name) for index, name in enumerate(self.layout.block_names)]
         cases.append(
             ast.match_case(
                 pattern=ast.MatchAs(name=None),
                 guard=None,
                 body=[
-                    ast.Assign(
-                        targets=[ast.Name(self.layout.state_name, ast.Store())],
-                        value=ast.Constant(-2),
-                    ),
+                    ast.Assign(targets=[ast.Name(self.layout.state_name, ast.Store())], value=ast.Constant(-2)),
                     ast.Continue(),
                 ],
             )
         )
-        node.body = [
-            ast.Match(
-                subject=ast.Name(self.layout.state_name, ast.Load()),
-                cases=cases,
-            )
-        ]
+        node.body = [ast.Match(subject=ast.Name(self.layout.state_name, ast.Load()), cases=cases)]
         return node
 
 
