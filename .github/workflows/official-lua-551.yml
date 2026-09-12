@@ -15,6 +15,7 @@ on:
         type: boolean
   push:
     branches:
+      - main
       - v0.11-official-suite-baseline
 
 jobs:
