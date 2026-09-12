@@ -64,6 +64,12 @@ class Proto:
     # VM register -> (Lua object kind, source name), e.g. ("field", "x").
     # It is consulted only while formatting an exceptional path.
     value_origins: list[dict[int, tuple[str, str]]] = field(default_factory=list)
+    # Native source compilation only emits *_I/*_F opcodes when its optional
+    # type analysis has proved the operand classes (including runtime GUARDs at
+    # Any -> typed boundaries). The tiered JIT may therefore omit redundant
+    # type guards for those specialized opcodes. Binary-chunk translation and
+    # manually constructed Proto objects deliberately default to False.
+    jit_trust_types: bool = False
 
     def add_const(self, value):
         for i, current in enumerate(self.constants):
