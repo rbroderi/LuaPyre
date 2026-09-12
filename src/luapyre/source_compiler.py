@@ -25,6 +25,7 @@ class SourceCompiler(Compiler):
             source=self.source,
             linedefined=0,
             lastlinedefined=_last_body_line(chunk.body, chunk.line),
+            jit_trust_types=True,
         )
         ctx = _SourceFunctionCompiler(proto)
         ctx.current_line = chunk.line
@@ -78,6 +79,7 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             source=self.proto.source,
             linedefined=defined_line,
             lastlinedefined=_last_body_line(body, defined_line),
+            jit_trust_types=True,
         )
         sub = _SourceFunctionCompiler(child, params, self)
         if vararg_name not in (None, ""):
