@@ -26,7 +26,7 @@ def _jit_forloop(vm, frames, frame, ins, regs, constants):
 
 
 _JIT_OPCODE_HANDLERS = dict(OPCODE_HANDLERS)
-_JIT_OPCODE_HANDLERS[Op.FORLOOP] = _jit_forloop
+_JIT_OPCODE_HANDLERS[Op.JFORLOOP] = _jit_forloop
 
 
 class TieredJITVM(GarbageCollectedVM):

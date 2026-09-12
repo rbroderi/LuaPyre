@@ -84,3 +84,21 @@ def test_jit_preserves_instruction_fuel_quota():
         LuaRuntime(jit=False).execute(source, fuel=25)
     with pytest.raises(LuaQuotaError):
         LuaRuntime(jit=True, jit_threshold=1).execute(source, fuel=25)
+
+
+def test_only_structurally_eligible_loops_are_quickened():
+    runtime = LuaRuntime(jit=False)
+    eligible = runtime.compile(
+        "local s = 0; for i = 1, 20 do s = s + i end; return s"
+    )
+    assert any(ins.op is Op.JFORLOOP for ins in eligible.code)
+    assert runtime.vm.run(eligible) == 210
+
+    branchy = runtime.compile(
+        "local s = 0; for i = 1, 20 do "
+        "if i % 2 == 0 then s = s + i else s = s - 1 end "
+        "end; return s"
+    )
+    assert any(ins.op is Op.FORLOOP for ins in branchy.code)
+    assert not any(ins.op is Op.JFORLOOP for ins in branchy.code)
+    assert runtime.vm.run(branchy) == 100

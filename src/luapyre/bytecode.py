@@ -23,6 +23,11 @@ class Op(IntEnum):
     PTBC = auto(); PCLOSE = auto()
     PVARARG = auto(); PGETVARG = auto()
 
+    # Source-compiler quickening marker for a numeric loop whose body is
+    # structurally eligible for the tier-2 JIT. Interpreter semantics are
+    # identical to FORLOOP; only TieredJITVM gives it a hotness hook.
+    JFORLOOP = auto()
+
 
 @dataclass(frozen=True, slots=True)
 class Ins:

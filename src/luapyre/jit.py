@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from types import FunctionType
 
 from .bytecode import Cell, Ins, Op, Proto
+from .jit_policy import JIT_LOOP_BODY_OPS
 from .table import LuaTable
 from .values import i64, lua_equal, type_matches
 
@@ -68,29 +69,7 @@ class CompiledLeaf:
     runner: FunctionType
 
 
-_LOOP_BODY_OPS = frozenset({
-    Op.LOADK,
-    Op.MOVE,
-    Op.LOCAL,
-    Op.NEWTABLE,
-    Op.GETTABLE,
-    Op.SETTABLE,
-    Op.ADD,
-    Op.ADD_I,
-    Op.ADD_F,
-    Op.SUB,
-    Op.SUB_I,
-    Op.SUB_F,
-    Op.MUL,
-    Op.MUL_I,
-    Op.MUL_F,
-    Op.MOD,
-    Op.EQ,
-    Op.LT,
-    Op.LE,
-    Op.NOT,
-    Op.TOBOOL,
-})
+_LOOP_BODY_OPS = JIT_LOOP_BODY_OPS
 
 _LEAF_OPS = frozenset({
     Op.LOADK,
@@ -159,7 +138,7 @@ class PythonJIT:
             return cached[1]
         entries: dict[int, int] = {}
         for pc, ins in enumerate(proto.code):
-            if ins.op is Op.FORLOOP and 0 <= ins.d < pc:
+            if ins.op in (Op.FORLOOP, Op.JFORLOOP) and 0 <= ins.d < pc:
                 entries[ins.d] = pc
         self._loop_maps[ident] = (proto, entries)
         return entries
@@ -177,7 +156,7 @@ class PythonJIT:
                 specialization = self._profile_binary(frame.regs, ins)
             lowered.append(IRInstruction(pc, ins, specialization))
         loop_ins = proto.code[backedge_pc]
-        if loop_ins.op is not Op.FORLOOP or loop_ins.d != start_pc:
+        if loop_ins.op not in (Op.FORLOOP, Op.JFORLOOP) or loop_ins.d != start_pc:
             return None
         return IRLoop(
             start_pc,
@@ -385,7 +364,7 @@ class PythonJIT:
             "_i64": i64,
             "_lua_equal": lua_equal,
             "_isnan": __import__("math").isnan,
-            "_forloop": frame.__class__.proto.fget.__self__ if False else None,
+            "_forloop": None,
             "_loop_ins": ir.loop_ins,
         }
         # Bind the semantic loop helper once as a local global lookup in the
