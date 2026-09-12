@@ -1,0 +1,30 @@
+name: apply 0.12 round two
+
+on:
+  push:
+    branches:
+      - v0.12-official-suite-expansion
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply patch
+        run: python tools/_v012_round2.py
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/luapyre
+          git commit -m "Advance exact Lua pattern vararg and numeric semantics"
+          git push
