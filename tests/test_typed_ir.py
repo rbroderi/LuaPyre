@@ -132,3 +132,50 @@ return total
     # 100 iterations see 1; iterations 101..200 see 3.
     assert runtime.execute(source) == 400
     assert runtime.jit_stats.loop_compiles >= 1
+
+
+def _compiled_function_filenames(runtime: LuaRuntime) -> set[str]:
+    filenames: set[str] = set()
+    for _proto, compiled in runtime.vm.jit._function_cache.values():
+        if compiled is not None:
+            filenames.add(compiled.runner.__code__.co_filename)
+    return filenames
+
+
+def test_whole_function_ir_hoists_invariant_global_read():
+    runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
+    source = """-- luapyre: typed
+global g: integer = 5
+local function sum_global(n: integer): integer
+    local total = 0
+    for i = 1, n do
+        local value: integer = g
+        total = total + value
+    end
+    return total
+end
+return sum_global(2000)
+"""
+    assert runtime.execute(source) == 10000
+    assert "<luapyre-ir-function>" in _compiled_function_filenames(runtime)
+
+
+def test_whole_function_ir_cache_observes_table_version_mutation():
+    runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
+    source = """-- luapyre: typed
+local function sum_field(t: table): integer
+    local total = 0
+    for i = 1, 200 do
+        local value: integer = t.value
+        total = total + value
+        if i == 100 then
+            t.value = 3
+        end
+    end
+    return total
+end
+local t = {value = 1}
+return sum_field(t)
+"""
+    assert runtime.execute(source) == 400
+    assert "<luapyre-ir-function>" in _compiled_function_filenames(runtime)
