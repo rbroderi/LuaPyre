@@ -18,8 +18,10 @@ def _hash_key(key):
     if type(key) is int:
         return (_NUM, key)
     if type(key) is float:
+        # Lua rejects NaN only when assigning a table key. A lookup with NaN
+        # cannot match any stored key and therefore behaves like an absent key.
         if math.isnan(key):
-            raise LuaRuntimeError("table index is NaN")
+            return None
         return (_NUM, int(key) if key.is_integer() else key)
     if isinstance(key, bytes):
         return (_STR, key)
@@ -60,6 +62,8 @@ class LuaTable:
         return h in self.hash
 
     def rawset(self, key, value):
+        if type(key) is float and math.isnan(key):
+            raise LuaRuntimeError("table index is NaN")
         h = _hash_key(key)
         if h is None:
             raise LuaRuntimeError("table index is nil")
