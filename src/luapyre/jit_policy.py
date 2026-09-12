@@ -3,8 +3,11 @@ from __future__ import annotations
 from .bytecode import Op
 
 
-# Keep structural eligibility independent of the Python backend.  This is the
+# Keep structural eligibility independent of the Python backend. This is the
 # Tier-1 quickening policy; a later native backend can consume the same marker.
+# 0.14 admits acyclic internal control flow and explicit type guards so the
+# region backend can compile whole branchy loop bodies rather than bouncing
+# through Tier 0 at every conditional.
 JIT_LOOP_BODY_OPS = frozenset({
     Op.LOADK,
     Op.MOVE,
@@ -27,6 +30,10 @@ JIT_LOOP_BODY_OPS = frozenset({
     Op.LE,
     Op.NOT,
     Op.TOBOOL,
+    Op.GUARD,
+    Op.JMP,
+    Op.JMPIF,
+    Op.JMPIFNOT,
 })
 
 
