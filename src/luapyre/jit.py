@@ -60,6 +60,10 @@ class JITStats:
     cache_invalidations: int = 0
     megamorphic_sites: int = 0
     retired_regions: int = 0
+    trace_compiles: int = 0
+    trace_executions: int = 0
+    trace_side_exits: int = 0
+    osr_entries: int = 0
 
 
 @dataclass(frozen=True, slots=True)

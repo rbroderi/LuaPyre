@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.17.0a1**
+**Python 3.13+** · **current pre-alpha: 0.22.0a1**
 
 LuaPyre is not yet a complete Lua 5.5.1 implementation. Correct semantics come first; the runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
@@ -91,7 +91,7 @@ lua = LuaRuntime()
 
 Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default hotness threshold is 32 loop entries/calls and can be changed with `jit_threshold=`. Live counters are available through `lua.jit_stats`; `lua.jit_feedback` snapshots adaptive call/table cache states and deoptimization reasons.
 
-0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. **0.21 adds bounded monomorphic/polymorphic call and raw-table inline caches plus site/reason deoptimization feedback.** Megamorphic sites fail closed to ordinary dispatch, versioned reads cannot return stale values, and repeatedly failing regions retire to Tier 0. Python AST remains a backend rather than the optimizer's semantic representation. See [`docs/inline-cache-feedback-0.21.md`](docs/inline-cache-feedback-0.21.md) and the earlier design notes in [`docs/`](docs/).
+0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback. **0.22 adds profile-guided trace-shaped CFG compilation, hot side exits, and exact on-stack replacement from live Frame/PC/register state.** Typed branch targets become OSR entries after their edge reaches the hot threshold; trace guards return to the exact alternate PC, and source-bytecode fuel remains authoritative. Python AST remains a backend rather than the optimizer's semantic representation. See [`docs/trace-osr-0.22.md`](docs/trace-osr-0.22.md) and the earlier design notes in [`docs/`](docs/).
 
 ### Output and warnings
 
@@ -278,6 +278,7 @@ Unsafe host-facing libraries are not treated as default-sandbox requirements.
 8. promoted-local Python AST lowering with exact aggregate fuel for pure graphs and shared incremental fuel for real-frame direct calls
 9. proven 0.15/0.16 structured loops, recursion, captured closures, dynamic calls, and table/global tiers retained whenever the new typed/value/CALL IR cannot prove a stronger exact path
 10. bounded call/table polymorphic inline caches and deoptimization site/reason feedback with unstable-region retirement
-11. later: native x86-64/AArch64 or LLVM backend consuming the same typed/value/CALL IR and deoptimization contract
+11. hot side-exit traces and CFG OSR through the exact live Frame/PC/register contract
+12. later: native x86-64/AArch64 or LLVM backend consuming the same typed/value/CALL IR and deoptimization contract
 
 CPython's own optimizer/JIT can accelerate generated Python when available, but it is never a LuaPyre correctness dependency.

@@ -88,6 +88,9 @@ class OptimizingJITVM(TieredJITVM):
                     # frame (and possibly a nested child) on the real VM stack.
                     # Tier 0 resumes from the exact spilled PC on the next turn.
                     self.jit.function_suspends += 1
+                    if self._jit_budget() > 0 and frames:
+                        active = frames[-1]
+                        self.trace_jit.record_side_exit(active.proto, active.pc)
                 return None
 
         return super()._invoke(frames, parent, fn, args, dest, want, tail=tail)
