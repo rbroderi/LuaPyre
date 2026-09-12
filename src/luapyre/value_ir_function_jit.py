@@ -15,16 +15,18 @@ _TWO64 = 1 << 64
 
 
 class ValueIRFunctionJITMixin:
-    """0.17 pure-expression whole-function backend.
+    """0.17 value-numbered whole-function backend.
 
     This tier sits in front of the 0.16 typed-IR function compiler. It accepts a
-    deliberately small but common class of fully typed leaf functions whose body
-    is a straight-line pure expression graph. Values are promoted out of Lua
-    registers into SSA-like Python locals, aliases disappear, constant subgraphs
-    fold at JIT-compile time, repeated expressions share one value number, and
-    dead pure definitions emit no Python operation at all.
+    deliberately exact class of fully typed functions whose reachable execution
+    can be represented as a pure SSA-like value graph. Values are promoted out
+    of Lua registers, aliases disappear, constant subgraphs fold, repeated
+    expressions share one value number, dead pure definitions emit no Python,
+    and eligible static lexical CALLs splice the callee value graph directly into
+    the caller.
 
-    Unsupported or effectful functions immediately fall through to 0.16/0.15.
+    Unsupported, effectful, escaping-closure, dynamic-call, branch, upvalue and
+    recursive shapes immediately fall through to the proven 0.16/0.15 tiers.
     """
 
     @staticmethod
@@ -39,9 +41,6 @@ class ValueIRFunctionJITMixin:
         return f"_v{node.id}"
 
     def _compile_ast_function(self, proto: Proto) -> CompiledAstFunction | None:
-        if proto.children:
-            return super()._compile_ast_function(proto)
-
         # Native source compilation always appends a fallback RETURN after the
         # body, even when an explicit straight-line RETURN already makes it
         # unreachable. Value IR compiles only the actually reachable prefix.
@@ -62,16 +61,12 @@ class ValueIRFunctionJITMixin:
         if plan is None:
             return super()._compile_ast_function(proto)
 
-        # The specialized backend is worthwhile even for a simple live typed
-        # expression: unlike the generic function compiler it removes the local
-        # block dispatcher and all register-copy traffic. Tiny literal-only
-        # functions stay on the older tier to avoid pointless code variants.
         live_exprs = [
             node
             for node in plan.nodes
             if node.kind is ValueKind.EXPRESSION and node.id in plan.live_nodes
         ]
-        if not live_exprs and not plan.folded_pcs:
+        if not live_exprs and not plan.folded_pcs and not plan.call_sites:
             return super()._compile_ast_function(proto)
 
         namespace: dict[str, object] = {
@@ -80,16 +75,11 @@ class ValueIRFunctionJITMixin:
             "_MASK64": _MASK64,
             "_SIGN64": _SIGN64,
             "_TWO64": _TWO64,
+            "_cost": plan.instruction_count,
         }
         for node in plan.nodes:
             if node.kind is ValueKind.LITERAL:
                 namespace[f"_lit_{node.id}"] = node.payload
-
-        definition_at_pc = {
-            pc: node_id
-            for node_id, pc in plan.definition_pcs
-            if node_id in plan.live_nodes
-        }
 
         lines = [
             "def _jit_value_ir_function(vm, frames, frame, budget, meter):",
@@ -99,16 +89,15 @@ class ValueIRFunctionJITMixin:
             "    regs = frame.regs",
             "    consts = frame.proto.constants",
         ]
-        namespace["_cost"] = plan.instruction_count
-
         for index in range(proto.param_count):
             lines.append(f"    _arg{index} = regs[{index}]")
 
-        for pc in range(plan.return_pc):
-            node_id = definition_at_pc.get(pc)
-            if node_id is None:
+        # Value IDs are allocated after their operands, including expressions
+        # cloned from an inlined child. Emitting live EXPRESSION nodes in ID order
+        # is therefore a topological schedule with no Lua-register traffic.
+        for node in plan.nodes:
+            if node.kind is not ValueKind.EXPRESSION or node.id not in plan.live_nodes:
                 continue
-            node = plan.node(node_id)
             args = [self._value_expr(plan, arg) for arg in node.args]
             dest = f"_v{node.id}"
             op = node.op
