@@ -772,8 +772,9 @@ class _Translator:
                 self.load_value(a, False); pc += 1
             elif opcode == P_LFALSESKIP:
                 self.load_value(a, False)
-                self.pcmap[pc + 1] = len(self.proto.code)
-                pc += 2
+                jump = self.emit(Op.JMP, 0)
+                self.patch_a(jump, pc + 2)
+                pc += 1
             elif opcode == P_LOADTRUE:
                 self.load_value(a, True); pc += 1
             elif opcode == P_LOADNIL:
