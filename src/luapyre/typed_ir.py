@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
+import math
 
 from .bytecode import Ins, Op, Proto
 
@@ -240,6 +241,22 @@ def _writes(ins: Ins) -> tuple[int, ...]:
     return ()
 
 
+def _virtualizable_use(ins: Ins, register: int) -> bool:
+    """Whether the first Python-AST backend consumes this operand from IR.
+
+    Keeping this explicit is important for deoptimization correctness: a value
+    is never declared dead merely because analysis knows it if the current
+    backend still reads its materialized register. Later backends can widen this
+    set without changing the IR representation.
+    """
+
+    if ins.op is Op.GETTABLE:
+        return register in (ins.b, ins.c)
+    if ins.op is Op.SETTABLE:
+        return register in (ins.a, ins.b)
+    return False
+
+
 class TypedIRCompiler:
     """Lower fully typed bytecode blocks into a compact optimization IR.
 
@@ -280,27 +297,36 @@ class TypedIRCompiler:
                 states.append((pc, tuple(sorted(facts.items()))))
                 sources: list[tuple[int, IRValue]] = []
                 source_types: dict[int, str] = {}
+                analytical_sources: dict[int, IRValue] = {}
                 for reg in _reads(ins):
-                    value = facts.get(reg, IRValue.register(reg, types.get(reg, "Any")))
-                    sources.append((reg, value))
-                    source_types[reg] = value.type_name
-                    if value.kind is IRValueKind.REGISTER:
+                    known = facts.get(reg, IRValue.register(reg, types.get(reg, "Any")))
+                    analytical_sources[reg] = known
+                    source_types[reg] = known.type_name
+                    emitted = known if _virtualizable_use(ins, reg) else IRValue.register(
+                        reg, types.get(reg, known.type_name)
+                    )
+                    sources.append((reg, emitted))
+                    if emitted.kind is IRValueKind.REGISTER:
                         materialized_reads.add(reg)
 
                 specialization = None
                 if ins.op in (Op.GETTABLE, Op.SETTABLE):
-                    source_map = dict(sources)
                     table_reg = ins.b if ins.op is Op.GETTABLE else ins.a
                     key_reg = ins.c if ins.op is Op.GETTABLE else ins.b
-                    table_value = source_map.get(
+                    table_value = analytical_sources.get(
                         table_reg, IRValue.register(table_reg, types.get(table_reg, "Any"))
                     )
-                    key_value = source_map.get(
+                    key_value = analytical_sources.get(
                         key_reg, IRValue.register(key_reg, types.get(key_reg, "Any"))
                     )
                     if key_value.kind is IRValueKind.CONSTANT:
                         key = self.proto.constants[key_value.index]
-                        if isinstance(key, (bytes, int, float)) and type(key) is not bool:
+                        valid_float = not (type(key) is float and math.isnan(key))
+                        if (
+                            isinstance(key, (bytes, int, float))
+                            and type(key) is not bool
+                            and valid_float
+                        ):
                             if table_value.is_environment and isinstance(key, bytes):
                                 specialization = (
                                     "global_get" if ins.op is Op.GETTABLE else "global_set"
@@ -309,6 +335,14 @@ class TypedIRCompiler:
                                 specialization = (
                                     "table_get_const" if ins.op is Op.GETTABLE else "table_set_const"
                                 )
+                    # Only specialized table ops consume virtual operands in the
+                    # current AST backend. Generic accesses keep registers live.
+                    if specialization is None:
+                        sources = [
+                            (reg, IRValue.register(reg, types.get(reg, "Any")))
+                            for reg in _reads(ins)
+                        ]
+                        materialized_reads.update(_reads(ins))
 
                 result_type = _result_type(ins, source_types)
                 item = TypedIRInstruction(
@@ -360,7 +394,7 @@ class TypedIRCompiler:
                     types[ins.a] = value.type_name
                     candidate_defs[pc] = ins.a
                 elif ins.op in (Op.MOVE, Op.LOCAL):
-                    source = dict(sources).get(ins.b)
+                    source = analytical_sources.get(ins.b)
                     if source is not None and source.kind is IRValueKind.CONSTANT:
                         facts[ins.a] = source
                         types[ins.a] = source.type_name
