@@ -5,16 +5,30 @@ import gc as python_gc
 import sys
 import warnings
 
-from .bytecode import Cell, Closure, Proto
+from .bytecode import Cell, Closure, Op, Proto
 from .errors import LuaQuotaError, LuaRaisedError, LuaRuntimeError
 from .opdispatch import OPCODE_HANDLERS
 from .table import LuaTable
 from .values import MultiValue
-from .vm import Frame, HostFunction
+from .vm import Frame
 
 
 _COLLECTABLE_TYPES = (LuaTable, Closure)
 _VALID_WEAK_MODES = {b"k", b"v", b"kv"}
+
+_BINARY_OPS = {
+    Op.ADD, Op.ADD_I, Op.ADD_F,
+    Op.SUB, Op.SUB_I, Op.SUB_F,
+    Op.MUL, Op.MUL_I, Op.MUL_F,
+    Op.DIV, Op.IDIV, Op.MOD, Op.POW,
+    Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR,
+    Op.CONCAT, Op.EQ, Op.LT, Op.LE,
+}
+_UNARY_OPS = {Op.LEN, Op.BNOT, Op.NEG, Op.NOT, Op.TOBOOL}
+_CONDITIONAL_JUMPS = {Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL}
+_CALL_OPS = {Op.CALL, Op.CALLV, Op.TAILCALL, Op.TAILCALLV}
+_TAILCALL_OPS = {Op.TAILCALL, Op.TAILCALLV}
+_TERMINATORS = {Op.RETURN, Op.RETURNV, Op.HALT, Op.TAILCALL, Op.TAILCALLV}
 
 
 @dataclass(slots=True)
@@ -29,11 +43,11 @@ class GCStats:
 class LuaGC:
     """Lua-level tracing collector for GC-observable semantics.
 
-    Python still owns the physical memory. This collector models the part Lua
-    programs can observe: weak tables/ephemerons, table finalization, and the
-    basic ``collectgarbage`` control surface. It deliberately traces from Lua
-    roots instead of using Python reference counts, because VM registers and
-    table storage are implementation details and do not define Lua reachability.
+    Python still owns physical memory. This collector models the part Lua code
+    can observe: weak tables/ephemerons, table finalization, and the basic
+    ``collectgarbage`` control surface. Roots are semantic Lua values, not every
+    physical register slot, so stale temporaries cannot accidentally keep weak
+    keys/values alive.
     """
 
     DEFAULT_PARAMS = {
@@ -53,16 +67,13 @@ class LuaGC:
         self.stats = GCStats()
         self.in_finalizer = False
 
-        # Lua keeps marked-for-finalization objects alive until their finalizer
-        # has run. Keeping strong Python references here models that list.
         self._finalizable: list[LuaTable] = []
         self._finalizable_ids: set[int] = set()
         self._finalized_ids: set[int] = set()
+        self._liveness_cache: dict[int, tuple[Proto, tuple[frozenset[int], ...]]] = {}
 
     @staticmethod
     def _is_thread(value) -> bool:
-        # Import lazily so threadvm can subclass the base VM without a module
-        # import cycle through gc.py.
         from .threadvm import LuaThread
 
         return isinstance(value, LuaThread)
@@ -80,7 +91,7 @@ class LuaGC:
         return mode if isinstance(mode, bytes) and mode in _VALID_WEAK_MODES else None
 
     def mark_finalizable(self, table: LuaTable, metatable: LuaTable | None) -> None:
-        """Mark a table when a metatable already containing ``__gc`` is set."""
+        """Mark a table only when the assigned metatable already has ``__gc``."""
         if not isinstance(table, LuaTable) or not isinstance(metatable, LuaTable):
             return
         if metatable.rawget(b"__gc") is None:
@@ -91,34 +102,214 @@ class LuaGC:
         self._finalizable_ids.add(ident)
         self._finalizable.append(table)
 
-    def _roots(self):
-        roots = [self.vm.globals]
-        frames = getattr(self.vm, "_active_frames", None)
-        if frames:
-            roots.extend(frames)
-
-        current = getattr(self.vm, "current_thread", None)
-        if current is not None:
-            roots.append(current)
-        main = getattr(self.vm, "main_thread", None)
-        if main is not None and main is not current:
-            roots.append(main)
-        return roots
+    @staticmethod
+    def _call_result_regs(dest: int, want: int) -> set[int]:
+        if want == 0:
+            return set()
+        if want == -1:
+            return {dest}
+        return set(range(dest, dest + max(0, want)))
 
     @staticmethod
-    def _iter_frame_values(frame: Frame):
-        yield frame.closure
-        yield from frame.regs
-        for cell in frame.cells.values():
-            yield cell.value
-        yield from frame.close_stack
-        if isinstance(frame.pending_error, LuaRaisedError):
-            yield frame.pending_error.value
+    def _ins_reads_writes(proto: Proto, ins) -> tuple[set[int], set[int]]:
+        op = ins.op
+        reads: set[int] = set()
+        writes: set[int] = set()
+
+        if op is Op.LOADK:
+            writes.add(ins.a)
+        elif op in (Op.MOVE, Op.LOCAL):
+            reads.add(ins.b)
+            writes.add(ins.a)
+        elif op is Op.GETGLOBAL:
+            writes.add(ins.a)
+        elif op is Op.SETGLOBAL:
+            reads.add(ins.a)
+        elif op is Op.GETUPVAL:
+            writes.add(ins.a)
+        elif op is Op.SETUPVAL:
+            reads.add(ins.b)
+        elif op is Op.GETCELL:
+            reads.add(ins.b)
+            writes.add(ins.a)
+        elif op is Op.SETCELL:
+            reads.update((ins.a, ins.b))
+            writes.add(ins.a)
+        elif op is Op.CLOSURE:
+            writes.add(ins.a)
+            child = proto.children[ins.b]
+            for desc in child.upvalues:
+                if desc.kind == "local":
+                    reads.add(desc.index)
+        elif op is Op.NEWTABLE:
+            writes.add(ins.a)
+        elif op is Op.GETTABLE:
+            reads.update((ins.b, ins.c))
+            writes.add(ins.a)
+        elif op is Op.SETTABLE:
+            reads.update((ins.a, ins.b, ins.c))
+        elif op is Op.SETLISTV:
+            reads.update((ins.a, ins.c))
+        elif op in _BINARY_OPS:
+            reads.update((ins.b, ins.c))
+            writes.add(ins.a)
+        elif op in _UNARY_OPS:
+            reads.add(ins.b)
+            writes.add(ins.a)
+        elif op in _CONDITIONAL_JUMPS:
+            reads.add(ins.b)
+        elif op is Op.FORPREP:
+            reads.update((ins.a, ins.b, ins.c))
+            writes.update((ins.a, ins.b, ins.c))
+        elif op is Op.FORLOOP:
+            reads.update((ins.a, ins.b, ins.c))
+            writes.add(ins.a)
+        elif op in _CALL_OPS:
+            reads.add(ins.b)
+            reads.update(range(ins.c, ins.c + max(0, ins.d)))
+            if op in (Op.CALLV, Op.TAILCALLV):
+                reads.add(ins.e)
+            if op is Op.CALL:
+                writes.update(LuaGC._call_result_regs(ins.a, ins.e))
+            elif op is Op.CALLV:
+                writes.add(ins.a)
+        elif op is Op.VARARG:
+            if ins.b == -1:
+                writes.add(ins.a)
+            else:
+                writes.update(range(ins.a, ins.a + max(0, ins.b)))
+        elif op is Op.UNPACK:
+            reads.add(ins.b)
+            writes.update(range(ins.a, ins.a + max(0, ins.c)))
+        elif op is Op.TBC:
+            reads.add(ins.a)
+        elif op is Op.CHECKNIL:
+            reads.add(ins.a)
+        elif op is Op.RETURN:
+            reads.update(range(ins.a, ins.a + max(0, ins.b)))
+        elif op is Op.RETURNV:
+            reads.update(range(ins.a, ins.a + max(0, ins.b)))
+            reads.add(ins.c)
+        elif op is Op.GUARD:
+            reads.add(ins.a)
+
+        return reads, writes
+
+    @staticmethod
+    def _successors(code, index: int) -> tuple[int, ...]:
+        ins = code[index]
+        op = ins.op
+        n = len(code)
+        if op in _TERMINATORS:
+            return ()
+        if op is Op.JMP:
+            return (ins.a,) if 0 <= ins.a < n else ()
+        if op in _CONDITIONAL_JUMPS:
+            out = []
+            if index + 1 < n:
+                out.append(index + 1)
+            if 0 <= ins.a < n:
+                out.append(ins.a)
+            return tuple(out)
+        if op in (Op.FORPREP, Op.FORLOOP):
+            out = []
+            if index + 1 < n:
+                out.append(index + 1)
+            if 0 <= ins.d < n:
+                out.append(ins.d)
+            return tuple(out)
+        return (index + 1,) if index + 1 < n else ()
+
+    def _live_sets(self, proto: Proto) -> tuple[frozenset[int], ...]:
+        ident = id(proto)
+        cached = self._liveness_cache.get(ident)
+        if cached is not None and cached[0] is proto:
+            return cached[1]
+
+        code = proto.code
+        n = len(code)
+        reads_writes = [self._ins_reads_writes(proto, ins) for ins in code]
+        successors = [self._successors(code, i) for i in range(n)]
+        live_in = [set() for _ in range(n + 1)]
+
+        changed = True
+        while changed:
+            changed = False
+            for i in range(n - 1, -1, -1):
+                reads, writes = reads_writes[i]
+                live_out: set[int] = set()
+                for succ in successors[i]:
+                    live_out.update(live_in[succ])
+                new_live = reads | (live_out - writes)
+                if new_live != live_in[i]:
+                    live_in[i] = new_live
+                    changed = True
+
+        result = tuple(frozenset(values) for values in live_in)
+        self._liveness_cache[ident] = (proto, result)
+        return result
+
+    def _live_regs(self, frame: Frame) -> frozenset[int]:
+        live = self._live_sets(frame.proto)
+        pc = frame.pc
+        if pc < 0:
+            pc = 0
+        if pc >= len(live):
+            pc = len(live) - 1
+        return live[pc]
 
     def _trace(self):
         marked: dict[int, object] = {}
         weak_tables: dict[int, tuple[LuaTable, bytes]] = {}
         ephemerons: list[tuple[object, object]] = []
+        seen_frames: set[int] = set()
+
+        def mark_frame(frame: Frame, excluded: set[int] | None = None) -> None:
+            ident = id(frame)
+            if ident in seen_frames:
+                return
+            seen_frames.add(ident)
+            excluded = excluded or set()
+
+            mark(frame.closure)
+            live = self._live_regs(frame)
+            for reg in live:
+                if reg in excluded or reg < 0 or reg >= len(frame.regs):
+                    continue
+                cell = frame.cells.get(reg)
+                if cell is not None:
+                    mark(cell.value)
+                else:
+                    mark(frame.regs[reg])
+
+            # Varargs remain semantically addressable through `...` for the
+            # lifetime of the frame. Close-stack values are roots until closed.
+            for value in frame.varargs:
+                mark(value)
+            for value in frame.close_stack:
+                mark(value)
+            if isinstance(frame.pending_error, LuaRaisedError):
+                mark(frame.pending_error.value)
+
+        def mark_frame_stack(frames, active: bool = False) -> None:
+            for index, frame in enumerate(frames):
+                excluded: set[int] = set()
+                if index + 1 < len(frames):
+                    child = frames[index + 1]
+                    if child.return_reg >= 0:
+                        excluded.update(
+                            self._call_result_regs(child.return_reg, child.return_want)
+                        )
+
+                if active:
+                    active_call = getattr(self.vm, "_active_call_result", None)
+                    if active_call is not None and active_call[0] is frame:
+                        _parent, dest, want, tail = active_call
+                        if tail:
+                            excluded.update(range(len(frame.regs)))
+                        else:
+                            excluded.update(self._call_result_regs(dest, want))
+                mark_frame(frame, excluded)
 
         def mark(value) -> bool:
             if isinstance(value, MultiValue):
@@ -129,10 +320,8 @@ class LuaGC:
             if isinstance(value, Cell):
                 return mark(value.value)
             if isinstance(value, Frame):
-                changed = False
-                for item in self._iter_frame_values(value):
-                    changed = mark(item) or changed
-                return changed
+                mark_frame(value)
+                return False
             if isinstance(value, LuaRaisedError):
                 return mark(value.value)
 
@@ -162,8 +351,6 @@ class LuaGC:
                         if self._is_collectable(key):
                             ephemerons.append((key, item))
                         else:
-                            # Numeric/string/etc. keys cannot disappear, so
-                            # their values are ordinary strong references.
                             mark(item)
                 else:  # b"kv"
                     pass
@@ -175,11 +362,9 @@ class LuaGC:
                     mark(cell.value)
                 return True
 
-            # LuaThread is imported lazily above. Its persistent frames are
-            # part of the thread object graph and therefore survive suspension.
+            # LuaThread
             mark(value.entry)
-            for frame in value.frames:
-                mark(frame)
+            mark_frame_stack(value.frames)
             for item in value.yielded:
                 mark(item)
             if value.yield_target is not None:
@@ -191,12 +376,26 @@ class LuaGC:
                 mark(value.error.value)
             return True
 
-        for root in self._roots():
-            mark(root)
+        # Active frames are visited first so result slots currently being
+        # overwritten by a host call are excluded before a reachable thread can
+        # lead back to the same frame stack.
+        active_frames = getattr(self.vm, "_active_frames", None)
+        if active_frames:
+            mark_frame_stack(active_frames, active=True)
 
-        # Ephemeron convergence: a value becomes reachable only after its key
-        # is reachable. Marking that value can in turn make keys in other
-        # ephemerons reachable, hence the fixed-point loop.
+        active_host_values = getattr(self.vm, "_active_host_values", None)
+        if active_host_values:
+            for value in active_host_values:
+                mark(value)
+
+        current = getattr(self.vm, "current_thread", None)
+        if current is not None:
+            mark(current)
+        mark(self.vm.globals)
+        main = getattr(self.vm, "main_thread", None)
+        if main is not None and main is not current:
+            mark(main)
+
         while True:
             before = len(marked)
             index = 0
@@ -243,9 +442,6 @@ class LuaGC:
         return cleared
 
     def _run_lua_callback(self, fn, args) -> None:
-        """Run one non-yieldable Lua callback synchronously on shared handlers."""
-        # A synthetic caller lets _invoke support closures, host functions, and
-        # callable tables without adding a second call protocol.
         proto = Proto("<gc-finalizer>", register_count=1)
         parent = Frame(Closure(proto, [], self.vm.globals), [None])
         frames = [parent]
@@ -291,13 +487,15 @@ class LuaGC:
 
         previous_thread = getattr(self.vm, "current_thread", None)
         previous_frames = getattr(self.vm, "_active_frames", None)
+        previous_host_values = getattr(self.vm, "_active_host_values", None)
+        previous_call_result = getattr(self.vm, "_active_call_result", None)
         self.in_finalizer = True
         try:
-            # Finalizers are non-yieldable. Running them as main-thread work
-            # makes coroutine.yield reject the operation through normal VM rules.
             if hasattr(self.vm, "main_thread"):
                 self.vm.current_thread = self.vm.main_thread
             self.vm._active_frames = None
+            self.vm._active_host_values = None
+            self.vm._active_call_result = None
             self._run_lua_callback(fn, (table,))
         except LuaRuntimeError as exc:
             warnings.warn(
@@ -307,6 +505,8 @@ class LuaGC:
             )
         finally:
             self.vm._active_frames = previous_frames
+            self.vm._active_host_values = previous_host_values
+            self.vm._active_call_result = previous_call_result
             if hasattr(self.vm, "current_thread"):
                 self.vm.current_thread = previous_thread
             self.in_finalizer = False
@@ -319,8 +519,6 @@ class LuaGC:
         dead = [table for table in self._finalizable if id(table) not in marked]
         resurrected_for_cycle = {id(table) for table in dead}
 
-        # Weak values disappear before finalizers. Weak keys for objects being
-        # finalized survive this cycle, matching Lua's resurrection rule.
         cleared = self._clear_weak_tables(
             weak_tables,
             marked,
@@ -338,8 +536,6 @@ class LuaGC:
             self._finalize(table)
             finalized += 1
 
-        # Drop the cycle's temporary resurrection references, then ask Python
-        # to reclaim implementation objects no longer referenced anywhere.
         dead.clear()
         python_gc.collect()
 
@@ -398,8 +594,6 @@ class LuaGC:
         if option == b"count":
             return self.count_kbytes()
         if option == b"step":
-            # LuaPyre currently performs full deterministic cycles at explicit
-            # safe points. A full cycle is a valid (completed) GC step.
             self.collect()
             return True
         if option in (b"incremental", b"generational"):
