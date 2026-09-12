@@ -63,10 +63,12 @@ class CFGValueIRFunctionJITMixin:
             if op in ("add_i", "sub_i", "mul_i"):
                 symbol = {"add_i": "+", "sub_i": "-", "mul_i": "*"}[op]
                 tmp = f"_wide_{node.id}"
-                out.extend([
-                    f"{indent}{tmp} = ({args[0]} {symbol} {args[1]}) & _MASK64",
-                    f"{indent}{dest} = {tmp} - _TWO64 if {tmp} & _SIGN64 else {tmp}",
-                ])
+                out.extend(
+                    [
+                        f"{indent}{tmp} = ({args[0]} {symbol} {args[1]}) & _MASK64",
+                        f"{indent}{dest} = {tmp} - _TWO64 if {tmp} & _SIGN64 else {tmp}",
+                    ]
+                )
             elif op in ("add_f", "sub_f", "mul_f"):
                 symbol = {"add_f": "+", "sub_f": "-", "mul_f": "*"}[op]
                 out.append(f"{indent}{dest} = float({args[0]} {symbol} {args[1]})")
@@ -95,7 +97,6 @@ class CFGValueIRFunctionJITMixin:
                 nodes_by_pc.setdefault(node.def_pc, []).append(node.id)
 
         for block in plan.blocks:
-            indent = "        "
             lines.append(f"        if _state == {block.index}:")
             body = "            "
             for phi_id in block.phi_nodes:
@@ -108,17 +109,22 @@ class CFGValueIRFunctionJITMixin:
                         f"{body}    _v{phi_id} = {self._value_expr(plan, source)}"
                     )
                 lines.append(f"{body}else:")
-                lines.append(f"{body}    raise RuntimeError('CFG value IR predecessor mismatch')")
+                lines.append(
+                    f"{body}    raise RuntimeError('CFG value IR predecessor mismatch')"
+                )
 
             lines.append(f"{body}if budget - meter[0] < {block.cost}:")
-            for register, node_id in block.entry_values:
+            entry = dict(block.entry_values)
+            for register in block.live_in:
                 lines.append(
-                    f"{body}    regs[{register}] = {self._value_expr(plan, node_id)}"
+                    f"{body}    regs[{register}] = {self._value_expr(plan, entry[register])}"
                 )
-            lines.extend([
-                f"{body}    frame.pc = {block.start}",
-                f"{body}    return _FUNC_SUSPEND, None",
-            ])
+            lines.extend(
+                [
+                    f"{body}    frame.pc = {block.start}",
+                    f"{body}    return _FUNC_SUSPEND, None",
+                ]
+            )
 
             for pc, _ins in block.instructions:
                 for node_id in nodes_by_pc.get(pc, ()):
@@ -139,11 +145,13 @@ class CFGValueIRFunctionJITMixin:
                 lines.append(f"{body}return _FUNC_RETURN, ()")
             elif terminal.op is Op.JMP:
                 target = block.successors[0]
-                lines.extend([
-                    f"{body}_pred = {block.index}",
-                    f"{body}_state = {target}",
-                    f"{body}continue",
-                ])
+                lines.extend(
+                    [
+                        f"{body}_pred = {block.index}",
+                        f"{body}_state = {target}",
+                        f"{body}continue",
+                    ]
+                )
             elif terminal.op in (Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL):
                 if block.condition_value is None or len(block.successors) != 2:
                     return super()._compile_ast_function(proto)
@@ -155,17 +163,21 @@ class CFGValueIRFunctionJITMixin:
                 else:
                     test = f"{condition} is None"
                 target, fallthrough = block.successors
-                lines.extend([
-                    f"{body}_pred = {block.index}",
-                    f"{body}_state = {target} if {test} else {fallthrough}",
-                    f"{body}continue",
-                ])
+                lines.extend(
+                    [
+                        f"{body}_pred = {block.index}",
+                        f"{body}_state = {target} if {test} else {fallthrough}",
+                        f"{body}continue",
+                    ]
+                )
             elif block.successors:
-                lines.extend([
-                    f"{body}_pred = {block.index}",
-                    f"{body}_state = {block.successors[0]}",
-                    f"{body}continue",
-                ])
+                lines.extend(
+                    [
+                        f"{body}_pred = {block.index}",
+                        f"{body}_state = {block.successors[0]}",
+                        f"{body}continue",
+                    ]
+                )
             else:
                 return super()._compile_ast_function(proto)
 
