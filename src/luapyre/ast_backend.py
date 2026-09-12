@@ -67,6 +67,364 @@ class ExpressionFunctionInliner(ast.NodeTransformer):
         return ast.copy_location(replacement, node)
 
 
+class SemanticFastPathOptimizer(ast.NodeTransformer):
+    """Inline tiny Lua semantic helpers in generated Python AST.
+
+    This pass is intentionally conservative.  Expression helpers are expanded
+    only when their arguments are already locals/constants, so repeated uses in
+    the replacement cannot duplicate observable work.  Table method expansion
+    is similarly restricted to local receivers/arguments and keeps the exact
+    ``LuaTable.rawget/rawset`` calls as side exits for uncommon shapes.
+
+    The common table cases are the ones emitted by fully typed numeric code:
+    positive integer keys into the dense array part, including sequential
+    append and in-place update.  Those paths avoid a Python method call and the
+    key-tagging helper while preserving ``version`` updates exactly.
+    """
+
+    @staticmethod
+    def _cheap(node: ast.expr) -> bool:
+        return isinstance(node, (ast.Name, ast.Constant))
+
+    @staticmethod
+    def _type_is(value: ast.expr, type_name: str) -> ast.expr:
+        return ast.Compare(
+            left=ast.Call(ast.Name("type", ast.Load()), [copy.deepcopy(value)], []),
+            ops=[ast.Is()],
+            comparators=[ast.Name(type_name, ast.Load())],
+        )
+
+    @classmethod
+    def _lua_equal_expr(cls, left: ast.expr, right: ast.expr) -> ast.expr:
+        left_bool = cls._type_is(left, "bool")
+        right_bool = cls._type_is(right, "bool")
+        bool_case = ast.BoolOp(ast.Or(), [copy.deepcopy(left_bool), copy.deepcopy(right_bool)])
+        bool_value = ast.BoolOp(
+            ast.And(),
+            [
+                left_bool,
+                right_bool,
+                ast.Compare(
+                    copy.deepcopy(left),
+                    [ast.Is()],
+                    [copy.deepcopy(right)],
+                ),
+            ],
+        )
+
+        left_number = ast.Compare(
+            ast.Call(ast.Name("type", ast.Load()), [copy.deepcopy(left)], []),
+            [ast.In()],
+            [ast.Name("_NUM_TYPES", ast.Load())],
+        )
+        right_number = ast.Compare(
+            ast.Call(ast.Name("type", ast.Load()), [copy.deepcopy(right)], []),
+            [ast.In()],
+            [ast.Name("_NUM_TYPES", ast.Load())],
+        )
+        number_case = ast.BoolOp(ast.And(), [left_number, right_number])
+        number_value = ast.Compare(
+            copy.deepcopy(left), [ast.Eq()], [copy.deepcopy(right)]
+        )
+
+        bytes_or_nil = ast.BoolOp(
+            ast.Or(),
+            [
+                ast.Call(
+                    ast.Name("isinstance", ast.Load()),
+                    [copy.deepcopy(left), ast.Name("bytes", ast.Load())],
+                    [],
+                ),
+                ast.Compare(copy.deepcopy(left), [ast.Is()], [ast.Constant(None)]),
+                ast.Call(
+                    ast.Name("isinstance", ast.Load()),
+                    [copy.deepcopy(right), ast.Name("bytes", ast.Load())],
+                    [],
+                ),
+                ast.Compare(copy.deepcopy(right), [ast.Is()], [ast.Constant(None)]),
+            ],
+        )
+        same_type = ast.Compare(
+            ast.Call(ast.Name("type", ast.Load()), [copy.deepcopy(left)], []),
+            [ast.Is()],
+            [ast.Call(ast.Name("type", ast.Load()), [copy.deepcopy(right)], [])],
+        )
+        same_value = ast.Compare(
+            copy.deepcopy(left), [ast.Eq()], [copy.deepcopy(right)]
+        )
+        bytes_nil_value = ast.BoolOp(ast.And(), [same_type, same_value])
+        identity_value = ast.Compare(
+            copy.deepcopy(left), [ast.Is()], [copy.deepcopy(right)]
+        )
+
+        return ast.IfExp(
+            bool_case,
+            bool_value,
+            ast.IfExp(
+                number_case,
+                number_value,
+                ast.IfExp(bytes_or_nil, bytes_nil_value, identity_value),
+            ),
+        )
+
+    @classmethod
+    def _type_matches_expr(cls, type_name: str, value: ast.expr) -> ast.expr | None:
+        if type_name == "Any":
+            return ast.Constant(True)
+        if " | " in type_name:
+            parts = [
+                cls._type_matches_expr(part, value)
+                for part in type_name.split(" | ")
+            ]
+            if any(part is None for part in parts):
+                return None
+            return ast.BoolOp(ast.Or(), [part for part in parts if part is not None])
+        if type_name == "number":
+            return ast.Compare(
+                ast.Call(ast.Name("type", ast.Load()), [copy.deepcopy(value)], []),
+                [ast.In()],
+                [ast.Name("_NUM_TYPES", ast.Load())],
+            )
+        if type_name == "integer":
+            return cls._type_is(value, "int")
+        if type_name == "float":
+            return cls._type_is(value, "float")
+        if type_name == "boolean":
+            return cls._type_is(value, "bool")
+        if type_name == "string":
+            return ast.Call(
+                ast.Name("isinstance", ast.Load()),
+                [copy.deepcopy(value), ast.Name("bytes", ast.Load())],
+                [],
+            )
+        if type_name == "table":
+            return ast.Call(
+                ast.Name("isinstance", ast.Load()),
+                [copy.deepcopy(value), ast.Name("_LuaTable", ast.Load())],
+                [],
+            )
+        if type_name == "nil":
+            return ast.Compare(
+                copy.deepcopy(value), [ast.Is()], [ast.Constant(None)]
+            )
+        return None
+
+    @staticmethod
+    def _raw_method(call: ast.Call, name: str, arity: int) -> tuple[ast.Name, list[ast.expr]] | None:
+        if call.keywords or len(call.args) != arity:
+            return None
+        func = call.func
+        if not isinstance(func, ast.Attribute) or func.attr != name:
+            return None
+        if not isinstance(func.value, ast.Name):
+            return None
+        if not all(SemanticFastPathOptimizer._cheap(arg) for arg in call.args):
+            return None
+        return func.value, call.args
+
+    def visit_Call(self, node: ast.Call):
+        node = self.generic_visit(node)
+
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "_lua_equal"
+            and not node.keywords
+            and len(node.args) == 2
+            and all(self._cheap(arg) for arg in node.args)
+        ):
+            return ast.copy_location(
+                self._lua_equal_expr(node.args[0], node.args[1]), node
+            )
+
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "_type_matches"
+            and not node.keywords
+            and len(node.args) == 2
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and self._cheap(node.args[1])
+        ):
+            replacement = self._type_matches_expr(node.args[0].value, node.args[1])
+            if replacement is not None:
+                return ast.copy_location(replacement, node)
+
+        rawlen = self._raw_method(node, "rawlen", 0)
+        if rawlen is not None:
+            table, _ = rawlen
+            return ast.copy_location(
+                ast.Call(
+                    ast.Name("len", ast.Load()),
+                    [
+                        ast.Attribute(
+                            copy.deepcopy(table), "array", ast.Load()
+                        )
+                    ],
+                    [],
+                ),
+                node,
+            )
+
+        return node
+
+    def visit_Assign(self, node: ast.Assign):
+        node = self.generic_visit(node)
+        if len(node.targets) != 1 or not isinstance(node.value, ast.Call):
+            return node
+        rawget = self._raw_method(node.value, "rawget", 1)
+        if rawget is None:
+            return node
+
+        table, args = rawget
+        key = args[0]
+        target = node.targets[0]
+        array = ast.Attribute(copy.deepcopy(table), "array", ast.Load())
+        table_hash = ast.Attribute(copy.deepcopy(table), "hash", ast.Load())
+        dense_key = ast.BoolOp(
+            ast.And(),
+            [
+                self._type_is(key, "int"),
+                ast.Compare(copy.deepcopy(key), [ast.GtE()], [ast.Constant(1)]),
+            ],
+        )
+        in_array = ast.Compare(
+            copy.deepcopy(key),
+            [ast.LtE()],
+            [ast.Call(ast.Name("len", ast.Load()), [copy.deepcopy(array)], [])],
+        )
+        direct_value = ast.Subscript(
+            copy.deepcopy(array),
+            ast.BinOp(copy.deepcopy(key), ast.Sub(), ast.Constant(1)),
+            ast.Load(),
+        )
+        fallback = ast.Call(
+            ast.Attribute(copy.deepcopy(table), "rawget", ast.Load()),
+            [copy.deepcopy(key)],
+            [],
+        )
+        inner = ast.If(
+            test=in_array,
+            body=[
+                ast.Assign(
+                    [copy.deepcopy(target)],
+                    direct_value,
+                )
+            ],
+            orelse=[
+                ast.If(
+                    test=ast.UnaryOp(ast.Not(), copy.deepcopy(table_hash)),
+                    body=[ast.Assign([copy.deepcopy(target)], ast.Constant(None))],
+                    orelse=[ast.Assign([copy.deepcopy(target)], fallback)],
+                )
+            ],
+        )
+        return ast.copy_location(
+            ast.If(
+                test=dense_key,
+                body=[inner],
+                orelse=[
+                    ast.Assign(
+                        [copy.deepcopy(target)],
+                        copy.deepcopy(fallback),
+                    )
+                ],
+            ),
+            node,
+        )
+
+    def visit_Expr(self, node: ast.Expr):
+        node = self.generic_visit(node)
+        if not isinstance(node.value, ast.Call):
+            return node
+        rawset = self._raw_method(node.value, "rawset", 2)
+        if rawset is None:
+            return node
+
+        table, args = rawset
+        key, value = args
+        array = ast.Attribute(copy.deepcopy(table), "array", ast.Load())
+        table_hash = ast.Attribute(copy.deepcopy(table), "hash", ast.Load())
+        version = ast.Attribute(copy.deepcopy(table), "version", ast.Store())
+        dense_key_value = ast.BoolOp(
+            ast.And(),
+            [
+                self._type_is(key, "int"),
+                ast.Compare(copy.deepcopy(key), [ast.GtE()], [ast.Constant(1)]),
+                ast.Compare(copy.deepcopy(value), [ast.IsNot()], [ast.Constant(None)]),
+            ],
+        )
+        existing = ast.Compare(
+            copy.deepcopy(key),
+            [ast.LtE()],
+            [ast.Call(ast.Name("len", ast.Load()), [copy.deepcopy(array)], [])],
+        )
+        appendable = ast.BoolOp(
+            ast.And(),
+            [
+                ast.Compare(
+                    copy.deepcopy(key),
+                    [ast.Eq()],
+                    [
+                        ast.BinOp(
+                            ast.Call(
+                                ast.Name("len", ast.Load()),
+                                [copy.deepcopy(array)],
+                                [],
+                            ),
+                            ast.Add(),
+                            ast.Constant(1),
+                        )
+                    ],
+                ),
+                ast.UnaryOp(ast.Not(), copy.deepcopy(table_hash)),
+            ],
+        )
+        bump_version = ast.AugAssign(version, ast.Add(), ast.Constant(1))
+        store_existing = ast.Assign(
+            [
+                ast.Subscript(
+                    copy.deepcopy(array),
+                    ast.BinOp(copy.deepcopy(key), ast.Sub(), ast.Constant(1)),
+                    ast.Store(),
+                )
+            ],
+            copy.deepcopy(value),
+        )
+        append_value = ast.Expr(
+            ast.Call(
+                ast.Attribute(copy.deepcopy(array), "append", ast.Load()),
+                [copy.deepcopy(value)],
+                [],
+            )
+        )
+        fallback = ast.Expr(
+            ast.Call(
+                ast.Attribute(copy.deepcopy(table), "rawset", ast.Load()),
+                [copy.deepcopy(key), copy.deepcopy(value)],
+                [],
+            )
+        )
+        dense_body = ast.If(
+            test=existing,
+            body=[copy.deepcopy(bump_version), store_existing],
+            orelse=[
+                ast.If(
+                    test=appendable,
+                    body=[copy.deepcopy(bump_version), append_value],
+                    orelse=[copy.deepcopy(fallback)],
+                )
+            ],
+        )
+        return ast.copy_location(
+            ast.If(
+                test=dense_key_value,
+                body=[dense_body],
+                orelse=[fallback],
+            ),
+            node,
+        )
+
+
 class _ReturnToJump(ast.NodeTransformer):
     def __init__(self, state_name: str):
         self.state_name = state_name
@@ -231,7 +589,14 @@ def inline_expression_helper(tree: ast.AST, source: str) -> ast.AST:
     return tree
 
 
+def optimize_semantic_helpers(tree: ast.AST) -> ast.AST:
+    tree = SemanticFastPathOptimizer().visit(tree)
+    ast.fix_missing_locations(tree)
+    return tree
+
+
 def inline_local_jump_list(tree: ast.AST, layout: JumpListLayout) -> ast.AST:
     tree = LocalJumpListInliner(layout).visit(tree)
+    tree = optimize_semantic_helpers(tree)
     ast.fix_missing_locations(tree)
     return tree
