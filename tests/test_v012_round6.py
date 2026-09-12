@@ -61,3 +61,11 @@ def test_float_modulo_matches_lua_nan_and_infinity_edges():
 
 def test_integer_modulo_by_zero_still_errors():
     assert run("local ok = pcall(function () return 1 % 0 end); return ok") is False
+
+
+def test_math_tointeger_coerces_numeric_strings_like_lua():
+    assert run('return math.tointeger(tostring(math.mininteger))') == -(1 << 63)
+    assert run('return math.tointeger(tostring(math.maxinteger))') == (1 << 63) - 1
+    assert run('return math.tointeger("34.0")') == 34
+    assert run('return math.tointeger("34.3")') is None
+    assert run('return math.tointeger({})') is None
