@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from luapyre.errors import LuaSyntaxError
@@ -22,10 +20,9 @@ def test_lua_55_numeric_literal_forms():
     assert values == [255, -1, 1000.0, 16.0, 0.5, 3.0]
 
 
-def test_large_hex_integer_literal_falls_back_to_float():
-    value = _values("0x10000000000000000")[0]
-    assert type(value) is float
-    assert value == float.fromhex("0x10000000000000000")
+def test_oversized_hex_integer_literals_wrap_modulo_lua_unsigned():
+    values = _values("0x10000000000000000 0x13121110090807060504030201")
+    assert values == [0, 0x0807060504030201]
 
 
 def test_lua_55_short_string_escapes():
