@@ -1,49 +1,73 @@
 from __future__ import annotations
 
-from .errors import LuaRuntimeError, LuaRaisedError
+import warnings
+
+from .bytecode import Closure
+from .compiler import Compiler
+from .errors import LuaPyreError, LuaQuotaError, LuaRaisedError, LuaRuntimeError
+from .parser import Parser
 from .table import LuaTable
 from .values import MultiValue, i64, lua_equal, lua_type_name, truthy
 from .vm import HostFunction
-
-
-def _tostring(value):
-    if value is None:
-        return b"nil"
-    if value is True:
-        return b"true"
-    if value is False:
-        return b"false"
-    if isinstance(value, bytes):
-        return value
-    if type(value) in (int, float):
-        return str(value).encode("ascii")
-    return repr(value).encode("utf-8")
+from .stdlib_math import install_math_library
+from .stdlib_string import install_string_library
+from .stdlib_support import INT_MAX, INT_MIN, need_integer, tostring_value
+from .stdlib_table import install_table_library
+from .stdlib_utf8 import install_utf8_library
 
 
 def install_safe_stdlib(globals_table: LuaTable, vm=None):
     def put(name, fn):
         host = HostFunction(fn, name)
-        globals_table.rawset(name.encode(), host)
+        globals_table.rawset(name.encode("ascii"), host)
         return host
 
     globals_table.rawset(b"_G", globals_table)
     globals_table.rawset(b"_VERSION", b"Lua 5.5")
 
-    put("type", lambda value: lua_type_name(value).encode())
-    put("tostring", _tostring)
+    put("type", lambda value: lua_type_name(value).encode("ascii"))
+    put("tostring", lambda value: tostring_value(vm, value))
 
-    def tonumber(value):
-        if type(value) in (int, float):
-            return value
+    def tonumber(value, base=None):
+        if base is None:
+            if type(value) in (int, float):
+                return value
+            if not isinstance(value, bytes):
+                return None
+            try:
+                text = value.decode("ascii").strip()
+            except UnicodeDecodeError:
+                return None
+            if not text:
+                return None
+            try:
+                lower = text.lower()
+                is_hex = lower.startswith(("0x", "+0x", "-0x"))
+                if (is_hex and ("p" in lower or "." in lower)):
+                    return float.fromhex(text)
+                if any(char in text for char in ".eE"):
+                    return float(text)
+                integer = int(text, 16 if is_hex else 10)
+                if INT_MIN <= integer <= INT_MAX:
+                    return integer
+                return float(text)
+            except (ValueError, OverflowError):
+                return None
+
         if not isinstance(value, bytes):
-            return None
+            raise LuaRuntimeError("bad argument #1 to 'tonumber' (string expected)")
+        base = need_integer(base, 2, "tonumber")
+        if base < 2 or base > 36:
+            raise LuaRuntimeError("bad argument #2 to 'tonumber' (base out of range)")
         try:
-            s = value.decode("ascii").strip()
-            if any(c in s for c in ".eE"):
-                return float(s)
-            return i64(int(s, 0))
-        except (ValueError, UnicodeDecodeError):
+            text = value.decode("ascii").strip()
+            integer = int(text, base)
+        except (UnicodeDecodeError, ValueError):
             return None
+        if not INT_MIN <= integer <= INT_MAX:
+            return None
+        return integer
+
     put("tonumber", tonumber)
 
     def lua_assert(*args):
@@ -52,20 +76,22 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
             message = args[1] if len(args) > 1 else b"assertion failed!"
             raise LuaRaisedError(message)
         return MultiValue(tuple(args))
+
     put("assert", lua_assert)
 
     def lua_error(value=None, _level=1):
         if value is None:
             value = b"error object is nil"
         raise LuaRaisedError(value)
-    put("error", lua_error)
 
+    put("error", lua_error)
     put("rawequal", lua_equal)
 
     def rawget(table, key):
         if not isinstance(table, LuaTable):
             raise LuaRuntimeError("bad argument #1 to 'rawget' (table expected)")
         return table.rawget(key)
+
     put("rawget", rawget)
 
     def rawset(table, key, value):
@@ -73,6 +99,7 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
             raise LuaRuntimeError("bad argument #1 to 'rawset' (table expected)")
         table.rawset(key, value)
         return table
+
     put("rawset", rawset)
 
     def rawlen(value):
@@ -81,16 +108,16 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
         if isinstance(value, bytes):
             return len(value)
         raise LuaRuntimeError("bad argument #1 to 'rawlen' (table or string expected)")
+
     put("rawlen", rawlen)
 
     def getmetatable(value):
-        if not isinstance(value, LuaTable):
-            return None
-        mt = value.metatable
+        mt = vm.metatable_for(value) if vm is not None else (value.metatable if isinstance(value, LuaTable) else None)
         if mt is None:
             return None
         protected = mt.rawget(b"__metatable")
         return protected if protected is not None else mt
+
     put("getmetatable", getmetatable)
 
     def setmetatable(table, mt):
@@ -105,6 +132,7 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
         if vm is not None and hasattr(vm, "gc"):
             vm.gc.mark_finalizable(table, mt)
         return table
+
     put("setmetatable", setmetatable)
 
     def next_fn(table, key=None):
@@ -113,35 +141,155 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
         items = list(table.items())
         if key is None:
             return MultiValue(items[0]) if items else None
-        for i, (current, value) in enumerate(items):
+        for index, (current, value) in enumerate(items):
             if lua_equal(current, key):
-                return MultiValue(items[i + 1]) if i + 1 < len(items) else None
+                return MultiValue(items[index + 1]) if index + 1 < len(items) else None
         raise LuaRuntimeError("invalid key to 'next'")
 
     next_host = put("next", next_fn)
 
-    def pairs(table):
-        if not isinstance(table, LuaTable):
+    def pairs(value):
+        if vm is not None:
+            metamethod = vm._tm(value, b"__pairs")
+            if metamethod is not None:
+                results = vm.call_sync(metamethod, (value,))
+                padded = (*results, None, None, None, None)
+                return MultiValue(tuple(padded[:4]))
+        if not isinstance(value, LuaTable):
             raise LuaRuntimeError("bad argument #1 to 'pairs' (table expected)")
-        return MultiValue((next_host, table, None))
+        return MultiValue((next_host, value, None, None))
+
     put("pairs", pairs)
 
-    def ipairs_iter(table, index):
-        index = i64(index + 1)
-        value = table.rawget(index)
-        return None if value is None else MultiValue((index, value))
+    def ipairs_iter(value, index):
+        index = i64(need_integer(index, 2, "ipairsaux") + 1)
+        item = vm.index_sync(value, index) if vm is not None else value.rawget(index)
+        return None if item is None else MultiValue((index, item))
 
     ipairs_host = HostFunction(ipairs_iter, "ipairsaux")
 
-    def ipairs(table):
-        if not isinstance(table, LuaTable):
-            raise LuaRuntimeError("bad argument #1 to 'ipairs' (table expected)")
-        return MultiValue((ipairs_host, table, 0))
+    def ipairs(value):
+        return MultiValue((ipairs_host, value, 0))
+
     put("ipairs", ipairs)
+
+    def select(index, *values):
+        if isinstance(index, bytes) and index.startswith(b"#"):
+            return len(values)
+        position = need_integer(index, 1, "select")
+        count = len(values)
+        if position < 0:
+            position = count + position + 1
+        if position == 0 or position < 1:
+            raise LuaRuntimeError("bad argument #1 to 'select' (index out of range)")
+        if position > count:
+            return MultiValue(())
+        return MultiValue(tuple(values[position - 1:]))
+
+    put("select", select)
+
+    def _error_value(error):
+        if isinstance(error, LuaRaisedError):
+            return error.value
+        return str(error).encode("utf-8", "replace")
+
+    if vm is not None:
+        def pcall(fn, *args):
+            try:
+                results = vm.call_sync(fn, args)
+                return MultiValue((True, *results))
+            except LuaQuotaError:
+                raise
+            except LuaRuntimeError as error:
+                return MultiValue((False, _error_value(error)))
+
+        put("pcall", pcall)
+
+        def xpcall(fn, handler, *args):
+            try:
+                results = vm.call_sync(fn, args)
+                return MultiValue((True, *results))
+            except LuaQuotaError:
+                raise
+            except LuaRuntimeError as error:
+                original = _error_value(error)
+                try:
+                    handled = vm.call_sync(handler, (original,))
+                    replacement = handled[0] if handled else None
+                except LuaQuotaError:
+                    raise
+                except LuaRuntimeError as handler_error:
+                    replacement = _error_value(handler_error)
+                return MultiValue((False, replacement))
+
+        put("xpcall", xpcall)
+
+        def load(chunk, chunkname=None, mode=b"bt", env=None):
+            if mode is None:
+                mode = b"bt"
+            if not isinstance(mode, bytes):
+                raise LuaRuntimeError("bad argument #3 to 'load' (string expected)")
+            if b"t" not in mode:
+                return MultiValue((None, b"attempt to load a text chunk (mode is 'b')"))
+
+            if isinstance(chunk, bytes):
+                source = chunk
+            else:
+                pieces = []
+                total = 0
+                while True:
+                    results = vm.call_sync(chunk, ())
+                    piece = results[0] if results else None
+                    if piece is None or piece == b"":
+                        break
+                    if not isinstance(piece, bytes):
+                        return MultiValue((None, b"reader function must return a string"))
+                    total += len(piece)
+                    if total > 16 * 1024 * 1024:
+                        return MultiValue((None, b"chunk too large"))
+                    pieces.append(piece)
+                source = b"".join(pieces)
+
+            try:
+                text = source.decode("utf-8")
+                proto = Compiler().compile(Parser(text).parse())
+            except (UnicodeDecodeError, LuaPyreError) as error:
+                return MultiValue((None, str(error).encode("utf-8", "replace")))
+            environment = globals_table if env is None else env
+            if not isinstance(environment, LuaTable):
+                raise LuaRuntimeError("bad argument #4 to 'load' (table expected)")
+            return Closure(proto, [], environment)
+
+        put("load", load)
+
+    warning_enabled = True
+
+    def warn(*messages):
+        nonlocal warning_enabled
+        if not messages:
+            raise LuaRuntimeError("bad argument #1 to 'warn' (string expected)")
+        for index, message in enumerate(messages, 1):
+            if not isinstance(message, bytes):
+                raise LuaRuntimeError(f"bad argument #{index} to 'warn' (string expected)")
+        if len(messages) == 1 and messages[0].startswith(b"@"):
+            if messages[0] == b"@off":
+                warning_enabled = False
+            elif messages[0] == b"@on":
+                warning_enabled = True
+            return None
+        if warning_enabled:
+            warnings.warn(b"".join(messages).decode("utf-8", "replace"), RuntimeWarning, stacklevel=2)
+
+    put("warn", warn)
 
     if vm is not None:
         if hasattr(vm, "gc"):
             put("collectgarbage", vm.gc.command)
+
+        install_string_library(globals_table, vm)
+        install_utf8_library(globals_table, vm)
+        install_table_library(globals_table, vm)
+        install_math_library(globals_table, vm)
 
         coroutine = LuaTable()
         coroutine.rawset(b"create", HostFunction(vm.create_thread, "coroutine.create"))
