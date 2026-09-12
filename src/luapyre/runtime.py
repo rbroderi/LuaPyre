@@ -16,6 +16,7 @@ from .stdlib_output import install_output_library
 from .stdlib_package import install_package_library
 from .table import LuaTable
 from .threadvm import LuaThread
+from .typed_parser import TypedParser
 from .values import MultiValue, i64
 from .vm import HostFunction
 
@@ -165,10 +166,12 @@ class LuaRuntime:
 
     def compile(self, source: str, *, chunkname: str | bytes = "=(luapyre)"):
         mode = detect_source_mode(source)
+        fully_typed = mode == FULLY_TYPED_MODE
+        parser = TypedParser(source) if fully_typed else Parser(source)
         return SourceCompiler(
             chunkname,
-            fully_typed=mode == FULLY_TYPED_MODE,
-        ).compile(Parser(source).parse())
+            fully_typed=fully_typed,
+        ).compile(parser.parse())
 
     def execute(self, source: str, *, fuel=None, chunkname: str | bytes = "=(luapyre)"):
         return self.vm.run(self.compile(source, chunkname=chunkname), fuel=fuel)
