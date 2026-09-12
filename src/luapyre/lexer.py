@@ -220,7 +220,8 @@ class Lexer:
 
     def _read_number(self, line: int, col: int) -> Token:
         start = self.i
-        hexadecimal = self._peek() == "0" and self._peek(1) in "xX"
+        lookahead = self._peek(1)
+        hexadecimal = self._peek() == "0" and bool(lookahead) and lookahead in "xX"
         if hexadecimal:
             self._take(); self._take()
             while self._peek() in _HEX:

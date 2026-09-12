@@ -2,17 +2,78 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import re
 
 from .table import LuaTable
 from .typesys import ANY, BOOLEAN, FLOAT, FUNCTION, INTEGER, NIL, STRING, TABLE, THREAD, LuaType
 
 MASK64 = (1 << 64) - 1
 SIGN64 = 1 << 63
+INT_MIN = -(1 << 63)
+INT_MAX = (1 << 63) - 1
+
+_DECIMAL_NUMBER = re.compile(
+    r"^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$"
+)
+_HEX_NUMBER = re.compile(
+    r"^[+-]?0[xX](?:(?:[0-9a-fA-F]+(?:\.[0-9a-fA-F]*)?)|(?:\.[0-9a-fA-F]+))(?:[pP][+-]?\d+)?$"
+)
 
 
 def i64(value: int) -> int:
     value &= MASK64
     return value - (1 << 64) if value & SIGN64 else value
+
+
+def parse_lua_number(value):
+    """Return Lua's numeric interpretation of a number/string, or ``None``.
+
+    Lua arithmetic coercion accepts complete numeral strings with surrounding
+    ASCII whitespace.  Integral hexadecimal strings use Lua's unsigned parsing
+    and therefore wrap into the signed 64-bit ``lua_Integer`` domain, while an
+    overflowing decimal integer becomes a float when representable.
+    """
+    if type(value) in (int, float):
+        return value
+    if not isinstance(value, bytes):
+        return None
+    try:
+        text = value.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    if not text:
+        return None
+
+    try:
+        if _HEX_NUMBER.fullmatch(text):
+            lower = text.lower()
+            if "." in lower or "p" in lower:
+                return float.fromhex(text)
+            sign = -1 if text.startswith("-") else 1
+            digits = text[1:] if text[:1] in "+-" else text
+            integer = sign * int(digits[2:], 16)
+            return i64(integer)
+
+        if not _DECIMAL_NUMBER.fullmatch(text):
+            return None
+        if not any(char in text for char in ".eE"):
+            integer = int(text, 10)
+            if INT_MIN <= integer <= INT_MAX:
+                return integer
+        return float(text)
+    except (ValueError, OverflowError):
+        return None
+
+
+def coerce_lua_integer(value):
+    number = parse_lua_number(value)
+    if type(number) is int:
+        return i64(number)
+    if type(number) is float and math.isfinite(number) and number.is_integer():
+        integer = int(number)
+        if INT_MIN <= integer <= INT_MAX:
+            return integer
+    return None
 
 
 def truthy(value) -> bool:

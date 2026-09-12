@@ -21,6 +21,7 @@ class SourceCompiler(Compiler):
         analyze_control_flow(chunk.body)
         proto = Proto(
             "<chunk>",
+            is_vararg=True,
             source=self.source,
             linedefined=0,
             lastlinedefined=_last_body_line(chunk.body, chunk.line),

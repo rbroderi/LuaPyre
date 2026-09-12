@@ -17,6 +17,7 @@ on:
     branches:
       - main
       - v0.11-official-suite-baseline
+      - v0.12-official-suite-expansion
 
 jobs:
   official-suite:

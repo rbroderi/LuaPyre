@@ -80,7 +80,7 @@ class LoopContext:
 class Compiler:
     def compile(self, chunk: A.Chunk) -> Proto:
         analyze_control_flow(chunk.body)
-        proto = Proto("<chunk>")
+        proto = Proto("<chunk>", is_vararg=True)
         ctx = _FunctionCompiler(proto)
         env = ctx.alloc()
         proto.env_reg = env
@@ -102,6 +102,7 @@ class _FunctionCompiler:
         self.scopes = [Scope({}, None, inherited_implicit, 0)]
         self.upvalue_by_name: dict[str, int] = {}
         self.upvalue_types: list[LuaType] = []
+        self.readonly_upvalues: set[int] = set()
         self.next_reg = 0
         self.max_reg = 0
         self.close_depth = 0
@@ -185,12 +186,20 @@ class _FunctionCompiler:
     def _make_upvalue(self, name, source):
         if name in self.upvalue_by_name:
             idx = self.upvalue_by_name[name]
-            return Ref("upvalue", idx, self.upvalue_types[idx], name=name)
+            return Ref(
+                "upvalue", idx, self.upvalue_types[idx], name=name,
+                readonly=idx in self.readonly_upvalues,
+            )
         idx = len(self.proto.upvalues)
         self.proto.upvalues.append(UpvalueDesc(source.kind, source.index, name))
         self.upvalue_types.append(source.typ)
+        readonly = source.readonly or (
+            source.symbol is not None and source.symbol.readonly
+        )
+        if readonly:
+            self.readonly_upvalues.add(idx)
         self.upvalue_by_name[name] = idx
-        return Ref("upvalue", idx, source.typ, name=name)
+        return Ref("upvalue", idx, source.typ, name=name, readonly=readonly)
 
     def capture_for_child(self, name, *, allow_implicit=True):
         binding = self._find_binding(name)
@@ -202,7 +211,10 @@ class _FunctionCompiler:
 
         if name in self.upvalue_by_name:
             idx = self.upvalue_by_name[name]
-            return Ref("upvalue", idx, self.upvalue_types[idx], name=name)
+            return Ref(
+                "upvalue", idx, self.upvalue_types[idx], name=name,
+                readonly=idx in self.readonly_upvalues,
+            )
 
         if self.parent is not None:
             source = self.parent.capture_for_child(
@@ -224,7 +236,10 @@ class _FunctionCompiler:
 
         if name in self.upvalue_by_name:
             idx = self.upvalue_by_name[name]
-            return Ref("upvalue", idx, self.upvalue_types[idx], name=name)
+            return Ref(
+                "upvalue", idx, self.upvalue_types[idx], name=name,
+                readonly=idx in self.readonly_upvalues,
+            )
 
         if self.parent is not None:
             source = self.parent.capture_for_child(name, allow_implicit=self.implicit_global)
@@ -299,7 +314,10 @@ class _FunctionCompiler:
     def _store_ref(self, ref, value, line, actual=ANY):
         if ref.readonly or (ref.symbol is not None and ref.symbol.readonly):
             kind = "global" if ref.kind == "global" else "local"
-            raise LuaTypeError(f"line {line}: cannot assign to read-only {kind} '{ref.name}'")
+            raise LuaTypeError(
+                f"line {line}: cannot assign to read-only {kind} '{ref.name}' "
+                f"(const variable '{ref.name}')"
+            )
         if ref.typ is not ANY and actual is not ANY and not accepts(ref.typ, actual):
             raise LuaTypeError(f"line {line}: cannot assign {actual} to {ref.typ}")
         if ref.typ is not ANY and actual is ANY:

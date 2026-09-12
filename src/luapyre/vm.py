@@ -51,10 +51,13 @@ def _need_number(value):
 def _to_int(value):
     if type(value) is int:
         return i64(value)
-    if type(value) is float and math.isfinite(value) and value.is_integer():
-        iv = int(value)
-        if -(1 << 63) <= iv <= (1 << 63) - 1:
-            return iv
+    if type(value) is float:
+        if math.isfinite(value) and value.is_integer():
+            iv = int(value)
+            if -(1 << 63) <= iv <= (1 << 63) - 1:
+                return iv
+        if math.isinf(value):
+            raise LuaRuntimeError("number (field 'huge') has no integer representation")
     raise LuaRuntimeError("number has no integer representation")
 
 
@@ -66,6 +69,31 @@ def _float_div(a, b):
     if a == 0.0:
         return math.nan
     return math.copysign(math.inf, a * (1.0 if math.copysign(1.0, b) > 0 else -1.0))
+
+
+def _float_pow(a, b):
+    a = float(a)
+    b = float(b)
+    try:
+        return math.pow(a, b)
+    except ValueError:
+        if a == 0.0 and b < 0.0:
+            negative = (
+                math.copysign(1.0, a) < 0.0
+                and math.isfinite(b)
+                and b.is_integer()
+                and int(b) & 1
+            )
+            return -math.inf if negative else math.inf
+        return math.nan
+    except OverflowError:
+        negative = (
+            a < 0.0
+            and math.isfinite(b)
+            and b.is_integer()
+            and int(b) & 1
+        )
+        return -math.inf if negative else math.inf
 
 
 def _shift_left(a, n):
@@ -207,9 +235,12 @@ class VM:
             if not (_is_number(a) and _is_number(b)):
                 return False, None
             if b == 0:
-                raise LuaRuntimeError("attempt to divide by zero")
-            q = math.floor(a / b)
-            return True, i64(q) if type(a) is int and type(b) is int else float(q)
+                if type(a) is int and type(b) is int:
+                    raise LuaRuntimeError("attempt to divide by zero")
+                return True, _float_div(a, b)
+            if type(a) is int and type(b) is int:
+                return True, i64(a // b)
+            return True, float(math.floor(float(a) / float(b)))
         if op is Op.MOD:
             if not (_is_number(a) and _is_number(b)):
                 return False, None
@@ -220,7 +251,7 @@ class VM:
         if op is Op.POW:
             if not (_is_number(a) and _is_number(b)):
                 return False, None
-            return True, float(a) ** float(b)
+            return True, _float_pow(a, b)
         if op in (Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR):
             try:
                 ai = _to_int(a)

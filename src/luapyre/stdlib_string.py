@@ -8,7 +8,7 @@ import sys
 from .errors import LuaRuntimeError
 from .lua_pattern import LuaPattern, PatternMatch
 from .table import LuaTable
-from .values import MultiValue
+from .values import MultiValue, lua_type_name
 from .vm import HostFunction
 from .stdlib_support import (
     INT_MAX,
@@ -106,11 +106,16 @@ class _PackFormat:
     @staticmethod
     def _number(text: str, index: int):
         start = index
+        value = 0
         while index < len(text) and text[index].isdigit():
+            digit = ord(text[index]) - ord("0")
+            if value > (INT_MAX - digit) // 10:
+                raise LuaRuntimeError("invalid format")
+            value = value * 10 + digit
             index += 1
         if start == index:
             return None, index
-        return int(text[start:index]), index
+        return value, index
 
     def _raw_option(self):
         text = self.text
@@ -126,8 +131,10 @@ class _PackFormat:
         if op == "!":
             n, self.index = self._number(text, self.index)
             n = ctypes.sizeof(ctypes.c_long) if n is None else n
-            if n <= 0 or n > 16 or n & (n - 1):
-                raise LuaRuntimeError("invalid alignment")
+            if n <= 0 or n > 16:
+                raise LuaRuntimeError(f"integral size ({n}) out of limits [1,16]")
+            if n & (n - 1):
+                raise LuaRuntimeError("format asks for alignment not power of 2")
             self.maxalign = n
             return ("config", op, 0, 1)
         sizes = {
@@ -146,8 +153,11 @@ class _PackFormat:
             size, self.index = self._number(text, self.index)
             size = ctypes.sizeof(ctypes.c_int) if size is None else size
             if not 1 <= size <= 16:
-                raise LuaRuntimeError("integral size out of limits")
-            return ("int", op == "i", size, min(size, self.maxalign))
+                raise LuaRuntimeError(f"integral size ({size}) out of limits [1,16]")
+            alignment = min(size, self.maxalign)
+            if alignment & (alignment - 1):
+                raise LuaRuntimeError("format asks for alignment not power of 2")
+            return ("int", op == "i", size, alignment)
         if op in "fdn":
             size = 4 if op == "f" else 8
             return ("float", op, size, min(size, self.maxalign))
@@ -162,15 +172,22 @@ class _PackFormat:
             size, self.index = self._number(text, self.index)
             size = ctypes.sizeof(ctypes.c_size_t) if size is None else size
             if not 1 <= size <= 16:
-                raise LuaRuntimeError("integral size out of limits")
-            return ("sized", op, size, min(size, self.maxalign))
+                raise LuaRuntimeError(f"integral size ({size}) out of limits [1,16]")
+            alignment = min(size, self.maxalign)
+            if alignment & (alignment - 1):
+                raise LuaRuntimeError("format asks for alignment not power of 2")
+            return ("sized", op, size, alignment)
         if op == "x":
             return ("padding", op, 1, 1)
         if op == "X":
+            if self.index >= len(text) or text[self.index] == " ":
+                raise LuaRuntimeError("invalid next option for option 'X'")
             following = self._raw_option()
-            while following is not None and following[0] == "config":
-                following = self._raw_option()
-            if following is None or following[0] in ("zero", "padding"):
+            if (
+                following is None
+                or following[0] in ("config", "fixed", "zero", "align")
+                or following[3] == 0
+            ):
                 raise LuaRuntimeError("invalid next option for option 'X'")
             return ("align", op, 0, following[3])
         raise LuaRuntimeError(f"invalid format option '{op}'")
@@ -188,6 +205,12 @@ def _padding(offset: int, alignment: int) -> int:
     return (-offset) % max(1, alignment)
 
 
+def _checked_size(offset: int, amount: int, message: str) -> int:
+    if amount < 0 or offset > INT_MAX - amount:
+        raise LuaRuntimeError(message)
+    return offset + amount
+
+
 def _pack(fmt: bytes, values):
     parser = _PackFormat(fmt)
     out = bytearray()
@@ -195,6 +218,9 @@ def _pack(fmt: bytes, values):
     for option, endian in parser.options():
         kind, detail, size, alignment = option
         pad = _padding(len(out), alignment)
+        projected = _checked_size(len(out), pad, "format result too long")
+        if kind in ("padding", "int", "float", "fixed", "sized"):
+            _checked_size(projected, size, "format result too long")
         out.extend(b"\0" * pad)
         if kind == "padding":
             out.append(0)
@@ -332,9 +358,11 @@ def _packsize(fmt: bytes):
         kind, _detail, size, alignment = option
         if kind in ("zero", "sized"):
             raise LuaRuntimeError("variable-length format")
-        offset += _padding(offset, alignment)
+        offset = _checked_size(
+            offset, _padding(offset, alignment), "format result too large"
+        )
         if kind in ("int", "float", "fixed", "padding"):
-            offset += size
+            offset = _checked_size(offset, size, "format result too large")
     return offset
 
 
@@ -510,6 +538,7 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
         search_pos = 0
         copied = 0
         count = 0
+        changed = False
         while count < limit and search_pos <= len(s):
             match = matcher.search(s, search_pos)
             if match is None:
@@ -540,7 +569,9 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                         elif capture_index == 0 and not captures:
                             value = s[match.start:match.end]
                         else:
-                            raise LuaRuntimeError("invalid capture index")
+                            raise LuaRuntimeError(
+                                f"invalid capture index %{chr(code)}"
+                            )
                         built.extend(_replacement_bytes(value) or b"")
                     else:
                         raise LuaRuntimeError("invalid use of '%' in replacement string")
@@ -560,7 +591,11 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                 if replacement is None or replacement is False:
                     rendered = s[match.start:match.end]
                 else:
-                    raise LuaRuntimeError("invalid replacement value")
+                    raise LuaRuntimeError(
+                        f"invalid replacement value (a {lua_type_name(replacement)})"
+                    )
+            else:
+                changed = True
             output.extend(rendered)
             count += 1
             copied = match.end
@@ -574,7 +609,7 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
             else:
                 search_pos = match.end
         output.extend(s[copied:])
-        return MultiValue((bytes(output), count))
+        return MultiValue((bytes(output) if changed else s, count))
 
     def rep(s, n, sep=b""):
         s = need_bytes(s, 1, "rep")
