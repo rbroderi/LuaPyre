@@ -72,12 +72,13 @@ class TypedIRPlan:
 
     The plan deliberately does not contain Python syntax. Python AST is one
     backend; later native/AOT backends can consume the same constant, type,
-    specialization, and deoptimization facts.
+    specialization, loop-invariance, and deoptimization facts.
     """
 
     instructions: tuple[TypedIRInstruction, ...]
     state_before: tuple[tuple[int, tuple[tuple[int, IRValue], ...]], ...]
     cache_sites: tuple[int, ...]
+    invariant_sites: tuple[int, ...]
 
     def instruction(self, pc: int) -> TypedIRInstruction | None:
         for item in self.instructions:
@@ -119,6 +120,22 @@ _BINARY_OPS = frozenset(
     }
 )
 _UNARY_OPS = frozenset({Op.LEN, Op.BNOT, Op.NEG, Op.NOT, Op.TOBOOL})
+
+# Any of these can invalidate a value read from _ENV. SETTABLE is deliberately
+# broad: without alias analysis an arbitrary table register could alias _ENV.
+# This conservative set lets the optimizer hoist only when no Lua operation in
+# the region can mutate the environment table or re-enter code that can do so.
+_INVARIANT_GLOBAL_BARRIERS = frozenset(
+    {
+        Op.SETTABLE,
+        Op.SETGLOBAL,
+        Op.SETUPVAL,
+        Op.CALL,
+        Op.CALLV,
+        Op.TAILCALL,
+        Op.TAILCALLV,
+    }
+)
 
 
 def _constant_type(value: object) -> str:
@@ -262,9 +279,9 @@ class TypedIRCompiler:
 
     This is intentionally small. It performs the data-flow work that is useful
     regardless of backend: constant propagation, conservative type propagation,
-    recognition of constant-key/global table accesses, and removal of virtual
-    LOADK/GETUPVAL temporaries. The Python backend is responsible only for
-    turning these facts into AST and guards.
+    recognition of constant-key/global table accesses, dead virtual temporary
+    elimination, and conservative loop-invariance analysis. The Python backend
+    is responsible only for turning these facts into AST and guards.
     """
 
     def __init__(self, proto: Proto):
@@ -282,6 +299,10 @@ class TypedIRCompiler:
         candidate_defs: dict[int, int] = {}
         materialized_reads: set[int] = set()
         stable_env = self._stable_environment()
+        region_instructions = tuple(ins for block in blocks for _pc, ins in block)
+        global_hoist_safe = not any(
+            ins.op in _INVARIANT_GLOBAL_BARRIERS for ins in region_instructions
+        )
 
         for block in blocks:
             facts: dict[int, IRValue] = {}
@@ -416,9 +437,25 @@ class TypedIRCompiler:
             else item
             for item in lowered
         ]
+        invariant_sites = (
+            tuple(
+                item.pc
+                for item in lowered
+                if item.specialization == "global_get"
+            )
+            if global_hoist_safe
+            else ()
+        )
+        invariant_set = set(invariant_sites)
         cache_sites = tuple(
             item.pc
             for item in lowered
             if item.specialization in ("global_get", "table_get_const")
+            and item.pc not in invariant_set
         )
-        return TypedIRPlan(tuple(lowered), tuple(states), cache_sites)
+        return TypedIRPlan(
+            tuple(lowered),
+            tuple(states),
+            cache_sites,
+            invariant_sites,
+        )
