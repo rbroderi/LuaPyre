@@ -122,6 +122,74 @@ global function fact(n)
 end
 return fact(6)
 ''',
+    '''
+local co = coroutine.create(function(a)
+  local x, y = coroutine.yield(a + 1, a + 2)
+  return x + y
+end)
+local ok1, a, b = coroutine.resume(co, 10)
+local s1 = coroutine.status(co)
+local ok2, c = coroutine.resume(co, 20, 22)
+return ok1, a, b, s1, ok2, c, coroutine.status(co), type(co)
+''',
+    '''
+local function inner()
+  return coroutine.yield("inner")
+end
+local co = coroutine.create(function()
+  return inner()
+end)
+local ok1, value = coroutine.resume(co)
+local ok2, final = coroutine.resume(co, 42)
+return ok1, value, ok2, final
+''',
+    '''
+local parent
+local child = coroutine.create(function()
+  return coroutine.status(parent)
+end)
+parent = coroutine.create(function()
+  local ok, status = coroutine.resume(child)
+  return ok, status
+end)
+local ok, childok, status = coroutine.resume(parent)
+return ok, childok, status
+''',
+    '''
+local f = coroutine.wrap(function(x)
+  local y = coroutine.yield(x + 1)
+  return y + 1
+end)
+local first = f(10)
+local second = f(41)
+return first, second
+''',
+    '''
+local closed = 0
+local co = coroutine.create(function()
+  local resource <close> = setmetatable({}, {
+    __close = function(self, err) closed = closed + 1 end
+  })
+  coroutine.yield("paused")
+end)
+local ok1, value = coroutine.resume(co)
+local ok2 = coroutine.close(co)
+return ok1, value, ok2, closed, coroutine.status(co)
+''',
+    '''
+local closed = 0
+local co = coroutine.create(function()
+  local resource <close> = setmetatable({}, {
+    __close = function(self, err) closed = closed + 1 end
+  })
+  coroutine.yield("ready")
+  error("boom")
+end)
+local first = coroutine.resume(co)
+local second = coroutine.resume(co)
+local closeok = coroutine.close(co)
+return first, second, closeok, closed, coroutine.status(co)
+''',
 ]
 
 
