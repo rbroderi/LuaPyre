@@ -1,14 +1,24 @@
 from __future__ import annotations
 
-from .bytecode import Closure, Proto
+from .bytecode import Closure, Op, Proto
 from .diagnostics import capture_error
 from .errors import LuaQuotaError, LuaRuntimeError
 from .gcvm import GarbageCollectedVM
 from .jit import DEOPT, PythonJIT
 from .opdispatch import OPCODE_HANDLERS
 from .threadvm import _CloseSelfSignal, _YieldSignal
-from .values import MultiValue
 from .vm import Frame
+
+
+def _jit_forloop(vm, frames, frame, ins, regs, constants):
+    """FORLOOP handler that hands only taken backedges to the JIT tier."""
+    if vm._forloop(regs, ins):
+        frame.pc = ins.d
+        vm._jit_backedge(frame)
+
+
+_JIT_OPCODE_HANDLERS = dict(OPCODE_HANDLERS)
+_JIT_OPCODE_HANDLERS[Op.FORLOOP] = _jit_forloop
 
 
 class TieredJITVM(GarbageCollectedVM):
@@ -17,6 +27,10 @@ class TieredJITVM(GarbageCollectedVM):
     The existing interpreter remains authoritative. Hot loop regions and hot
     straight-line leaf functions may run as generated Python; every unsupported
     or guard-miss path resumes the ordinary opcode interpreter.
+
+    JIT loop probing happens only after a taken native FORLOOP backedge. Cold
+    and unsupported straight-line code therefore does not pay a per-opcode JIT
+    lookup tax.
     """
 
     def __init__(
@@ -50,6 +64,13 @@ class TieredJITVM(GarbageCollectedVM):
         self._jit_main_fuel -= amount
         if self._jit_main_fuel < 0:
             raise LuaQuotaError("execution quota exceeded")
+
+    def _jit_backedge(self, frame) -> None:
+        if not self.jit.enabled:
+            return
+        used, _handled = self.jit.try_loop(self, frame, self._jit_budget())
+        if used:
+            self._jit_consume(used)
 
     def _invoke(self, frames, parent, fn, args, dest, want, tail=False):
         # Synchronous stdlib callbacks intentionally stay on the interpreter:
@@ -87,22 +108,13 @@ class TieredJITVM(GarbageCollectedVM):
                 root_regs[proto.env_reg] = self.globals
             frames = [Frame(root, root_regs)]
             final_values = ()
-            handlers = OPCODE_HANDLERS
+            handlers = _JIT_OPCODE_HANDLERS
 
             while frames:
                 try:
                     frame = frames[-1]
                     if self._drive_pending(frames, frame):
                         continue
-
-                    if frame.pc < len(frame.proto.code):
-                        used, handled = self.jit.try_loop(
-                            self, frame, self._jit_budget()
-                        )
-                        if used:
-                            self._jit_consume(used)
-                        if handled:
-                            continue
 
                     self._jit_consume(1)
                     if frame.pc >= len(frame.proto.code):
@@ -141,7 +153,7 @@ class TieredJITVM(GarbageCollectedVM):
     def _execute_thread(self, thread, stop_depth: int | None = None):
         frames = thread.frames
         final_values = ()
-        handlers = OPCODE_HANDLERS
+        handlers = _JIT_OPCODE_HANDLERS
 
         if thread.pending_tail_resume is not None and frames:
             values = thread.pending_tail_resume
@@ -159,15 +171,6 @@ class TieredJITVM(GarbageCollectedVM):
                     if stop_depth is not None and len(frames) <= stop_depth:
                         return "callback", ()
                     continue
-
-                if frame.pc < len(frame.proto.code):
-                    used, handled = self.jit.try_loop(
-                        self, frame, self._jit_budget()
-                    )
-                    if used:
-                        self._jit_consume(used)
-                    if handled:
-                        continue
 
                 self._tick()
                 if frame.pc >= len(frame.proto.code):
