@@ -39,7 +39,8 @@ def test_nonintegral_wide_hex_float_does_not_bitwise_coerce():
 
 def test_trailing_decimal_zero_is_not_misclassified_as_hex():
     assert run("return 0") == 0
-    assert run("return 2 // 0") is not None if False else True
+    with pytest.raises(LuaRuntimeError, match="divide by zero"):
+        run("return 2 // 0")
 
 
 def test_named_varargs_are_backed_by_mutable_vararg_table():
