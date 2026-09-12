@@ -190,6 +190,19 @@ local second = coroutine.resume(co)
 local closeok = coroutine.close(co)
 return first, second, closeok, closed, coroutine.status(co)
 ''',
+    '''
+local closed = 0
+local co = coroutine.create(function()
+  local resource <close> = setmetatable({}, {
+    __close = function(self, err) closed = closed + 1 end
+  })
+  coroutine.close()
+  closed = 100
+  return 99
+end)
+local ok, value = coroutine.resume(co)
+return ok, value, closed, coroutine.status(co)
+''',
 ]
 
 
