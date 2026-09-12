@@ -49,10 +49,10 @@ jobs:
           path = root / 'math.lua'
           source = path.read_text(encoding='utf-8')
           marker = "assert(tonumber('-012') == -010-2)"
-          replacement = "assert(false, 'MATH382:' .. tostring(tonumber('-012')) .. ':' .. tostring(-010-2))"
+          replacement = "print('REACHED382', tonumber('-012'), -010-2); assert(true)"
           if marker not in source:
               raise SystemExit('diagnostic marker not found')
-          lua = make_suite_runtime(root, unrestricted=True, echo=False)
+          lua = make_suite_runtime(root, unrestricted=True, echo=True)
           try:
               lua.execute(source.replace(marker, replacement, 1), chunkname='@math.lua')
           except Exception as error:
