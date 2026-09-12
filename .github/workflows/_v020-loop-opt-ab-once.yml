@@ -1,0 +1,29 @@
+name: 0.20 LICM and induction same-runner A/B
+
+on:
+  push:
+    branches:
+      - v0.20-licm-induction
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: _baseline
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compare merged 0.19 with 0.20 loop optimizer
+        shell: bash
+        run: |
+          echo 'baseline (merged 0.19)'
+          PYTHONPATH="$GITHUB_WORKSPACE/_baseline/src" python benchmarks/loop_opt_ab.py --label main --warmups 3 --repeats 9
+          echo '0.20 LICM + induction'
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python benchmarks/loop_opt_ab.py --label opt020 --warmups 3 --repeats 9
