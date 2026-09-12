@@ -3,8 +3,10 @@ from __future__ import annotations
 import re
 
 from .binary_chunks import NATIVE_MAGIC, PUC_MAGIC, fresh_loaded_closure, load_native_chunk
+from .bytecode import Closure
 from .diagnostics import chunk_id, error_value, where_from_frames
 from .errors import LuaPyreError, LuaQuotaError, LuaRaisedError, LuaRuntimeError
+from .native_debug_chunks import DEBUG_NATIVE_MAGIC, dump_debug_chunk, load_debug_chunk
 from .parser import Parser
 from .puc55 import load_puc55_chunk
 from .source_compiler import SourceCompiler
@@ -135,7 +137,11 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
 
         environment = globals_table if env is None else env
         try:
-            if source.startswith(NATIVE_MAGIC):
+            if source.startswith(DEBUG_NATIVE_MAGIC):
+                proto = load_debug_chunk(source)
+                if proto.source is None:
+                    proto.source = source_name
+            elif source.startswith(NATIVE_MAGIC):
                 proto = load_native_chunk(source)
                 if proto.source in (None, "=?"):
                     proto.source = source_name
@@ -151,3 +157,12 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
         return fresh_loaded_closure(proto, environment)
 
     put("load", load)
+
+    stringlib = globals_table.rawget(b"string")
+    if stringlib is not None:
+        def string_dump(fn, strip=False):
+            if not isinstance(fn, Closure):
+                raise LuaRuntimeError("bad argument #1 to 'dump' (function expected)")
+            return dump_debug_chunk(fn.proto, strip=truthy(strip))
+
+        stringlib.rawset(b"dump", HostFunction(string_dump, "string.dump"))
