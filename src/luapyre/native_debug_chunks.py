@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import struct
 
@@ -14,6 +15,7 @@ from .bytecode import Proto
 
 
 DEBUG_NATIVE_MAGIC = NATIVE_MAGIC + b"DBG2"
+_MAX_TOTAL = 16 * 1024 * 1024
 _MAX_DEBUG = 8 * 1024 * 1024
 
 
@@ -35,7 +37,7 @@ def _decode_source(value):
     if value["t"] == "b" and isinstance(value["v"], str):
         try:
             return base64.b64decode(value["v"], validate=True)
-        except ValueError as error:
+        except (ValueError, binascii.Error) as error:
             raise BinaryChunkError("invalid native debug source") from error
     raise BinaryChunkError("invalid native debug source")
 
@@ -59,7 +61,10 @@ def dump_debug_chunk(proto: Proto, *, strip: bool = False) -> bytes:
     ).encode("ascii")
     if len(debug) > _MAX_DEBUG:
         raise BinaryChunkError("native debug metadata too large")
-    return DEBUG_NATIVE_MAGIC + struct.pack(">I", len(payload)) + payload + debug
+    result = DEBUG_NATIVE_MAGIC + struct.pack(">I", len(payload)) + payload + debug
+    if len(result) > _MAX_TOTAL:
+        raise BinaryChunkError("binary chunk too large")
+    return result
 
 
 def _apply(proto: Proto, metadata, *, depth=0):
@@ -90,6 +95,8 @@ def _apply(proto: Proto, metadata, *, depth=0):
 
 
 def load_debug_chunk(data: bytes) -> Proto:
+    if len(data) > _MAX_TOTAL:
+        raise BinaryChunkError("binary chunk too large")
     if not data.startswith(DEBUG_NATIVE_MAGIC):
         raise BinaryChunkError("not a LuaPyre debug binary chunk")
     pos = len(DEBUG_NATIVE_MAGIC)
@@ -97,7 +104,7 @@ def load_debug_chunk(data: bytes) -> Proto:
         raise BinaryChunkError("truncated native debug chunk")
     core_len = struct.unpack(">I", data[pos:pos + 4])[0]
     pos += 4
-    if core_len > 16 * 1024 * 1024 or pos + core_len > len(data):
+    if core_len > _MAX_TOTAL or pos + core_len > len(data):
         raise BinaryChunkError("invalid native debug core length")
     core = NATIVE_MAGIC + data[pos:pos + core_len]
     debug = data[pos + core_len:]
