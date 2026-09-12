@@ -48,13 +48,22 @@ jobs:
           root = Path('.official-lua-551/extracted/lua-5.5.1-tests').resolve()
           path = root / 'math.lua'
           source = path.read_text(encoding='utf-8')
-          marker = "assert(tonumber('-012') == -010-2)"
-          replacement = "print('REACHED382', tonumber('-012'), -010-2); assert(true)"
-          if marker not in source:
-              raise SystemExit('diagnostic marker not found')
+          lines = source.splitlines()
+
+          print('--- exact math.lua lines 365-385 ---')
+          for number in range(365, 386):
+              print(f'{number}: {lines[number - 1]!r}')
+          print('--- assertion reach markers ---')
+
+          instrumented = []
+          for number, line in enumerate(lines, 1):
+              if 365 <= number <= 385 and line.lstrip().startswith('assert('):
+                  instrumented.append(f"print('MARK{number}')")
+              instrumented.append(line)
+
           lua = make_suite_runtime(root, unrestricted=True, echo=True)
           try:
-              lua.execute(source.replace(marker, replacement, 1), chunkname='@math.lua')
+              lua.execute('\n'.join(instrumented) + '\n', chunkname='@math.lua')
           except Exception as error:
               print(f'DIAGNOSTIC {type(error).__name__}: {error}')
           PY
