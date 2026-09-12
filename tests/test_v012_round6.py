@@ -69,3 +69,16 @@ def test_math_tointeger_coerces_numeric_strings_like_lua():
     assert run('return math.tointeger("34.0")') == 34
     assert run('return math.tointeger("34.3")') is None
     assert run('return math.tointeger({})') is None
+
+
+def test_nan_table_lookup_is_absent_but_nan_assignment_is_rejected():
+    assert run(r'''
+local nan = 0/0
+local a = {}
+local ok1 = pcall(rawset, a, nan, 1)
+local missing1 = a[nan] == nil
+a[1] = 1
+local ok2 = pcall(rawset, a, nan, 1)
+local missing2 = a[nan] == nil
+return not ok1 and missing1 and not ok2 and missing2
+''') is True
