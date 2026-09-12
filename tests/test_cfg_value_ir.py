@@ -20,6 +20,26 @@ local second: integer = choose(false, 10, 20)
 return first + second
 """
 
+_DAG_SOURCE = """-- luapyre: typed
+local function classify(first: boolean, second: boolean, x: integer): integer
+    local value = x
+    if first then
+        value = value + 1
+    else
+        value = value + 2
+    end
+    if second then
+        value = value * 2
+    else
+        value = value * 3
+    end
+    return value
+end
+local a: integer = classify(true, false, 5)
+local b: integer = classify(false, true, 5)
+return a + b
+"""
+
 
 def _compiled_function_filenames(runtime: LuaRuntime) -> set[str]:
     return {
@@ -46,14 +66,29 @@ def test_cfg_value_ir_executes_both_merge_predecessors_through_structured_diamon
     assert "<luapyre-cfg-value-ir-diamond>" in _compiled_function_filenames(runtime)
 
 
-def _outcome(*, jit: bool, fuel: int):
+def test_cfg_value_ir_generic_forward_dag_handles_multiple_joins():
+    runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
+    assert runtime.execute(_DAG_SOURCE) == 32
+    assert "<luapyre-cfg-value-ir-function>" in _compiled_function_filenames(runtime)
+
+
+def _outcome(source: str, *, jit: bool, fuel: int):
     runtime = LuaRuntime(jit=jit, jit_threshold=1, fuel=fuel)
     try:
-        return ("ok", runtime.execute(_SOURCE))
+        return ("ok", runtime.execute(source))
     except LuaQuotaError as exc:
         return ("quota", str(exc))
 
 
 def test_cfg_value_ir_block_side_exit_preserves_every_nearby_fuel_boundary():
     for fuel in range(1, 96):
-        assert _outcome(jit=True, fuel=fuel) == _outcome(jit=False, fuel=fuel)
+        assert _outcome(_SOURCE, jit=True, fuel=fuel) == _outcome(
+            _SOURCE, jit=False, fuel=fuel
+        )
+
+
+def test_cfg_value_ir_generic_dag_preserves_every_nearby_fuel_boundary():
+    for fuel in range(1, 128):
+        assert _outcome(_DAG_SOURCE, jit=True, fuel=fuel) == _outcome(
+            _DAG_SOURCE, jit=False, fuel=fuel
+        )
