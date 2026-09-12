@@ -117,3 +117,19 @@ local ok1, value = coroutine.resume(co)
 local ok2, err = coroutine.resume(co)
 return ok1, value, ok2, err
 ''') == (True, 42, False, b"cannot resume dead coroutine")
+
+
+def test_running_coroutine_can_close_itself():
+    assert run('''
+local closed = 0
+local co = coroutine.create(function()
+  local resource <close> = setmetatable({}, {
+    __close = function(self, err) closed = closed + 1 end
+  })
+  coroutine.close()
+  closed = 100
+  return 99
+end)
+local ok, value = coroutine.resume(co)
+return ok, value, closed, coroutine.status(co)
+''') == (True, None, 1, b"dead")
