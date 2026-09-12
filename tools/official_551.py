@@ -24,14 +24,17 @@ MAX_SUITE_FILE_BYTES = 16 * 1024 * 1024
 MAX_MEMBERS = 10_000
 DEFAULT_FILE_FUEL = 20_000_000
 
-# This list is intentionally provisional on the feature branch. 0.11 commits
-# only files that have actually passed against the checksum-pinned 5.5.1 suite.
+# Provisional probe set: all files classified as sandbox-safe or requiring
+# only the read-only suite module loader. The release baseline is reduced to
+# the subset that passes unchanged against the pinned Lua 5.5.1 archive.
 BASELINE_FILES = (
+    "bwcoercion.lua",
     "pm.lua",
-    "utf8.lua",
     "tpack.lua",
-    "sort.lua",
+    "vararg.lua",
     "bitwise.lua",
+    "math.lua",
+    "utf8.lua",
 )
 
 _STRESS_FILES = {
