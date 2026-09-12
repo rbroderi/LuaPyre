@@ -744,214 +744,692 @@ class _Translator:
             self.emit(Op.RETURN, base, count)
         self.open_result = None
 
+    def _translate_move(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self.write_from(a, self.readreg(b))
+        pc += 1
+        return pc
+
+    def _translate_loadi(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self.load_value(a, _sbx(word))
+        pc += 1
+        return pc
+
+    def _translate_loadf(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self.load_value(a, float(_sbx(word)))
+        pc += 1
+        return pc
+
+    def _translate_loadk(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        if _bx(word) >= len(self.source.constants):
+            raise BinaryChunkError('constant index out of range')
+        self.load_value(a, self.source.constants[_bx(word)])
+        pc += 1
+        return pc
+
+    def _translate_loadkx(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        if pc + 1 >= len(code) or _op(code[pc + 1]) != P_EXTRAARG:
+            raise BinaryChunkError('LOADKX without EXTRAARG')
+        index = _ax(code[pc + 1])
+        if index >= len(self.source.constants):
+            raise BinaryChunkError('constant index out of range')
+        self.load_value(a, self.source.constants[index])
+        self.pcmap[pc + 1] = len(self.proto.code)
+        pc += 2
+        return pc
+
+    def _translate_loadfalse(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self.load_value(a, False)
+        pc += 1
+        return pc
+
+    def _translate_lfalseskip(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self.load_value(a, False)
+        jump = self.emit(Op.JMP, 0)
+        self.patch_a(jump, pc + 2)
+        pc += 1
+        return pc
+
+    def _translate_loadtrue(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self.load_value(a, True)
+        pc += 1
+        return pc
+
+    def _translate_loadnil(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        for reg in range(a, a + b + 1):
+            self.load_value(reg, None)
+        pc += 1
+        return pc
+
+    def _translate_getupval(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        out, captured = self.target(a)
+        self.emit(Op.GETUPVAL, out, b)
+        self.commit(a, out, captured)
+        pc += 1
+        return pc
+
+    def _translate_setupval(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self.emit(Op.SETUPVAL, b, self.readreg(a))
+        pc += 1
+        return pc
+
+    def _translate_gettabup(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        if b >= len(self.source.upvalues) or c >= len(self.source.constants):
+            raise BinaryChunkError('GETTABUP index out of range')
+        table = self.alloc()
+        self.emit(Op.GETUPVAL, table, b)
+        key = self.constant_reg(self.source.constants[c])
+        out, captured = self.target(a)
+        self.emit(Op.GETTABLE, out, table, key)
+        self.commit(a, out, captured)
+        pc += 1
+        return pc
+
+    def _translate_gettable(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        out, captured = self.target(a)
+        self.emit(Op.GETTABLE, out, self.readreg(b), self.readreg(c))
+        self.commit(a, out, captured)
+        pc += 1
+        return pc
+
+    def _translate_geti(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        key = self.constant_reg(c)
+        out, captured = self.target(a)
+        self.emit(Op.GETTABLE, out, self.readreg(b), key)
+        self.commit(a, out, captured)
+        pc += 1
+        return pc
+
+    def _translate_getfield(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        if c >= len(self.source.constants):
+            raise BinaryChunkError('GETFIELD constant out of range')
+        key = self.constant_reg(self.source.constants[c])
+        out, captured = self.target(a)
+        self.emit(Op.GETTABLE, out, self.readreg(b), key)
+        self.commit(a, out, captured)
+        pc += 1
+        return pc
+
+    def _translate_settabup(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        if a >= len(self.source.upvalues) or b >= len(self.source.constants):
+            raise BinaryChunkError('SETTABUP index out of range')
+        table = self.alloc()
+        self.emit(Op.GETUPVAL, table, a)
+        key = self.constant_reg(self.source.constants[b])
+        value = self.constant_reg(self.source.constants[c]) if k else self.readreg(c)
+        self.emit(Op.SETTABLE, table, key, value)
+        pc += 1
+        return pc
+
+    def _translate_settable(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        value = self.constant_reg(self.source.constants[c]) if k else self.readreg(c)
+        self.emit(Op.SETTABLE, self.readreg(a), self.readreg(b), value)
+        pc += 1
+        return pc
+
+    def _translate_seti(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        value = self.constant_reg(self.source.constants[c]) if k else self.readreg(c)
+        self.emit(Op.SETTABLE, self.readreg(a), self.constant_reg(b), value)
+        pc += 1
+        return pc
+
+    def _translate_setfield(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        if b >= len(self.source.constants):
+            raise BinaryChunkError('SETFIELD constant out of range')
+        value = self.constant_reg(self.source.constants[c]) if k else self.readreg(c)
+        self.emit(Op.SETTABLE, self.readreg(a), self.constant_reg(self.source.constants[b]), value)
+        pc += 1
+        return pc
+
+    def _translate_newtable(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        out, captured = self.target(a)
+        self.emit(Op.NEWTABLE, out)
+        self.commit(a, out, captured)
+        if k:
+            if pc + 1 >= len(code) or _op(code[pc + 1]) != P_EXTRAARG:
+                raise BinaryChunkError('NEWTABLE without EXTRAARG')
+            self.pcmap[pc + 1] = len(self.proto.code)
+            pc += 2
+        else:
+            pc += 1
+        return pc
+
+    def _translate_self(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        obj = self.readreg(b)
+        self.write_from(a + 1, obj)
+        if c >= len(self.source.constants):
+            raise BinaryChunkError('SELF constant out of range')
+        key = self.constant_reg(self.source.constants[c])
+        out, captured = self.target(a)
+        self.emit(Op.GETTABLE, out, obj, key)
+        self.commit(a, out, captured)
+        pc += 1
+        return pc
+
+    def _translate_addi(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self._binary(Op.ADD, a, self.readreg(b), self.constant_reg(_sc(word)))
+        pc = self._consume_mm(pc)
+        return pc
+
+    def _translate_arith_const(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        if c >= len(self.source.constants):
+            raise BinaryChunkError('arithmetic constant out of range')
+        self._binary(_ARITH_CONST[opcode], a, self.readreg(b), self.constant_reg(self.source.constants[c]))
+        pc = self._consume_mm(pc)
+        return pc
+
+    def _translate_shli(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self._binary(Op.SHL, a, self.constant_reg(_sc(word)), self.readreg(b))
+        pc = self._consume_mm(pc)
+        return pc
+
+    def _translate_shri(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self._binary(Op.SHR, a, self.readreg(b), self.constant_reg(_sc(word)))
+        pc = self._consume_mm(pc)
+        return pc
+
+    def _translate_arith_reg(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self._binary(_ARITH_REG[opcode], a, self.readreg(b), self.readreg(c))
+        pc = self._consume_mm(pc)
+        return pc
+
+    def _translate_orphan_mm(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        raise BinaryChunkError('orphan PUC-Lua metamethod instruction')
+        return pc
+
+    def _translate_unary(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        op = {P_UNM: Op.NEG, P_BNOT: Op.BNOT, P_NOT: Op.NOT, P_LEN: Op.LEN}[opcode]
+        out, captured = self.target(a)
+        self.emit(op, out, self.readreg(b))
+        self.commit(a, out, captured)
+        pc += 1
+        return pc
+
+    def _translate_concat(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        count = b
+        if count == 0:
+            self.load_value(a, b'')
+        else:
+            current = self.readreg(a + count - 1)
+            for reg in range(a + count - 2, a - 1, -1):
+                temp = self.alloc()
+                self.emit(Op.CONCAT, temp, self.readreg(reg), current)
+                current = temp
+            self.write_from(a, current)
+        pc += 1
+        return pc
+
+    def _translate_close(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self.emit(Op.PCLOSE, a)
+        pc += 1
+        return pc
+
+    def _translate_tbc(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self.emit(Op.PTBC, a)
+        pc += 1
+        return pc
+
+    def _translate_jmp(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        jump = self.emit(Op.JMP, 0)
+        self.patch_a(jump, pc + 1 + _sj(word))
+        pc += 1
+        return pc
+
+    def _translate_compare_reg(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        op = {P_EQ: Op.EQ, P_LT: Op.LT, P_LE: Op.LE}[opcode]
+        pc = self._comparison_jump(op, self.readreg(a), self.readreg(b), k, pc)
+        return pc
+
+    def _translate_eqk(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        if b >= len(self.source.constants):
+            raise BinaryChunkError('EQK constant out of range')
+        pc = self._comparison_jump(Op.EQ, self.readreg(a), self.constant_reg(self.source.constants[b]), k, pc)
+        return pc
+
+    def _translate_compare_imm(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        imm = float(_sb(word)) if c else _sb(word)
+        immreg = self.constant_reg(imm)
+        areg = self.readreg(a)
+        if opcode == P_EQI:
+            op, left, right = (Op.EQ, areg, immreg)
+        elif opcode == P_LTI:
+            op, left, right = (Op.LT, areg, immreg)
+        elif opcode == P_LEI:
+            op, left, right = (Op.LE, areg, immreg)
+        elif opcode == P_GTI:
+            op, left, right = (Op.LT, immreg, areg)
+        else:
+            op, left, right = (Op.LE, immreg, areg)
+        pc = self._comparison_jump(op, left, right, k, pc)
+        return pc
+
+    def _translate_test(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        pc = self._test_jump(self.readreg(a), k, pc)
+        return pc
+
+    def _translate_testset(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        if pc + 1 >= len(code) or _op(code[pc + 1]) != P_JMP:
+            raise BinaryChunkError('TESTSET without following jump')
+        source = self.readreg(b)
+        skip = self.emit(Op.JMPIFNOT if k else Op.JMPIF, 0, source)
+        self.patch_a(skip, pc + 2)
+        self.write_from(a, source)
+        jump = self.emit(Op.JMP, 0)
+        self.patch_a(jump, pc + 2 + _sj(code[pc + 1]))
+        self.pcmap[pc + 1] = len(self.proto.code)
+        pc += 2
+        return pc
+
+    def _translate_call(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self._staged_call(a, b, c)
+        pc += 1
+        return pc
+
+    def _translate_tailcall(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        if k:
+            self.emit(Op.PCLOSE, 0)
+        self._staged_call(a, b, c, tail=True)
+        pc += 1
+        return pc
+
+    def _translate_return(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self._return(a, b, bool(k))
+        pc += 1
+        return pc
+
+    def _translate_return0(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        self.emit(Op.RETURN, 0, 0)
+        self.open_result = None
+        pc += 1
+        return pc
+
+    def _translate_return1(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        value = self.readreg(a)
+        base = self.alloc()
+        self.emit(Op.MOVE, base, value)
+        self.emit(Op.RETURN, base, 1)
+        self.open_result = None
+        pc += 1
+        return pc
+
+    def _translate_forprep(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        ins = self.emit(Op.PFORPREP, a, 0, 0, 0)
+        self.patch_d(ins, pc + _bx(word) + 2)
+        pc += 1
+        return pc
+
+    def _translate_forloop(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        ins = self.emit(Op.PFORLOOP, a, 0, 0, 0)
+        self.patch_d(ins, pc + 1 - _bx(word))
+        pc += 1
+        return pc
+
+    def _translate_tforprep(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        ins = self.emit(Op.PTFORPREP, a, 0, 0, 0)
+        self.patch_d(ins, pc + 1 + _bx(word))
+        pc += 1
+        return pc
+
+    def _translate_tforcall(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        fn = self.readreg(a)
+        fnstage = self.alloc()
+        self.emit(Op.MOVE, fnstage, fn)
+        args = self.alloc(2)
+        self.emit(Op.MOVE, args, self.readreg(a + 1))
+        self.emit(Op.MOVE, args + 1, self.readreg(a + 3))
+        results = self.alloc(c)
+        self.emit(Op.CALL, results, fnstage, args, 2, c)
+        for offset in range(c):
+            self.write_from(a + 3 + offset, results + offset)
+        pc += 1
+        return pc
+
+    def _translate_tforloop(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        ins = self.emit(Op.PTFORLOOP, a, 0, 0, 0)
+        self.patch_d(ins, pc + 1 - _bx(word))
+        pc += 1
+        return pc
+
+    def _translate_setlist(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        table = self.readreg(a)
+        n, base_index = (_vb(word), _vc(word))
+        if k:
+            if pc + 1 >= len(code) or _op(code[pc + 1]) != P_EXTRAARG:
+                raise BinaryChunkError('SETLIST without EXTRAARG')
+            base_index += _ax(code[pc + 1]) * 1024
+            self.pcmap[pc + 1] = len(self.proto.code)
+            advance = 2
+        else:
+            advance = 1
+        if n == 0:
+            if self.open_result is None or self.open_result[0] < a + 1:
+                raise BinaryChunkError('open SETLIST has no multi-result producer')
+            start, mv = self.open_result
+            for offset, reg in enumerate(range(a + 1, start), 1):
+                self.emit(Op.SETTABLE, table, self.constant_reg(base_index + offset), self.readreg(reg))
+            self.emit(Op.SETLISTV, table, base_index + (start - (a + 1)) + 1, mv)
+            self.open_result = None
+        else:
+            for offset in range(1, n + 1):
+                self.emit(Op.SETTABLE, table, self.constant_reg(base_index + offset), self.readreg(a + offset))
+        pc += advance
+        return pc
+
+    def _translate_closure(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        index = _bx(word)
+        if index >= len(self.proto.children):
+            raise BinaryChunkError('child prototype index out of range')
+        out, captured = self.target(a)
+        self.emit(Op.CLOSURE, out, index)
+        self.commit(a, out, captured)
+        pc += 1
+        return pc
+
+    def _translate_vararg(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        count = c - 1
+        vatab = b if k else -1
+        if c == 0:
+            result = self.alloc()
+            self.emit(Op.PVARARG, result, -1, vatab)
+            self.open_result = (a, result)
+        else:
+            results = self.alloc(count)
+            self.emit(Op.PVARARG, results, count, vatab)
+            for offset in range(count):
+                self.write_from(a + offset, results + offset)
+            self.open_result = None
+        pc += 1
+        return pc
+
+    def _translate_getvarg(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        out, captured = self.target(a)
+        self.emit(Op.PGETVARG, out, self.readreg(c))
+        self.commit(a, out, captured)
+        pc += 1
+        return pc
+
+    def _translate_errnnil(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        bx = _bx(word)
+        name = self.source.constants[bx - 1] if bx and bx - 1 < len(self.source.constants) else b'?'
+        self.emit(Op.CHECKNIL, self.readreg(a), self.addconst(name))
+        pc += 1
+        return pc
+
+    def _translate_varargprep(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        pc += 1
+        return pc
+
+    def _translate_extraarg(self, pc: int, word: int) -> int:
+        code = self.source.code
+        opcode = _op(word)
+        a, b, c, k = _a(word), _b(word), _c(word), _k(word)
+        raise BinaryChunkError('orphan PUC-Lua EXTRAARG')
+        return pc
+
     def translate(self) -> Proto:
         code = self.source.code
         pc = 0
+        handlers = _PUC_TRANSLATORS
         while pc < len(code):
             self.pcmap[pc] = len(self.proto.code)
             word = code[pc]
             opcode = _op(word)
-            a, b, c, k = _a(word), _b(word), _c(word), _k(word)
-
-            if opcode == P_MOVE:
-                self.write_from(a, self.readreg(b)); pc += 1
-            elif opcode == P_LOADI:
-                self.load_value(a, _sbx(word)); pc += 1
-            elif opcode == P_LOADF:
-                self.load_value(a, float(_sbx(word))); pc += 1
-            elif opcode == P_LOADK:
-                if _bx(word) >= len(self.source.constants): raise BinaryChunkError("constant index out of range")
-                self.load_value(a, self.source.constants[_bx(word)]); pc += 1
-            elif opcode == P_LOADKX:
-                if pc + 1 >= len(code) or _op(code[pc + 1]) != P_EXTRAARG: raise BinaryChunkError("LOADKX without EXTRAARG")
-                index = _ax(code[pc + 1])
-                if index >= len(self.source.constants): raise BinaryChunkError("constant index out of range")
-                self.load_value(a, self.source.constants[index])
-                self.pcmap[pc + 1] = len(self.proto.code); pc += 2
-            elif opcode == P_LOADFALSE:
-                self.load_value(a, False); pc += 1
-            elif opcode == P_LFALSESKIP:
-                self.load_value(a, False)
-                jump = self.emit(Op.JMP, 0)
-                self.patch_a(jump, pc + 2)
-                pc += 1
-            elif opcode == P_LOADTRUE:
-                self.load_value(a, True); pc += 1
-            elif opcode == P_LOADNIL:
-                for reg in range(a, a + b + 1): self.load_value(reg, None)
-                pc += 1
-            elif opcode == P_GETUPVAL:
-                out, captured = self.target(a); self.emit(Op.GETUPVAL, out, b); self.commit(a, out, captured); pc += 1
-            elif opcode == P_SETUPVAL:
-                self.emit(Op.SETUPVAL, b, self.readreg(a)); pc += 1
-            elif opcode == P_GETTABUP:
-                if b >= len(self.source.upvalues) or c >= len(self.source.constants): raise BinaryChunkError("GETTABUP index out of range")
-                table = self.alloc(); self.emit(Op.GETUPVAL, table, b)
-                key = self.constant_reg(self.source.constants[c])
-                out, captured = self.target(a); self.emit(Op.GETTABLE, out, table, key); self.commit(a, out, captured); pc += 1
-            elif opcode == P_GETTABLE:
-                out, captured = self.target(a); self.emit(Op.GETTABLE, out, self.readreg(b), self.readreg(c)); self.commit(a, out, captured); pc += 1
-            elif opcode == P_GETI:
-                key = self.constant_reg(c); out, captured = self.target(a); self.emit(Op.GETTABLE, out, self.readreg(b), key); self.commit(a, out, captured); pc += 1
-            elif opcode == P_GETFIELD:
-                if c >= len(self.source.constants): raise BinaryChunkError("GETFIELD constant out of range")
-                key = self.constant_reg(self.source.constants[c]); out, captured = self.target(a); self.emit(Op.GETTABLE, out, self.readreg(b), key); self.commit(a, out, captured); pc += 1
-            elif opcode == P_SETTABUP:
-                if a >= len(self.source.upvalues) or b >= len(self.source.constants): raise BinaryChunkError("SETTABUP index out of range")
-                table = self.alloc(); self.emit(Op.GETUPVAL, table, a); key = self.constant_reg(self.source.constants[b])
-                value = self.constant_reg(self.source.constants[c]) if k else self.readreg(c)
-                self.emit(Op.SETTABLE, table, key, value); pc += 1
-            elif opcode == P_SETTABLE:
-                value = self.constant_reg(self.source.constants[c]) if k else self.readreg(c)
-                self.emit(Op.SETTABLE, self.readreg(a), self.readreg(b), value); pc += 1
-            elif opcode == P_SETI:
-                value = self.constant_reg(self.source.constants[c]) if k else self.readreg(c)
-                self.emit(Op.SETTABLE, self.readreg(a), self.constant_reg(b), value); pc += 1
-            elif opcode == P_SETFIELD:
-                if b >= len(self.source.constants): raise BinaryChunkError("SETFIELD constant out of range")
-                value = self.constant_reg(self.source.constants[c]) if k else self.readreg(c)
-                self.emit(Op.SETTABLE, self.readreg(a), self.constant_reg(self.source.constants[b]), value); pc += 1
-            elif opcode == P_NEWTABLE:
-                out, captured = self.target(a); self.emit(Op.NEWTABLE, out); self.commit(a, out, captured)
-                if k:
-                    if pc + 1 >= len(code) or _op(code[pc + 1]) != P_EXTRAARG: raise BinaryChunkError("NEWTABLE without EXTRAARG")
-                    self.pcmap[pc + 1] = len(self.proto.code); pc += 2
-                else: pc += 1
-            elif opcode == P_SELF:
-                obj = self.readreg(b); self.write_from(a + 1, obj)
-                if c >= len(self.source.constants): raise BinaryChunkError("SELF constant out of range")
-                key = self.constant_reg(self.source.constants[c]); out, captured = self.target(a); self.emit(Op.GETTABLE, out, obj, key); self.commit(a, out, captured); pc += 1
-            elif opcode == P_ADDI:
-                self._binary(Op.ADD, a, self.readreg(b), self.constant_reg(_sc(word))); pc = self._consume_mm(pc)
-            elif opcode in _ARITH_CONST:
-                if c >= len(self.source.constants): raise BinaryChunkError("arithmetic constant out of range")
-                self._binary(_ARITH_CONST[opcode], a, self.readreg(b), self.constant_reg(self.source.constants[c])); pc = self._consume_mm(pc)
-            elif opcode == P_SHLI:
-                self._binary(Op.SHL, a, self.constant_reg(_sc(word)), self.readreg(b)); pc = self._consume_mm(pc)
-            elif opcode == P_SHRI:
-                self._binary(Op.SHR, a, self.readreg(b), self.constant_reg(_sc(word))); pc = self._consume_mm(pc)
-            elif opcode in _ARITH_REG:
-                self._binary(_ARITH_REG[opcode], a, self.readreg(b), self.readreg(c)); pc = self._consume_mm(pc)
-            elif opcode in (P_MMBIN, P_MMBINI, P_MMBINK):
-                raise BinaryChunkError("orphan PUC-Lua metamethod instruction")
-            elif opcode in (P_UNM, P_BNOT, P_NOT, P_LEN):
-                op = {P_UNM: Op.NEG, P_BNOT: Op.BNOT, P_NOT: Op.NOT, P_LEN: Op.LEN}[opcode]
-                out, captured = self.target(a); self.emit(op, out, self.readreg(b)); self.commit(a, out, captured); pc += 1
-            elif opcode == P_CONCAT:
-                count = b
-                if count == 0: self.load_value(a, b"")
-                else:
-                    current = self.readreg(a + count - 1)
-                    for reg in range(a + count - 2, a - 1, -1):
-                        temp = self.alloc(); self.emit(Op.CONCAT, temp, self.readreg(reg), current); current = temp
-                    self.write_from(a, current)
-                pc += 1
-            elif opcode == P_CLOSE:
-                self.emit(Op.PCLOSE, a); pc += 1
-            elif opcode == P_TBC:
-                self.emit(Op.PTBC, a); pc += 1
-            elif opcode == P_JMP:
-                jump = self.emit(Op.JMP, 0); self.patch_a(jump, pc + 1 + _sj(word)); pc += 1
-            elif opcode in (P_EQ, P_LT, P_LE):
-                op = {P_EQ: Op.EQ, P_LT: Op.LT, P_LE: Op.LE}[opcode]
-                pc = self._comparison_jump(op, self.readreg(a), self.readreg(b), k, pc)
-            elif opcode == P_EQK:
-                if b >= len(self.source.constants): raise BinaryChunkError("EQK constant out of range")
-                pc = self._comparison_jump(Op.EQ, self.readreg(a), self.constant_reg(self.source.constants[b]), k, pc)
-            elif opcode in (P_EQI, P_LTI, P_LEI, P_GTI, P_GEI):
-                imm = float(_sb(word)) if c else _sb(word); immreg = self.constant_reg(imm); areg = self.readreg(a)
-                if opcode == P_EQI: op, left, right = Op.EQ, areg, immreg
-                elif opcode == P_LTI: op, left, right = Op.LT, areg, immreg
-                elif opcode == P_LEI: op, left, right = Op.LE, areg, immreg
-                elif opcode == P_GTI: op, left, right = Op.LT, immreg, areg
-                else: op, left, right = Op.LE, immreg, areg
-                pc = self._comparison_jump(op, left, right, k, pc)
-            elif opcode == P_TEST:
-                pc = self._test_jump(self.readreg(a), k, pc)
-            elif opcode == P_TESTSET:
-                if pc + 1 >= len(code) or _op(code[pc + 1]) != P_JMP: raise BinaryChunkError("TESTSET without following jump")
-                source = self.readreg(b)
-                skip = self.emit(Op.JMPIFNOT if k else Op.JMPIF, 0, source)
-                self.patch_a(skip, pc + 2)
-                self.write_from(a, source)
-                jump = self.emit(Op.JMP, 0); self.patch_a(jump, pc + 2 + _sj(code[pc + 1]))
-                self.pcmap[pc + 1] = len(self.proto.code); pc += 2
-            elif opcode == P_CALL:
-                self._staged_call(a, b, c); pc += 1
-            elif opcode == P_TAILCALL:
-                if k: self.emit(Op.PCLOSE, 0)
-                self._staged_call(a, b, c, tail=True); pc += 1
-            elif opcode == P_RETURN:
-                self._return(a, b, bool(k)); pc += 1
-            elif opcode == P_RETURN0:
-                self.emit(Op.RETURN, 0, 0); self.open_result = None; pc += 1
-            elif opcode == P_RETURN1:
-                value = self.readreg(a); base = self.alloc(); self.emit(Op.MOVE, base, value); self.emit(Op.RETURN, base, 1); self.open_result = None; pc += 1
-            elif opcode == P_FORPREP:
-                ins = self.emit(Op.PFORPREP, a, 0, 0, 0); self.patch_d(ins, pc + _bx(word) + 2); pc += 1
-            elif opcode == P_FORLOOP:
-                ins = self.emit(Op.PFORLOOP, a, 0, 0, 0); self.patch_d(ins, pc + 1 - _bx(word)); pc += 1
-            elif opcode == P_TFORPREP:
-                ins = self.emit(Op.PTFORPREP, a, 0, 0, 0); self.patch_d(ins, pc + 1 + _bx(word)); pc += 1
-            elif opcode == P_TFORCALL:
-                fn = self.readreg(a); fnstage = self.alloc(); self.emit(Op.MOVE, fnstage, fn)
-                args = self.alloc(2); self.emit(Op.MOVE, args, self.readreg(a + 1)); self.emit(Op.MOVE, args + 1, self.readreg(a + 3))
-                results = self.alloc(c); self.emit(Op.CALL, results, fnstage, args, 2, c)
-                for offset in range(c): self.write_from(a + 3 + offset, results + offset)
-                pc += 1
-            elif opcode == P_TFORLOOP:
-                ins = self.emit(Op.PTFORLOOP, a, 0, 0, 0); self.patch_d(ins, pc + 1 - _bx(word)); pc += 1
-            elif opcode == P_SETLIST:
-                table = self.readreg(a); n, base_index = _vb(word), _vc(word)
-                if k:
-                    if pc + 1 >= len(code) or _op(code[pc + 1]) != P_EXTRAARG: raise BinaryChunkError("SETLIST without EXTRAARG")
-                    base_index += _ax(code[pc + 1]) * 1024; self.pcmap[pc + 1] = len(self.proto.code); advance = 2
-                else: advance = 1
-                if n == 0:
-                    if self.open_result is None or self.open_result[0] < a + 1: raise BinaryChunkError("open SETLIST has no multi-result producer")
-                    start, mv = self.open_result
-                    for offset, reg in enumerate(range(a + 1, start), 1): self.emit(Op.SETTABLE, table, self.constant_reg(base_index + offset), self.readreg(reg))
-                    self.emit(Op.SETLISTV, table, base_index + (start - (a + 1)) + 1, mv); self.open_result = None
-                else:
-                    for offset in range(1, n + 1): self.emit(Op.SETTABLE, table, self.constant_reg(base_index + offset), self.readreg(a + offset))
-                pc += advance
-            elif opcode == P_CLOSURE:
-                index = _bx(word)
-                if index >= len(self.proto.children): raise BinaryChunkError("child prototype index out of range")
-                out, captured = self.target(a); self.emit(Op.CLOSURE, out, index); self.commit(a, out, captured); pc += 1
-            elif opcode == P_VARARG:
-                count = c - 1
-                vatab = b if k else -1
-                if c == 0:
-                    result = self.alloc(); self.emit(Op.PVARARG, result, -1, vatab); self.open_result = (a, result)
-                else:
-                    results = self.alloc(count); self.emit(Op.PVARARG, results, count, vatab)
-                    for offset in range(count): self.write_from(a + offset, results + offset)
-                    self.open_result = None
-                pc += 1
-            elif opcode == P_GETVARG:
-                out, captured = self.target(a); self.emit(Op.PGETVARG, out, self.readreg(c)); self.commit(a, out, captured); pc += 1
-            elif opcode == P_ERRNNIL:
-                bx = _bx(word); name = self.source.constants[bx - 1] if bx and bx - 1 < len(self.source.constants) else b"?"
-                self.emit(Op.CHECKNIL, self.readreg(a), self.addconst(name)); pc += 1
-            elif opcode == P_VARARGPREP:
-                pc += 1
-            elif opcode == P_EXTRAARG:
-                raise BinaryChunkError("orphan PUC-Lua EXTRAARG")
-            else:
+            handler = handlers.get(opcode)
+            if handler is None:
                 raise BinaryChunkError(f"unsupported PUC-Lua opcode {opcode}")
+            pc = handler(self, pc, word)
 
         self.pcmap[len(code)] = len(self.proto.code)
         for index, field, target_pc in self.patches:
             if target_pc not in self.pcmap:
-                raise BinaryChunkError("PUC-Lua jump target out of range")
+                raise BinaryChunkError('PUC-Lua jump target out of range')
             target = self.pcmap[target_pc]
             old = self.proto.code[index]
-            if field == "a": self.proto.code[index] = Ins(old.op, target, old.b, old.c, old.d, old.e)
-            else: self.proto.code[index] = Ins(old.op, old.a, old.b, old.c, target, old.e)
-
+            if field == 'a':
+                self.proto.code[index] = Ins(old.op, target, old.b, old.c, old.d, old.e)
+            else:
+                self.proto.code[index] = Ins(old.op, old.a, old.b, old.c, target, old.e)
         self.proto.register_count = self.max_reg
         return self.proto
+
+
+_PUC_TRANSLATORS = {
+    P_MOVE: _Translator._translate_move,
+    P_LOADI: _Translator._translate_loadi,
+    P_LOADF: _Translator._translate_loadf,
+    P_LOADK: _Translator._translate_loadk,
+    P_LOADKX: _Translator._translate_loadkx,
+    P_LOADFALSE: _Translator._translate_loadfalse,
+    P_LFALSESKIP: _Translator._translate_lfalseskip,
+    P_LOADTRUE: _Translator._translate_loadtrue,
+    P_LOADNIL: _Translator._translate_loadnil,
+    P_GETUPVAL: _Translator._translate_getupval,
+    P_SETUPVAL: _Translator._translate_setupval,
+    P_GETTABUP: _Translator._translate_gettabup,
+    P_GETTABLE: _Translator._translate_gettable,
+    P_GETI: _Translator._translate_geti,
+    P_GETFIELD: _Translator._translate_getfield,
+    P_SETTABUP: _Translator._translate_settabup,
+    P_SETTABLE: _Translator._translate_settable,
+    P_SETI: _Translator._translate_seti,
+    P_SETFIELD: _Translator._translate_setfield,
+    P_NEWTABLE: _Translator._translate_newtable,
+    P_SELF: _Translator._translate_self,
+    P_ADDI: _Translator._translate_addi,
+    P_SHLI: _Translator._translate_shli,
+    P_SHRI: _Translator._translate_shri,
+    P_MMBIN: _Translator._translate_orphan_mm,
+    P_MMBINI: _Translator._translate_orphan_mm,
+    P_MMBINK: _Translator._translate_orphan_mm,
+    P_UNM: _Translator._translate_unary,
+    P_BNOT: _Translator._translate_unary,
+    P_NOT: _Translator._translate_unary,
+    P_LEN: _Translator._translate_unary,
+    P_CONCAT: _Translator._translate_concat,
+    P_CLOSE: _Translator._translate_close,
+    P_TBC: _Translator._translate_tbc,
+    P_JMP: _Translator._translate_jmp,
+    P_EQ: _Translator._translate_compare_reg,
+    P_LT: _Translator._translate_compare_reg,
+    P_LE: _Translator._translate_compare_reg,
+    P_EQK: _Translator._translate_eqk,
+    P_EQI: _Translator._translate_compare_imm,
+    P_LTI: _Translator._translate_compare_imm,
+    P_LEI: _Translator._translate_compare_imm,
+    P_GTI: _Translator._translate_compare_imm,
+    P_GEI: _Translator._translate_compare_imm,
+    P_TEST: _Translator._translate_test,
+    P_TESTSET: _Translator._translate_testset,
+    P_CALL: _Translator._translate_call,
+    P_TAILCALL: _Translator._translate_tailcall,
+    P_RETURN: _Translator._translate_return,
+    P_RETURN0: _Translator._translate_return0,
+    P_RETURN1: _Translator._translate_return1,
+    P_FORPREP: _Translator._translate_forprep,
+    P_FORLOOP: _Translator._translate_forloop,
+    P_TFORPREP: _Translator._translate_tforprep,
+    P_TFORCALL: _Translator._translate_tforcall,
+    P_TFORLOOP: _Translator._translate_tforloop,
+    P_SETLIST: _Translator._translate_setlist,
+    P_CLOSURE: _Translator._translate_closure,
+    P_VARARG: _Translator._translate_vararg,
+    P_GETVARG: _Translator._translate_getvarg,
+    P_ERRNNIL: _Translator._translate_errnnil,
+    P_VARARGPREP: _Translator._translate_varargprep,
+    P_EXTRAARG: _Translator._translate_extraarg,
+}
+
+for _puc_opcode in _ARITH_CONST:
+    _PUC_TRANSLATORS[_puc_opcode] = _Translator._translate_arith_const
+for _puc_opcode in _ARITH_REG:
+    _PUC_TRANSLATORS[_puc_opcode] = _Translator._translate_arith_reg
+
+_missing_puc_translators = set(range(85)).difference(_PUC_TRANSLATORS)
+_extra_puc_translators = set(_PUC_TRANSLATORS).difference(range(85))
+if _missing_puc_translators or _extra_puc_translators:
+    raise RuntimeError(
+        "PUC translator handler table mismatch: "
+        f"missing={sorted(_missing_puc_translators)} "
+        f"extra={sorted(_extra_puc_translators)}"
+    )
 
 
 def load_puc55_chunk(data: bytes) -> Proto:

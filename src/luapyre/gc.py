@@ -26,8 +26,245 @@ _BINARY_OPS = {
 }
 _UNARY_OPS = {Op.LEN, Op.BNOT, Op.NEG, Op.NOT, Op.TOBOOL}
 _CONDITIONAL_JUMPS = {Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL}
-_CALL_OPS = {Op.CALL, Op.CALLV, Op.TAILCALL, Op.TAILCALLV}
 _TERMINATORS = {Op.RETURN, Op.RETURNV, Op.HALT, Op.TAILCALL, Op.TAILCALLV}
+
+
+def _rw_empty(_proto: Proto, _ins) -> tuple[set[int], set[int]]:
+    return set(), set()
+
+
+def _rw_write_a(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return set(), {ins.a}
+
+
+def _rw_read_a(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.a}, set()
+
+
+def _rw_read_b(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.b}, set()
+
+
+def _rw_read_b_write_a(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.b}, {ins.a}
+
+
+def _rw_setcell(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.a, ins.b}, {ins.a}
+
+
+def _rw_closure(proto: Proto, ins) -> tuple[set[int], set[int]]:
+    reads = {
+        desc.index
+        for desc in proto.children[ins.b].upvalues
+        if desc.kind == "local"
+    }
+    return reads, {ins.a}
+
+
+def _rw_read_bc_write_a(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.b, ins.c}, {ins.a}
+
+
+def _rw_settable(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.a, ins.b, ins.c}, set()
+
+
+def _rw_setlistv(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.a, ins.c}, set()
+
+
+def _rw_forprep(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    regs = {ins.a, ins.b, ins.c}
+    return set(regs), regs
+
+
+def _rw_forloop(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.a, ins.b, ins.c}, {ins.a}
+
+
+def _rw_pforprep(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    regs = {ins.a, ins.a + 1, ins.a + 2}
+    return set(regs), regs
+
+
+def _rw_pforloop(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.a, ins.a + 1, ins.a + 2}, {ins.a, ins.a + 2}
+
+
+def _rw_ptforprep(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    regs = {ins.a + 2, ins.a + 3}
+    return set(regs), regs
+
+
+def _rw_ptforloop(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.a + 3}, set()
+
+
+def _rw_call(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    reads = {ins.b, *range(ins.c, ins.c + max(0, ins.d))}
+    if ins.e == 0:
+        writes = set()
+    elif ins.e == -1:
+        writes = {ins.a}
+    else:
+        writes = set(range(ins.a, ins.a + max(0, ins.e)))
+    return reads, writes
+
+
+def _rw_callv(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    reads = {ins.b, ins.e, *range(ins.c, ins.c + max(0, ins.d))}
+    return reads, {ins.a}
+
+
+def _rw_tailcall(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.b, *range(ins.c, ins.c + max(0, ins.d))}, set()
+
+
+def _rw_tailcallv(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.b, ins.e, *range(ins.c, ins.c + max(0, ins.d))}, set()
+
+
+def _rw_vararg(proto: Proto, ins) -> tuple[set[int], set[int]]:
+    reads = {proto.vararg_name_reg} if proto.vararg_name_reg >= 0 else set()
+    writes = {ins.a} if ins.b == -1 else set(range(ins.a, ins.a + max(0, ins.b)))
+    return reads, writes
+
+
+def _rw_pvararg(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    reads = {ins.c} if ins.c >= 0 else set()
+    writes = {ins.a} if ins.b == -1 else set(range(ins.a, ins.a + max(0, ins.b)))
+    return reads, writes
+
+
+def _rw_pgetvarg(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.b}, {ins.a}
+
+
+def _rw_unpack(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return {ins.b}, set(range(ins.a, ins.a + max(0, ins.c)))
+
+
+def _rw_return(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    return set(range(ins.a, ins.a + max(0, ins.b))), set()
+
+
+def _rw_returnv(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+    reads = set(range(ins.a, ins.a + max(0, ins.b)))
+    reads.add(ins.c)
+    return reads, set()
+
+
+_RW_HANDLERS = {
+    Op.JMP: _rw_empty,
+    Op.CLOSE: _rw_empty,
+    Op.PCLOSE: _rw_empty,
+    Op.HALT: _rw_empty,
+}
+_RW_HANDLERS.update({
+    Op.LOADK: _rw_write_a,
+    Op.MOVE: _rw_read_b_write_a,
+    Op.LOCAL: _rw_read_b_write_a,
+    Op.GETGLOBAL: _rw_write_a,
+    Op.SETGLOBAL: _rw_read_a,
+    Op.GETUPVAL: _rw_write_a,
+    Op.SETUPVAL: _rw_read_b,
+    Op.GETCELL: _rw_read_b_write_a,
+    Op.SETCELL: _rw_setcell,
+    Op.CLOSURE: _rw_closure,
+    Op.NEWTABLE: _rw_write_a,
+    Op.GETTABLE: _rw_read_bc_write_a,
+    Op.SETTABLE: _rw_settable,
+    Op.SETLISTV: _rw_setlistv,
+    Op.FORPREP: _rw_forprep,
+    Op.FORLOOP: _rw_forloop,
+    Op.PFORPREP: _rw_pforprep,
+    Op.PFORLOOP: _rw_pforloop,
+    Op.PTFORPREP: _rw_ptforprep,
+    Op.PTFORLOOP: _rw_ptforloop,
+    Op.CALL: _rw_call,
+    Op.CALLV: _rw_callv,
+    Op.TAILCALL: _rw_tailcall,
+    Op.TAILCALLV: _rw_tailcallv,
+    Op.VARARG: _rw_vararg,
+    Op.PVARARG: _rw_pvararg,
+    Op.PGETVARG: _rw_pgetvarg,
+    Op.UNPACK: _rw_unpack,
+    Op.TBC: _rw_read_a,
+    Op.PTBC: _rw_read_a,
+    Op.CHECKNIL: _rw_read_a,
+    Op.RETURN: _rw_return,
+    Op.RETURNV: _rw_returnv,
+    Op.GUARD: _rw_read_a,
+})
+for _op in _BINARY_OPS:
+    _RW_HANDLERS[_op] = _rw_read_bc_write_a
+for _op in _UNARY_OPS:
+    _RW_HANDLERS[_op] = _rw_read_b_write_a
+for _op in _CONDITIONAL_JUMPS:
+    _RW_HANDLERS[_op] = _rw_read_b
+
+
+def _succ_fallthrough(code, index: int, _ins) -> tuple[int, ...]:
+    return (index + 1,) if index + 1 < len(code) else ()
+
+
+def _succ_terminate(_code, _index: int, _ins) -> tuple[int, ...]:
+    return ()
+
+
+def _succ_jump(code, _index: int, ins) -> tuple[int, ...]:
+    return (ins.a,) if 0 <= ins.a < len(code) else ()
+
+
+def _succ_conditional(code, index: int, ins) -> tuple[int, ...]:
+    out = []
+    if index + 1 < len(code):
+        out.append(index + 1)
+    if 0 <= ins.a < len(code):
+        out.append(ins.a)
+    return tuple(out)
+
+
+def _succ_loop(code, index: int, ins) -> tuple[int, ...]:
+    out = []
+    if index + 1 < len(code):
+        out.append(index + 1)
+    if 0 <= ins.d < len(code):
+        out.append(ins.d)
+    return tuple(out)
+
+
+def _succ_ptforprep(code, _index: int, ins) -> tuple[int, ...]:
+    return (ins.d,) if 0 <= ins.d < len(code) else ()
+
+
+_SUCCESSOR_HANDLERS = {
+    op: _succ_fallthrough
+    for op in (
+        Op.LOADK, Op.MOVE, Op.LOCAL,
+        Op.GETGLOBAL, Op.SETGLOBAL, Op.GETUPVAL, Op.SETUPVAL, Op.GETCELL, Op.SETCELL, Op.CLOSURE,
+        Op.NEWTABLE, Op.GETTABLE, Op.SETTABLE, Op.SETLISTV, Op.LEN,
+        Op.ADD, Op.ADD_I, Op.ADD_F, Op.SUB, Op.SUB_I, Op.SUB_F,
+        Op.MUL, Op.MUL_I, Op.MUL_F, Op.DIV, Op.IDIV, Op.MOD, Op.POW,
+        Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR, Op.BNOT, Op.CONCAT, Op.NEG, Op.NOT, Op.TOBOOL,
+        Op.EQ, Op.LT, Op.LE,
+        Op.CALL, Op.CALLV, Op.VARARG, Op.UNPACK,
+        Op.TBC, Op.CLOSE, Op.CHECKNIL, Op.GUARD,
+        Op.PTBC, Op.PCLOSE, Op.PVARARG, Op.PGETVARG,
+    )
+}
+for _op in _TERMINATORS:
+    _SUCCESSOR_HANDLERS[_op] = _succ_terminate
+_SUCCESSOR_HANDLERS[Op.JMP] = _succ_jump
+for _op in _CONDITIONAL_JUMPS:
+    _SUCCESSOR_HANDLERS[_op] = _succ_conditional
+for _op in (Op.FORPREP, Op.FORLOOP, Op.PFORPREP, Op.PFORLOOP, Op.PTFORLOOP):
+    _SUCCESSOR_HANDLERS[_op] = _succ_loop
+_SUCCESSOR_HANDLERS[Op.PTFORPREP] = _succ_ptforprep
+
+if set(_RW_HANDLERS) != set(Op) or set(_SUCCESSOR_HANDLERS) != set(Op):
+    raise RuntimeError("GC opcode analysis dispatch table mismatch")
 
 
 @dataclass(slots=True)
@@ -117,138 +354,12 @@ class LuaGC:
 
     @staticmethod
     def _ins_reads_writes(proto: Proto, ins) -> tuple[set[int], set[int]]:
-        op = ins.op
-        reads: set[int] = set()
-        writes: set[int] = set()
-
-        if op is Op.LOADK:
-            writes.add(ins.a)
-        elif op in (Op.MOVE, Op.LOCAL):
-            reads.add(ins.b)
-            writes.add(ins.a)
-        elif op is Op.GETGLOBAL:
-            writes.add(ins.a)
-        elif op is Op.SETGLOBAL:
-            reads.add(ins.a)
-        elif op is Op.GETUPVAL:
-            writes.add(ins.a)
-        elif op is Op.SETUPVAL:
-            reads.add(ins.b)
-        elif op is Op.GETCELL:
-            reads.add(ins.b)
-            writes.add(ins.a)
-        elif op is Op.SETCELL:
-            reads.update((ins.a, ins.b))
-            writes.add(ins.a)
-        elif op is Op.CLOSURE:
-            writes.add(ins.a)
-            child = proto.children[ins.b]
-            for desc in child.upvalues:
-                if desc.kind == "local":
-                    reads.add(desc.index)
-        elif op is Op.NEWTABLE:
-            writes.add(ins.a)
-        elif op is Op.GETTABLE:
-            reads.update((ins.b, ins.c))
-            writes.add(ins.a)
-        elif op is Op.SETTABLE:
-            reads.update((ins.a, ins.b, ins.c))
-        elif op is Op.SETLISTV:
-            reads.update((ins.a, ins.c))
-        elif op in _BINARY_OPS:
-            reads.update((ins.b, ins.c))
-            writes.add(ins.a)
-        elif op in _UNARY_OPS:
-            reads.add(ins.b)
-            writes.add(ins.a)
-        elif op in _CONDITIONAL_JUMPS:
-            reads.add(ins.b)
-        elif op is Op.FORPREP:
-            reads.update((ins.a, ins.b, ins.c))
-            writes.update((ins.a, ins.b, ins.c))
-        elif op is Op.FORLOOP:
-            reads.update((ins.a, ins.b, ins.c))
-            writes.add(ins.a)
-        elif op is Op.PFORPREP:
-            reads.update((ins.a, ins.a + 1, ins.a + 2))
-            writes.update((ins.a, ins.a + 1, ins.a + 2))
-        elif op is Op.PFORLOOP:
-            reads.update((ins.a, ins.a + 1, ins.a + 2))
-            writes.update((ins.a, ins.a + 2))
-        elif op is Op.PTFORPREP:
-            reads.update((ins.a + 2, ins.a + 3))
-            writes.update((ins.a + 2, ins.a + 3))
-        elif op is Op.PTFORLOOP:
-            reads.add(ins.a + 3)
-        elif op in _CALL_OPS:
-            reads.add(ins.b)
-            reads.update(range(ins.c, ins.c + max(0, ins.d)))
-            if op in (Op.CALLV, Op.TAILCALLV):
-                reads.add(ins.e)
-            if op is Op.CALL:
-                writes.update(LuaGC._call_result_regs(ins.a, ins.e))
-            elif op is Op.CALLV:
-                writes.add(ins.a)
-        elif op is Op.VARARG:
-            if proto.vararg_name_reg >= 0:
-                reads.add(proto.vararg_name_reg)
-            if ins.b == -1:
-                writes.add(ins.a)
-            else:
-                writes.update(range(ins.a, ins.a + max(0, ins.b)))
-        elif op is Op.PVARARG:
-            if ins.c >= 0:
-                reads.add(ins.c)
-            if ins.b == -1:
-                writes.add(ins.a)
-            else:
-                writes.update(range(ins.a, ins.a + max(0, ins.b)))
-        elif op is Op.PGETVARG:
-            reads.add(ins.b)
-            writes.add(ins.a)
-        elif op is Op.UNPACK:
-            reads.add(ins.b)
-            writes.update(range(ins.a, ins.a + max(0, ins.c)))
-        elif op in (Op.TBC, Op.PTBC):
-            reads.add(ins.a)
-        elif op is Op.CHECKNIL:
-            reads.add(ins.a)
-        elif op is Op.RETURN:
-            reads.update(range(ins.a, ins.a + max(0, ins.b)))
-        elif op is Op.RETURNV:
-            reads.update(range(ins.a, ins.a + max(0, ins.b)))
-            reads.add(ins.c)
-        elif op is Op.GUARD:
-            reads.add(ins.a)
-
-        return reads, writes
+        return _RW_HANDLERS[ins.op](proto, ins)
 
     @staticmethod
     def _successors(code, index: int) -> tuple[int, ...]:
         ins = code[index]
-        op = ins.op
-        n = len(code)
-        if op in _TERMINATORS:
-            return ()
-        if op is Op.JMP:
-            return (ins.a,) if 0 <= ins.a < n else ()
-        if op in _CONDITIONAL_JUMPS:
-            out = []
-            if index + 1 < n:
-                out.append(index + 1)
-            if 0 <= ins.a < n:
-                out.append(ins.a)
-            return tuple(out)
-        if op in (Op.FORPREP, Op.FORLOOP, Op.PFORPREP, Op.PFORLOOP, Op.PTFORLOOP):
-            out = []
-            if index + 1 < n:
-                out.append(index + 1)
-            if 0 <= ins.d < n:
-                out.append(ins.d)
-            return tuple(out)
-        if op is Op.PTFORPREP:
-            return (ins.d,) if 0 <= ins.d < n else ()
-        return (index + 1,) if index + 1 < n else ()
+        return _SUCCESSOR_HANDLERS[ins.op](code, index, ins)
 
     def _live_sets(self, proto: Proto) -> tuple[frozenset[int], ...]:
         ident = id(proto)

@@ -6,7 +6,7 @@ from .bytecode import Cell, Closure, Op
 from .errors import LuaRuntimeError
 from .table import LuaTable
 from .values import (
-    MultiValue, coerce_lua_integer, i64, parse_lua_number,
+    MultiValue, coerce_lua_integer, i64, lua_equal, parse_lua_number,
     static_value_type, truthy, type_matches,
 )
 
@@ -157,53 +157,209 @@ def _setlistv(vm, frames, frame, ins, regs, constants):
         table.rawset(ins.b + offset, value)
 
 
-def _int_arith(vm, frames, frame, ins, regs, constants):
+def _int_add(vm, frames, frame, ins, regs, constants):
     a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
-    if ins.op is Op.ADD_I:
-        value = a + b
-    elif ins.op is Op.SUB_I:
-        value = a - b
-    else:
-        value = a * b
-    regs[ins.a] = i64(value)
+    regs[ins.a] = i64(a + b)
 
 
-def _float_arith(vm, frames, frame, ins, regs, constants):
+def _int_sub(vm, frames, frame, ins, regs, constants):
     a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
-    if ins.op is Op.ADD_F:
-        value = a + b
-    elif ins.op is Op.SUB_F:
-        value = a - b
-    else:
-        value = a * b
-    regs[ins.a] = float(value)
+    regs[ins.a] = i64(a - b)
 
 
-def _generic_arith(vm, frames, frame, ins, regs, constants):
+def _int_mul(vm, frames, frame, ins, regs, constants):
+    a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
+    regs[ins.a] = i64(a * b)
+
+
+def _float_add(vm, frames, frame, ins, regs, constants):
+    a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
+    regs[ins.a] = float(a + b)
+
+
+def _float_sub(vm, frames, frame, ins, regs, constants):
+    a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
+    regs[ins.a] = float(a - b)
+
+
+def _float_mul(vm, frames, frame, ins, regs, constants):
+    a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
+    regs[ins.a] = float(a * b)
+
+
+def _float_divide(a, b):
+    a = float(a)
+    b = float(b)
+    if b != 0.0:
+        return a / b
+    if a == 0.0:
+        return math.nan
+    return math.copysign(math.inf, a * (1.0 if math.copysign(1.0, b) > 0 else -1.0))
+
+
+def _float_modulo(a, b):
+    a = float(a)
+    b = float(b)
+    try:
+        value = math.fmod(a, b)
+    except ValueError:
+        return math.nan
+    if (value > 0.0 and b < 0.0) or (value < 0.0 and b > 0.0):
+        value += b
+    return value
+
+
+def _float_power(a, b):
+    a = float(a)
+    b = float(b)
+    try:
+        return math.pow(a, b)
+    except ValueError:
+        if a == 0.0 and b < 0.0:
+            negative = (
+                math.copysign(1.0, a) < 0.0
+                and math.isfinite(b)
+                and b.is_integer()
+                and int(b) & 1
+            )
+            return -math.inf if negative else math.inf
+        return math.nan
+    except OverflowError:
+        negative = a < 0.0 and math.isfinite(b) and b.is_integer() and int(b) & 1
+        return -math.inf if negative else math.inf
+
+
+def _arith_metamethod(vm, frames, frame, name, a, b, dest):
+    tm = vm._first_tm(a, b, name)
+    if tm is None:
+        raise LuaRuntimeError(
+            f"attempt to perform arithmetic on a {static_value_type(a).name} value"
+        )
+    vm._invoke(frames, frame, tm, [a, b], dest, 1)
+
+
+def _add(vm, frames, frame, ins, regs, constants):
     a, b = regs[ins.b], regs[ins.c]
-    if ins.op in (Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR):
-        ai, bi = coerce_lua_integer(a), coerce_lua_integer(b)
-        if ai is None or bi is None:
-            _bitwise_error(vm, frames, frame, ins.op, a, b, ins.a)
-            return
-        if ins.op is Op.BAND:
-            value = i64(ai & bi)
-        elif ins.op is Op.BOR:
-            value = i64(ai | bi)
-        elif ins.op is Op.BXOR:
-            value = i64(ai ^ bi)
-        elif ins.op is Op.SHL:
-            value = _shift(ai, bi, left=True)
-        else:
-            value = _shift(ai, bi, left=False)
-        regs[ins.a] = value
-        return
-
     na, nb = parse_lua_number(a), parse_lua_number(b)
-    if na is not None and nb is not None:
-        vm._generic_binary(frames, frame, ins.op, na, nb, ins.a)
+    if na is None or nb is None:
+        _arith_metamethod(vm, frames, frame, b"__add", a, b, ins.a)
+        return
+    value = na + nb
+    regs[ins.a] = i64(value) if type(na) is int and type(nb) is int else value
+
+
+def _sub(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    na, nb = parse_lua_number(a), parse_lua_number(b)
+    if na is None or nb is None:
+        _arith_metamethod(vm, frames, frame, b"__sub", a, b, ins.a)
+        return
+    value = na - nb
+    regs[ins.a] = i64(value) if type(na) is int and type(nb) is int else value
+
+
+def _mul(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    na, nb = parse_lua_number(a), parse_lua_number(b)
+    if na is None or nb is None:
+        _arith_metamethod(vm, frames, frame, b"__mul", a, b, ins.a)
+        return
+    value = na * nb
+    regs[ins.a] = i64(value) if type(na) is int and type(nb) is int else value
+
+
+def _div(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    na, nb = parse_lua_number(a), parse_lua_number(b)
+    if na is None or nb is None:
+        _arith_metamethod(vm, frames, frame, b"__div", a, b, ins.a)
+        return
+    regs[ins.a] = _float_divide(na, nb)
+
+
+def _idiv(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    na, nb = parse_lua_number(a), parse_lua_number(b)
+    if na is None or nb is None:
+        _arith_metamethod(vm, frames, frame, b"__idiv", a, b, ins.a)
+        return
+    if nb == 0:
+        if type(na) is int and type(nb) is int:
+            raise LuaRuntimeError("attempt to divide by zero")
+        regs[ins.a] = _float_divide(na, nb)
+        return
+    if type(na) is int and type(nb) is int:
+        regs[ins.a] = i64(na // nb)
     else:
-        vm._generic_binary(frames, frame, ins.op, a, b, ins.a)
+        regs[ins.a] = float(math.floor(float(na) / float(nb)))
+
+
+def _mod(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    na, nb = parse_lua_number(a), parse_lua_number(b)
+    if na is None or nb is None:
+        _arith_metamethod(vm, frames, frame, b"__mod", a, b, ins.a)
+        return
+    if type(na) is int and type(nb) is int:
+        if nb == 0:
+            raise LuaRuntimeError("attempt to perform 'n%0'")
+        regs[ins.a] = i64(na % nb)
+    else:
+        regs[ins.a] = _float_modulo(na, nb)
+
+
+def _pow(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    na, nb = parse_lua_number(a), parse_lua_number(b)
+    if na is None or nb is None:
+        _arith_metamethod(vm, frames, frame, b"__pow", a, b, ins.a)
+        return
+    regs[ins.a] = _float_power(na, nb)
+
+
+def _band(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    ai, bi = coerce_lua_integer(a), coerce_lua_integer(b)
+    if ai is None or bi is None:
+        _bitwise_error(vm, frames, frame, Op.BAND, a, b, ins.a)
+        return
+    regs[ins.a] = i64(ai & bi)
+
+
+def _bor(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    ai, bi = coerce_lua_integer(a), coerce_lua_integer(b)
+    if ai is None or bi is None:
+        _bitwise_error(vm, frames, frame, Op.BOR, a, b, ins.a)
+        return
+    regs[ins.a] = i64(ai | bi)
+
+
+def _bxor(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    ai, bi = coerce_lua_integer(a), coerce_lua_integer(b)
+    if ai is None or bi is None:
+        _bitwise_error(vm, frames, frame, Op.BXOR, a, b, ins.a)
+        return
+    regs[ins.a] = i64(ai ^ bi)
+
+
+def _shl(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    ai, bi = coerce_lua_integer(a), coerce_lua_integer(b)
+    if ai is None or bi is None:
+        _bitwise_error(vm, frames, frame, Op.SHL, a, b, ins.a)
+        return
+    regs[ins.a] = _shift(ai, bi, left=True)
+
+
+def _shr(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    ai, bi = coerce_lua_integer(a), coerce_lua_integer(b)
+    if ai is None or bi is None:
+        _bitwise_error(vm, frames, frame, Op.SHR, a, b, ins.a)
+        return
+    regs[ins.a] = _shift(ai, bi, left=False)
 
 
 def _neg(vm, frames, frame, ins, regs, constants):
@@ -273,8 +429,47 @@ def _tobool(vm, frames, frame, ins, regs, constants):
     regs[ins.a] = truthy(regs[ins.b])
 
 
-def _compare(vm, frames, frame, ins, regs, constants):
-    vm._compare(frames, frame, ins.op, regs[ins.b], regs[ins.c], ins.a)
+def _eq(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    if lua_equal(a, b):
+        regs[ins.a] = True
+        return
+    if not (isinstance(a, LuaTable) and isinstance(b, LuaTable)):
+        regs[ins.a] = False
+        return
+    tm = vm._first_tm(a, b, b"__eq")
+    if tm is None:
+        regs[ins.a] = False
+        return
+    vm._invoke(frames, frame, tm, [a, b], ins.a, 1)
+
+
+def _lt(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    if _is_number(a) and _is_number(b):
+        regs[ins.a] = a < b
+        return
+    if isinstance(a, bytes) and isinstance(b, bytes):
+        regs[ins.a] = a < b
+        return
+    tm = vm._first_tm(a, b, b"__lt")
+    if tm is None:
+        raise LuaRuntimeError("attempt to compare incompatible values")
+    vm._invoke(frames, frame, tm, [a, b], ins.a, 1)
+
+
+def _le(vm, frames, frame, ins, regs, constants):
+    a, b = regs[ins.b], regs[ins.c]
+    if _is_number(a) and _is_number(b):
+        regs[ins.a] = a <= b
+        return
+    if isinstance(a, bytes) and isinstance(b, bytes):
+        regs[ins.a] = a <= b
+        return
+    tm = vm._first_tm(a, b, b"__le")
+    if tm is None:
+        raise LuaRuntimeError("attempt to compare incompatible values")
+    vm._invoke(frames, frame, tm, [a, b], ins.a, 1)
 
 
 def _jmp(vm, frames, frame, ins, regs, constants):
@@ -492,17 +687,33 @@ def _unpack(vm, frames, frame, ins, regs, constants):
 
 
 def _call(vm, frames, frame, ins, regs, constants):
-    tail = ins.op in (Op.TAILCALL, Op.TAILCALLV)
     fn = regs[ins.b]
     args = [regs[ins.c + i] for i in range(ins.d)]
-    want = ins.e if ins.op is Op.CALL else -1
-    if ins.op in (Op.CALLV, Op.TAILCALLV):
-        mv = regs[ins.e]
-        args.extend(mv.values if isinstance(mv, MultiValue) else (mv,))
-    returned = vm._invoke(frames, frame, fn, args, ins.a, want, tail=tail)
-    if tail and returned is not None:
-        return returned
-    return None
+    return vm._invoke(frames, frame, fn, args, ins.a, ins.e, tail=False)
+
+
+def _callv(vm, frames, frame, ins, regs, constants):
+    fn = regs[ins.b]
+    args = [regs[ins.c + i] for i in range(ins.d)]
+    mv = regs[ins.e]
+    args.extend(mv.values if isinstance(mv, MultiValue) else (mv,))
+    return vm._invoke(frames, frame, fn, args, ins.a, -1, tail=False)
+
+
+def _tailcall(vm, frames, frame, ins, regs, constants):
+    fn = regs[ins.b]
+    args = [regs[ins.c + i] for i in range(ins.d)]
+    returned = vm._invoke(frames, frame, fn, args, ins.a, -1, tail=True)
+    return returned if returned is not None else None
+
+
+def _tailcallv(vm, frames, frame, ins, regs, constants):
+    fn = regs[ins.b]
+    args = [regs[ins.c + i] for i in range(ins.d)]
+    mv = regs[ins.e]
+    args.extend(mv.values if isinstance(mv, MultiValue) else (mv,))
+    returned = vm._invoke(frames, frame, fn, args, ins.a, -1, tail=True)
+    return returned if returned is not None else None
 
 
 def _return(vm, frames, frame, ins, regs, constants):
@@ -540,32 +751,32 @@ OPCODE_HANDLERS = {
     Op.SETTABLE: _settable,
     Op.SETLISTV: _setlistv,
     Op.LEN: _len,
-    Op.ADD: _generic_arith,
-    Op.ADD_I: _int_arith,
-    Op.ADD_F: _float_arith,
-    Op.SUB: _generic_arith,
-    Op.SUB_I: _int_arith,
-    Op.SUB_F: _float_arith,
-    Op.MUL: _generic_arith,
-    Op.MUL_I: _int_arith,
-    Op.MUL_F: _float_arith,
-    Op.DIV: _generic_arith,
-    Op.IDIV: _generic_arith,
-    Op.MOD: _generic_arith,
-    Op.POW: _generic_arith,
-    Op.BAND: _generic_arith,
-    Op.BOR: _generic_arith,
-    Op.BXOR: _generic_arith,
-    Op.SHL: _generic_arith,
-    Op.SHR: _generic_arith,
+    Op.ADD: _add,
+    Op.ADD_I: _int_add,
+    Op.ADD_F: _float_add,
+    Op.SUB: _sub,
+    Op.SUB_I: _int_sub,
+    Op.SUB_F: _float_sub,
+    Op.MUL: _mul,
+    Op.MUL_I: _int_mul,
+    Op.MUL_F: _float_mul,
+    Op.DIV: _div,
+    Op.IDIV: _idiv,
+    Op.MOD: _mod,
+    Op.POW: _pow,
+    Op.BAND: _band,
+    Op.BOR: _bor,
+    Op.BXOR: _bxor,
+    Op.SHL: _shl,
+    Op.SHR: _shr,
     Op.BNOT: _bnot,
     Op.CONCAT: _concat,
     Op.NEG: _neg,
     Op.NOT: _not,
     Op.TOBOOL: _tobool,
-    Op.EQ: _compare,
-    Op.LT: _compare,
-    Op.LE: _compare,
+    Op.EQ: _eq,
+    Op.LT: _lt,
+    Op.LE: _le,
     Op.JMP: _jmp,
     Op.JMPIF: _jmpif,
     Op.JMPIFNOT: _jmpifnot,
@@ -577,9 +788,9 @@ OPCODE_HANDLERS = {
     Op.PTFORPREP: _ptforprep,
     Op.PTFORLOOP: _ptforloop,
     Op.CALL: _call,
-    Op.CALLV: _call,
-    Op.TAILCALL: _call,
-    Op.TAILCALLV: _call,
+    Op.CALLV: _callv,
+    Op.TAILCALL: _tailcall,
+    Op.TAILCALLV: _tailcallv,
     Op.VARARG: _vararg,
     Op.PVARARG: _pvararg,
     Op.PGETVARG: _pgetvarg,
