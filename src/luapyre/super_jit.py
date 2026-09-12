@@ -6,10 +6,12 @@ from .dense_jit import DenseEmitterJITMixin
 from .function_jit import TypedFunctionJITMixin
 from .region_jit import RegionPythonJIT
 from .structured_jit import StructuredTypedLoopJITMixin
+from .typed_ir_function_jit import TypedIRFunctionJITMixin
 from .typed_ir_jit import TypedIRLoopJITMixin
 
 
 class SuperPythonJIT(
+    TypedIRFunctionJITMixin,
     TypedFunctionJITMixin,
     StructuredTypedLoopJITMixin,
     DenseEmitterJITMixin,
@@ -18,12 +20,12 @@ class SuperPythonJIT(
 ):
     """Typed optimizer pipeline ending in the Python-AST backend.
 
-    0.16 makes the architectural boundary explicit: fully typed regions with
-    IR-relevant operations are lowered through a small backend-neutral IR before
-    Python-specific AST specialization. Pure numeric straight-line loops retain
-    the proven 0.15 structured backend until their IR lowering is at least as
-    fast. Earlier tiers remain fail-closed fallbacks for unsupported shapes and
-    ordinary Lua.
+    0.16 makes the architectural boundary explicit: fully typed regions and
+    whole functions with IR-relevant operations are lowered through a small
+    backend-neutral IR before Python-specific AST specialization. Pure numeric
+    straight-line loops and call-heavy/recursive functions retain the proven
+    0.15 backends until their IR lowering is at least as exact and fast. Earlier
+    tiers remain fail-closed fallbacks for unsupported shapes and ordinary Lua.
     """
 
     _IR_PRIMARY_OPS = frozenset({Op.GETUPVAL, Op.GETTABLE, Op.SETTABLE})
