@@ -4,7 +4,7 @@ import math
 
 from .errors import LuaRuntimeError
 from .table import LuaTable
-from .values import i64
+from .values import i64, parse_lua_number
 from .vm import HostFunction
 
 
@@ -38,10 +38,11 @@ def need_number(value, arg=1, name="function"):
 
 
 def to_integer(value):
-    if type(value) is int:
-        return i64(value)
-    if type(value) is float and math.isfinite(value) and value.is_integer():
-        integer = int(value)
+    number = parse_lua_number(value)
+    if type(number) is int:
+        return i64(number)
+    if type(number) is float and math.isfinite(number) and number.is_integer():
+        integer = int(number)
         if INT_MIN <= integer <= INT_MAX:
             return integer
     return None
