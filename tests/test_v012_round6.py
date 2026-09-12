@@ -28,3 +28,9 @@ def test_math_huge_integer_conversion_names_field():
 local ok, err = pcall(function () return math.huge << 1 end)
 return not ok and string.find(err, "field 'huge'") ~= nil
 ''') is True
+
+
+def test_tonumber_leading_zero_decimal_matches_source_arithmetic():
+    assert run("return tonumber('-012')") == -12
+    assert run("return -010-2") == -12
+    assert run("return tonumber('-012') == -010-2") is True
