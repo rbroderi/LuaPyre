@@ -407,8 +407,10 @@ class LuaGC:
         *,
         keys: bool,
         values: bool,
+        dead_value_ids: set[int] | None = None,
     ) -> int:
         marked_ids = set(marked)
+        dead_value_ids = dead_value_ids or set()
         cleared = 0
 
         for table, mode in weak_tables.values():
@@ -424,7 +426,7 @@ class LuaGC:
                     values
                     and b"v" in mode
                     and self._is_collectable(value)
-                    and id(value) not in marked_ids
+                    and (id(value) not in marked_ids or id(value) in dead_value_ids)
                 )
                 if dead_key or dead_value:
                     doomed.append(key)
@@ -524,16 +526,17 @@ class LuaGC:
         # reachable through them. This can discover weak tables that themselves
         # were unreachable in phase 1 (e.g. captured only by a __gc closure).
         resurrected_marked, resurrected_weak_tables = self._trace(dead)
+        resurrected_only = set(resurrected_marked) - set(marked)
 
-        # After resurrection, weak keys can be cleared safely: finalizing objects
-        # and objects reachable only through them are now marked, so their keys
-        # remain until the next collection. Weak values in newly resurrected
-        # weak tables must still be cleared before any finalizer runs.
+        # Lua treats the resurrected graph asymmetrically: it is alive for weak
+        # keys, so finalizers can still look up associated metadata, but remains
+        # dead for weak values during this collection cycle.
         cleared += self._clear_weak_tables(
             resurrected_weak_tables,
             resurrected_marked,
             keys=True,
             values=True,
+            dead_value_ids=resurrected_only,
         )
 
         if dead_ids:
