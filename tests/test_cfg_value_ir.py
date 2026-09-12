@@ -40,6 +40,50 @@ local b: integer = classify(false, true, 5)
 return a + b
 """
 
+_DOMINANCE_SOURCE = """-- luapyre: typed
+local function reuse(flag: boolean, a: integer, b: integer): integer
+    local base = a + b
+    if flag then
+        local same = a + b
+        return same
+    end
+    return base
+end
+local first: integer = reuse(true, 4, 7)
+local second: integer = reuse(false, 4, 7)
+return first + second
+"""
+
+_LOOP_SOURCE = """-- luapyre: typed
+local function sum_to(n: integer): integer
+    local i: integer = 0
+    local total: integer = 0
+    while i < n do
+        total = total + i
+        i = i + 1
+    end
+    return total
+end
+return sum_to(20)
+"""
+
+_BRANCHY_LOOP_SOURCE = """-- luapyre: typed
+local function branchy(n: integer): integer
+    local i: integer = 0
+    local total: integer = 0
+    while i < n do
+        if i < 5 then
+            total = total + i
+        else
+            total = total + 1
+        end
+        i = i + 1
+    end
+    return total
+end
+return branchy(10)
+"""
+
 
 def _compiled_function_filenames(runtime: LuaRuntime) -> set[str]:
     return {
@@ -49,10 +93,14 @@ def _compiled_function_filenames(runtime: LuaRuntime) -> set[str]:
     }
 
 
+def _child(runtime: LuaRuntime, source: str, name: str):
+    root = runtime.compile(source)
+    return next(child for child in root.children if child.name == name)
+
+
 def test_cfg_value_ir_builds_phi_for_branch_merge():
     runtime = LuaRuntime(jit=False)
-    root = runtime.compile(_SOURCE)
-    choose = next(child for child in root.children if child.name == "choose")
+    choose = _child(runtime, _SOURCE, "choose")
     plan = CFGValueIRCompiler(choose).compile()
     assert plan is not None
     assert len(plan.blocks) >= 4
@@ -69,6 +117,45 @@ def test_cfg_value_ir_executes_both_merge_predecessors_through_structured_diamon
 def test_cfg_value_ir_generic_forward_dag_handles_multiple_joins():
     runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
     assert runtime.execute(_DAG_SOURCE) == 32
+    assert "<luapyre-cfg-value-ir-function>" in _compiled_function_filenames(runtime)
+
+
+def test_cfg_value_ir_reuses_expression_only_through_dominance():
+    runtime = LuaRuntime(jit=False)
+    reuse = _child(runtime, _DOMINANCE_SOURCE, "reuse")
+    plan = CFGValueIRCompiler(reuse).compile()
+    assert plan is not None
+    assert plan.cross_block_cse_pcs
+    assert not plan.backedges
+    assert all(block.index in plan.dominators[block.index] for block in plan.blocks)
+    assert any(len(dominators) > 1 for dominators in plan.dominators[1:])
+
+
+def test_cfg_value_ir_builds_loop_carried_phi_values_from_natural_backedge():
+    runtime = LuaRuntime(jit=False)
+    sum_to = _child(runtime, _LOOP_SOURCE, "sum_to")
+    plan = CFGValueIRCompiler(sum_to).compile()
+    assert plan is not None
+    assert plan.has_cycles
+    assert len(plan.natural_loops) == 1
+    loop = plan.natural_loops[0]
+    assert (loop.latch, loop.header) in plan.backedges
+    assert loop.header in plan.dominators[loop.latch]
+    header = plan.blocks[loop.header]
+    assert header.phi_nodes
+    assert any(plan.node(node_id).type_name == "integer" for node_id in header.phi_nodes)
+    assert all(len(plan.node(node_id).args) == 2 for node_id in header.phi_nodes)
+
+
+def test_cfg_value_ir_structures_simple_natural_loop_without_state_dispatch():
+    runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
+    assert runtime.execute(_LOOP_SOURCE) == 190
+    assert "<luapyre-cfg-value-ir-loop>" in _compiled_function_filenames(runtime)
+
+
+def test_cfg_value_ir_branchy_reducible_loop_uses_generic_cyclic_backend():
+    runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
+    assert runtime.execute(_BRANCHY_LOOP_SOURCE) == 15
     assert "<luapyre-cfg-value-ir-function>" in _compiled_function_filenames(runtime)
 
 
@@ -91,4 +178,11 @@ def test_cfg_value_ir_generic_dag_preserves_every_nearby_fuel_boundary():
     for fuel in range(1, 128):
         assert _outcome(_DAG_SOURCE, jit=True, fuel=fuel) == _outcome(
             _DAG_SOURCE, jit=False, fuel=fuel
+        )
+
+
+def test_cfg_value_ir_loop_side_exit_preserves_every_nearby_fuel_boundary():
+    for fuel in range(1, 220):
+        assert _outcome(_LOOP_SOURCE, jit=True, fuel=fuel) == _outcome(
+            _LOOP_SOURCE, jit=False, fuel=fuel
         )
