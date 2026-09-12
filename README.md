@@ -91,7 +91,7 @@ lua = LuaRuntime()
 
 Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default hotness threshold is 32 loop entries/calls and can be changed with `jit_threshold=`. Live counters are available through `lua.jit_stats`.
 
-0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14 added fully typed branch regions. 0.15 adds promoted-local structured loops, nested AST super-regions, static typed-call inlining, direct compiled recursion, dense compiler-side opcode emitters, and semantic AST lowering. The AST backend now removes selected `_i64`, equality, literal type-guard, raw-length, dense-table, and numeric-loop helper/method calls when it can reproduce Lua semantics exactly; sparse/dynamic/metatable-sensitive shapes stay on the proven runtime helpers or deopt path. See [`docs/jit-0.13.md`](docs/jit-0.13.md), [`docs/typed-jit-0.14.md`](docs/typed-jit-0.14.md), and [`docs/typed-jit-0.15.md`](docs/typed-jit-0.15.md).
+0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14 added fully typed branch regions. 0.15 adds promoted-local structured loops, nested AST super-regions, static typed-call inlining, direct compiled recursion, dense compiler-side opcode emitters, and semantic AST lowering. The AST backend removes selected `_i64`, equality, literal type-guard, raw-length, dense-table, and numeric-loop helper/method calls when it can reproduce Lua semantics exactly; sparse/dynamic/metatable-sensitive shapes stay on the proven runtime helpers or deopt path. See [`docs/jit-0.13.md`](docs/jit-0.13.md), [`docs/typed-jit-0.14.md`](docs/typed-jit-0.14.md), and [`docs/typed-jit-0.15.md`](docs/typed-jit-0.15.md).
 
 ### Output and warnings
 
