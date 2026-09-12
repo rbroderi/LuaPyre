@@ -3,6 +3,10 @@ from __future__ import annotations
 import argparse
 import gc
 import importlib
+import json
+import os
+import platform
+from pathlib import Path
 import statistics
 import sys
 import time
@@ -122,7 +126,9 @@ def _ratio(value: float, reference: float | None) -> str:
     return f"{value / reference:6.2f}x"
 
 
-def run_suite(*, repeats: int, warmups: int, require_all: bool) -> None:
+def run_suite(
+    *, repeats: int, warmups: int, require_all: bool
+) -> tuple[list[Backend], dict[str, dict[str, Timing]]]:
     backends = discover_backends(require_all=require_all)
     print(sys.version.replace("\n", " "))
     for backend in backends:
@@ -166,6 +172,41 @@ def run_suite(*, repeats: int, warmups: int, require_all: bool) -> None:
             f"{_ratio(jit_ms, luajit.median_ms if luajit else None):>11s}"
         )
 
+    return backends, results
+
+
+def write_json_report(
+    path: Path,
+    *,
+    backends: list[Backend],
+    results: dict[str, dict[str, Timing]],
+    repeats: int,
+    warmups: int,
+) -> None:
+    report = {
+        "schema_version": 1,
+        "commit": os.environ.get("GITHUB_SHA"),
+        "python": sys.version.replace("\n", " "),
+        "platform": platform.platform(),
+        "repeats": repeats,
+        "warmups": warmups,
+        "backends": [
+            {"name": backend.name, "detail": backend.detail} for backend in backends
+        ],
+        "workloads": {
+            workload: {
+                backend: {
+                    "median_ms": timing.median_ms,
+                    "best_ms": timing.best_ms,
+                }
+                for backend, timing in row.items()
+            }
+            for workload, row in results.items()
+        },
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -178,14 +219,28 @@ def main() -> None:
         action="store_true",
         help="fail instead of skipping when Lua 5.5 or LuaJIT Lupa modules are unavailable",
     )
+    parser.add_argument(
+        "--json",
+        type=Path,
+        metavar="PATH",
+        help="also write a machine-readable JSON report",
+    )
     args = parser.parse_args()
     if args.repeats < 1 or args.warmups < 0:
         parser.error("repeats must be >= 1 and warmups must be >= 0")
-    run_suite(
+    backends, results = run_suite(
         repeats=args.repeats,
         warmups=args.warmups,
         require_all=args.require_all,
     )
+    if args.json is not None:
+        write_json_report(
+            args.json,
+            backends=backends,
+            results=results,
+            repeats=args.repeats,
+            warmups=args.warmups,
+        )
 
 
 if __name__ == "__main__":
