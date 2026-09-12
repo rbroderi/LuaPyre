@@ -57,6 +57,8 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
                 if any(char in text for char in ".eE"):
                     return float(text)
                 integer = int(text, 16 if is_hex else 10)
+                if is_hex:
+                    return i64(integer)
                 if INT_MIN <= integer <= INT_MAX:
                     return integer
                 return float(text)
