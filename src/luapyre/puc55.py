@@ -6,11 +6,10 @@ from .binary_chunks import (
     P_NEWTABLE,
     P_RETURN,
     P_TAILCALL,
-    _Translator,
     _b,
-    _decode_puc_chunk,
     _op,
 )
+from .puc_debug import DebugTranslator, decode_puc_chunk_with_debug
 
 
 _POS_K = 15
@@ -48,6 +47,6 @@ def _normalise_compiler_pairs(proto) -> None:
 
 def load_puc55_chunk(data: bytes):
     """Validate, normalize, and translate a PUC-Lua 5.5 binary chunk."""
-    proto = _decode_puc_chunk(data)
+    proto = decode_puc_chunk_with_debug(data)
     _normalise_compiler_pairs(proto)
-    return _Translator(proto).translate()
+    return DebugTranslator(proto).translate()

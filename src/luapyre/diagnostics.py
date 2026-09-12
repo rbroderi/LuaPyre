@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+from .bytecode import Op
 from .errors import LuaRaisedError, LuaRuntimeError, LuaTraceFrame
+from .values import static_value_type
 
 
 LUA_IDSIZE = 60
+
+_ARITH_OPS = frozenset({
+    Op.ADD, Op.ADD_I, Op.ADD_F,
+    Op.SUB, Op.SUB_I, Op.SUB_F,
+    Op.MUL, Op.MUL_I, Op.MUL_F,
+    Op.DIV, Op.IDIV, Op.MOD, Op.POW,
+})
 
 
 def _bytes(value: str | bytes | None) -> bytes | None:
@@ -75,6 +84,45 @@ def error_value(error: LuaRuntimeError):
     return str(error).encode("utf-8", "replace")
 
 
+def _number(value) -> bool:
+    return type(value) in (int, float)
+
+
+def _enrich_runtime_error(error: LuaRuntimeError, frame, pc: int) -> None:
+    """Add Lua's debug-variable suffix without touching the normal VM path.
+
+    PUC's symbolic debug information is projected onto translated VM registers
+    at compile/load time. We consult it only after an exception has already
+    occurred, keeping diagnostic fidelity out of the hot opcode loop.
+    """
+    if isinstance(error, LuaRaisedError) or error.value is not None:
+        return
+    if pc < 0 or pc >= len(frame.proto.code):
+        return
+
+    message = str(error)
+    ins = frame.proto.code[pc]
+    if ins.op not in _ARITH_OPS or not message.startswith("attempt to perform arithmetic on a "):
+        return
+
+    left = frame.regs[ins.b]
+    right = frame.regs[ins.c]
+    if not _number(left):
+        bad_reg, bad_value = ins.b, left
+    elif not _number(right):
+        bad_reg, bad_value = ins.c, right
+    else:
+        return
+
+    message = f"attempt to perform arithmetic on a {static_value_type(bad_value).name} value"
+    if pc < len(frame.proto.value_origins):
+        origin = frame.proto.value_origins[pc].get(bad_reg)
+        if origin is not None:
+            kind, name = origin
+            message += f" ({kind} '{name}')"
+    error.args = (message,)
+
+
 def attach_runtime_context(error: LuaRuntimeError, frame, *, pc: int | None = None) -> LuaRuntimeError:
     """Attach the originating source location and one structured Lua frame.
 
@@ -82,6 +130,8 @@ def attach_runtime_context(error: LuaRuntimeError, frame, *, pc: int | None = No
     failures follow luaG_addinfo, which prints ``?:?:`` only when the source is
     absent and otherwise prints the source plus even an unavailable (-1) line.
     """
+    if pc is None:
+        pc = frame.pc - 1
     error.add_trace_frame(trace_frame(frame, pc=pc))
 
     if isinstance(error, LuaRaisedError):
@@ -89,6 +139,7 @@ def attach_runtime_context(error: LuaRuntimeError, frame, *, pc: int | None = No
     if error.located:
         return error
 
+    _enrich_runtime_error(error, frame, pc)
     raw = error_value(error)
     line = frame_line(frame, pc=pc)
     if frame.proto.source is None:

@@ -60,6 +60,10 @@ class Proto:
     linedefined: int = 0
     lastlinedefined: int = 0
     lineinfo: list[int] = field(default_factory=list)
+    # Sparse, debug-only register provenance aligned to code. Each entry maps
+    # VM register -> (Lua object kind, source name), e.g. ("field", "x").
+    # It is consulted only while formatting an exceptional path.
+    value_origins: list[dict[int, tuple[str, str]]] = field(default_factory=list)
 
     def add_const(self, value):
         for i, current in enumerate(self.constants):
