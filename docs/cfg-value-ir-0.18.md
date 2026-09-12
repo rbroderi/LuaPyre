@@ -103,16 +103,15 @@ More general acyclic forward CFGs lower through a compact state machine with exp
 
 ## Performance
 
-Focused same-runner CPython 3.13 measurements against merged 0.17 show a measurable improvement on the new merge-heavy branch probe while the existing 0.17 value/CALL probes remain effectively flat.
+Focused same-runner CPython 3.13.15 measurements compare merged 0.17, the generic CFG state-machine backend, and the structured-diamond backend on the same GitHub runner. The merge-heavy `cfg_phi_branch` medians were:
 
-A representative structured-diamond run measured:
+- merged 0.17: **106.73 ms**
+- generic 0.18 CFG value IR: **94.63 ms**
+- structured 0.18 CFG value IR: **93.28 ms**
 
-- merged 0.17 `cfg_phi_branch`: **97.60 ms**
-- 0.18 structured CFG value IR: **92.85 ms**
+The generic CFG tier is about **11.3% faster than merged 0.17** on this probe. Structured diamond lowering is about **12.6% faster than merged 0.17** and a further **1.4% faster than the generic CFG state dispatcher** on the same runner. The existing 0.17 value/CALL probes remain in the same performance band, so the new tier does not trade away the earlier hot paths.
 
-That is about a **4.9% reduction** in runtime for the branch/merge workload on that runner. Earlier same-runner runs of the generic CFG backend also beat merged 0.17; absolute timings across different GitHub hosts are not compared.
-
-The main purpose of 0.18 is architectural: value optimization can now cross branch joins with exact live-state reconstruction. Larger performance gains are expected when loop-carried values and dominance-aware optimization can reuse this representation.
+The main purpose of 0.18 remains architectural: value optimization can now cross branch joins with exact live-state reconstruction. Larger performance gains are expected when loop-carried values and dominance-aware optimization can reuse this representation.
 
 ## Fail-closed boundary
 
