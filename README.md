@@ -1,10 +1,10 @@
 # LuaPyre
 
-LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that can feed later optimization without creating a second runtime.
+LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.12.0a1**
+**Python 3.13+** · **current pre-alpha: 0.13.0a1**
 
-LuaPyre is not yet a complete Lua 5.5.1 implementation. Correct semantics come first; the runtime is deliberately built around a register VM and explicit Lua frames so later quickening and JIT work can specialize stable behavior instead of replacing an AST interpreter.
+LuaPyre is not yet a complete Lua 5.5.1 implementation. Correct semantics come first; the runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
 ## Language model
 
@@ -19,7 +19,7 @@ local function add(a: integer, b: integer): integer
 end
 ```
 
-Missing annotations mean `Any`. Typed and untyped code use the same parser, compiler, bytecode, VM, tables, closures, and standard library.
+Missing annotations mean `Any`. Typed and untyped code use the same parser, compiler, bytecode, VM, tables, closures, standard library, and JIT.
 
 Lua 5.5 declarations and LuaPyre annotations can be combined:
 
@@ -28,6 +28,12 @@ local limit: integer <const> = 10
 global answer: integer
 answer = 42
 ```
+
+### Typing and JIT specialization
+
+LuaPyre 0.13 gives optional typing a direct performance role. The source compiler emits specialized integer/float bytecode only when it has proved those operand classes, and existing `GUARD` instructions protect dynamic `Any -> typed` boundaries. The tiered JIT can therefore omit redundant type guards for those source-proven specialized operations.
+
+Ordinary untyped Lua remains speculative: generic arithmetic is specialized from observed values and deoptimizes to the interpreter if a guard stops matching. PUC-Lua translated chunks do not inherit source-compiler type trust.
 
 ## Python embedding
 
@@ -50,6 +56,18 @@ assert result == 42
 ```
 
 Host capabilities are explicit. A default runtime has no ambient filesystem, networking, process execution, Python import/eval, `io`, `os`, `debug`, native-library loading, or Python object introspection.
+
+### JIT controls
+
+The guarded tiered JIT is enabled by default:
+
+```python
+lua = LuaRuntime()
+```
+
+Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default hotness threshold is 32 loop entries/calls and can be changed with `jit_threshold=`. Live counters are available through `lua.jit_stats`.
+
+The first 0.13 tier compiles supported hot natural numeric loops and supported hot straight-line leaf functions into generated Python. Unsupported control flow, metamethod-sensitive operations, yielding boundaries, and other non-proven cases stay in the exact interpreter. See [`docs/jit-0.13.md`](docs/jit-0.13.md).
 
 ### Output and warnings
 
@@ -104,7 +122,7 @@ The loader receives a logical UTF-8 name and may return `bytes`, `str`, or `None
 
 The capability can be changed dynamically with `set_file_loader()`. Removing it removes `loadfile`, `dofile`, and the file searcher again while leaving preload-only `require` available.
 
-See [`docs/embedding-0.11.md`](docs/embedding-0.11.md) for the embedding contract introduced in 0.11; 0.12 does not broaden the default host-capability boundary.
+See [`docs/embedding-0.11.md`](docs/embedding-0.11.md) for the embedding contract introduced in 0.11; 0.13 does not broaden the default host-capability boundary.
 
 ## Implemented runtime semantics
 
@@ -126,6 +144,7 @@ LuaPyre currently includes substantial Lua 5.5 behavior, including:
 - validated PUC-Lua 5.5 binary chunk input translated into LuaPyre bytecode
 - source/chunk names, line information, structured host tracebacks, and PUC debug-line reconstruction
 - selected Lua-style field/global/upvalue attribution in runtime errors
+- guarded generated-Python JIT execution for supported hot loops and hot leaf functions
 
 The VM uses explicit Lua frames rather than Python recursion for ordinary Lua calls. ASTs are compile-time only and are never interpreted directly.
 
@@ -175,11 +194,28 @@ da07b543872dc0bb2ff12aabd0c248578d78df3eb6b67efdc537a46d455c7f31
 
 The harness bounds archive/download/extraction sizes, rejects traversal paths and links/devices, classifies the upstream suite by dependency type, and runs selected files in fresh LuaPyre runtimes. Its read-only suite access is supplied through the same production `file_loader` capability used by embedders; it no longer replaces `package`, `require`, `loadfile`, `dofile`, or `print` with test-only Lua implementations.
 
-The committed 0.12 release gate contains seven unchanged upstream files: `bwcoercion.lua`, `pm.lua`, `tpack.lua`, `vararg.lua`, `bitwise.lua`, `math.lua`, and `utf8.lua`. Additional official files remain explicit probes until their semantic gaps are fixed; the baseline is never weakened by copying or patching upstream tests, skipping assertions, or marking failures as expected passes.
+The committed release gate contains seven unchanged upstream files: `bwcoercion.lua`, `pm.lua`, `tpack.lua`, `vararg.lua`, `bitwise.lua`, `math.lua`, and `utf8.lua`. Additional official files remain explicit probes until their semantic gaps are fixed; the baseline is never weakened by copying or patching upstream tests, skipping assertions, or marking failures as expected passes.
 
-See [`docs/conformance-0.12.md`](docs/conformance-0.12.md) for the exact 0.12 tranche and its focused compatibility work.
+See [`docs/conformance-0.12.md`](docs/conformance-0.12.md) for the exact 0.12 conformance tranche. The 0.13 JIT must preserve that same exact gate.
 
 The complete official suite does **not** pass yet. Some upstream tests depend on Lua's internal C test API, debug/io/os/native-module facilities, allocator details, or stress behavior that is outside the default sandbox. Other failures identify genuine remaining Lua semantics and are tracked through explicit suite runs.
+
+## Benchmarking
+
+The existing `benchmarks/vm_programs.py` measures LuaPyre VM workloads directly. LuaPyre 0.13 also adds a permanent cross-runtime harness:
+
+```bash
+python benchmarks/compare_runtimes.py
+```
+
+It runs the same plain-Lua workloads through:
+
+- LuaPyre JIT
+- LuaPyre interpreter-only
+- PUC Lua 5.5 through `lupa.lua55`
+- LuaJIT through `lupa.luajit21` (falling back to `lupa.luajit20` when appropriate)
+
+Use `--require-all` when a benchmark environment must provide both comparison runtimes. The report includes absolute median/best timings plus LuaPyre-JIT ratios against the interpreter, Lua 5.5, and LuaJIT.
 
 ## Current compatibility gaps
 
@@ -196,12 +232,16 @@ Unsafe host-facing libraries are not treated as default-sandbox requirements.
 
 ## Performance roadmap
 
-Correct semantics come first. Once compatibility is broad enough, the intended performance path is:
+0.13 starts the tiered execution architecture rather than treating JIT work as a separate future runtime:
 
-1. adaptive quickening and inline caches
-2. table/global/call specialization
-3. generated superinstructions for common opcode sequences
-4. hot-function compilation to Python code using Python locals for Lua registers
-5. deoptimization back to the VM when specialization assumptions fail
+1. exact table-dispatched interpreter as Tier 0 and universal deoptimization target
+2. hotness counters for loops/functions
+3. small backend-neutral IR
+4. generated-Python hot-loop and leaf-function compilation
+5. static type facts used to remove redundant JIT guards
+6. guarded dynamic specialization and raw no-metatable table fast paths
+7. exact fuel/quota accounting across compiled execution
+8. next: internal-branch regions, inline caches, more call/table/global specialization, side versions, and wider coroutine-safe regions
+9. later: native x86-64/AArch64 or LLVM backend once the IR/deoptimization contract is stable
 
-Typed code can skip many dynamic guards because annotations survive into compiler optimization metadata. CPython's optimizer/JIT is an optional accelerator, never a correctness dependency.
+CPython's own optimizer/JIT can accelerate generated Python when available, but it is never a LuaPyre correctness dependency.

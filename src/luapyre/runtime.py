@@ -7,6 +7,7 @@ from .diagnostics import format_traceback
 from .diagnostic_stdlib import install_diagnostic_stdlib
 from .errors import LuaRuntimeError
 from .gcvm import GarbageCollectedVM
+from .jitvm import TieredJITVM
 from .parser import Parser
 from .source_compiler import SourceCompiler
 from .stdlib import install_safe_stdlib
@@ -25,6 +26,10 @@ class LuaRuntime:
     console output. Filesystem, network, process, native-library loading, and
     Python introspection remain absent unless the embedding application exposes
     an explicit capability.
+
+    LuaPyre 0.13 enables the guarded tiered JIT by default. Pass ``jit=False``
+    for the exact interpreter-only execution path, or lower ``jit_threshold``
+    when profiling short hot loops/functions.
     """
 
     def __init__(
@@ -36,9 +41,20 @@ class LuaRuntime:
         output=None,
         warning=None,
         file_loader=None,
+        jit=True,
+        jit_threshold=32,
     ):
         self.globals = LuaTable()
-        self.vm = GarbageCollectedVM(self.globals, fuel=fuel, max_frames=max_frames)
+        if jit:
+            self.vm = TieredJITVM(
+                self.globals,
+                fuel=fuel,
+                max_frames=max_frames,
+                jit_enabled=True,
+                jit_threshold=jit_threshold,
+            )
+        else:
+            self.vm = GarbageCollectedVM(self.globals, fuel=fuel, max_frames=max_frames)
         self.capabilities = RuntimeCapabilities()
         self.capabilities.set_output_sink(output)
         self.capabilities.set_warning_sink(warning)
@@ -75,7 +91,7 @@ class LuaRuntime:
         # Opaque host userdata is represented by the Python object itself.
         # Do not replace this with a recyclable integer/ref-slot registry unless
         # every reuse and finalization path validates the referent identity (or
-        # a generation token).  A stale reusable wrapper can otherwise become
+        # a generation token). A stale reusable wrapper can otherwise become
         # rebound to a different live host object; see Lupa GH-294 for the class
         # of bug this direct-reference invariant deliberately avoids.
         return value
@@ -149,6 +165,12 @@ class LuaRuntime:
 
     def execute(self, source: str, *, fuel=None, chunkname: str | bytes = "=(luapyre)"):
         return self.vm.run(self.compile(source, chunkname=chunkname), fuel=fuel)
+
+    @property
+    def jit_stats(self):
+        """Return live tiered-JIT counters, or ``None`` for interpreter-only runtimes."""
+        jit = getattr(self.vm, "jit", None)
+        return None if jit is None else jit.stats
 
     @staticmethod
     def traceback(error: LuaRuntimeError, *, include_message: bool = True) -> bytes:

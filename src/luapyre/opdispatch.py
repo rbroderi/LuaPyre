@@ -783,6 +783,7 @@ OPCODE_HANDLERS = {
     Op.JMPIFNIL: _jmpifnil,
     Op.FORPREP: _forprep,
     Op.FORLOOP: _forloop,
+    Op.JFORLOOP: _forloop,
     Op.PFORPREP: _pforprep,
     Op.PFORLOOP: _pforloop,
     Op.PTFORPREP: _ptforprep,

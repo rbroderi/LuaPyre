@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from . import astnodes as A
 from .bytecode import Op, Ins, Proto, UpvalueDesc
 from .errors import LuaSyntaxError, LuaTypeError
+from .jit_policy import can_jit_natural_loop
 from .semantics import analyze_control_flow
 from .typesys import ANY, BOOLEAN, FLOAT, FUNCTION, INTEGER, NUMBER, STRING, TABLE, LuaType, accepts
 
@@ -506,7 +507,12 @@ class _FunctionCompiler:
             self.emit(Op.LOCAL, visible, idx)
             self.compile_block(stmt.body, scoped=False)
             self.emit_close_to(base, update=True)
-            self.emit(Op.FORLOOP, idx, limit, step, body_start)
+            loop_op = (
+                Op.JFORLOOP
+                if can_jit_natural_loop(self.proto.code, body_start, len(self.proto.code))
+                else Op.FORLOOP
+            )
+            self.emit(loop_op, idx, limit, step, body_start)
             end = len(self.proto.code)
             self.patch_d(prep, end)
             self._finish_loop(end)

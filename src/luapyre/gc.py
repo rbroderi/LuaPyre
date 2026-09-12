@@ -178,6 +178,7 @@ _RW_HANDLERS.update({
     Op.SETLISTV: _rw_setlistv,
     Op.FORPREP: _rw_forprep,
     Op.FORLOOP: _rw_forloop,
+    Op.JFORLOOP: _rw_forloop,
     Op.PFORPREP: _rw_pforprep,
     Op.PFORLOOP: _rw_pforloop,
     Op.PTFORPREP: _rw_ptforprep,
@@ -259,7 +260,7 @@ for _op in _TERMINATORS:
 _SUCCESSOR_HANDLERS[Op.JMP] = _succ_jump
 for _op in _CONDITIONAL_JUMPS:
     _SUCCESSOR_HANDLERS[_op] = _succ_conditional
-for _op in (Op.FORPREP, Op.FORLOOP, Op.PFORPREP, Op.PFORLOOP, Op.PTFORLOOP):
+for _op in (Op.FORPREP, Op.FORLOOP, Op.JFORLOOP, Op.PFORPREP, Op.PFORLOOP, Op.PTFORLOOP):
     _SUCCESSOR_HANDLERS[_op] = _succ_loop
 _SUCCESSOR_HANDLERS[Op.PTFORPREP] = _succ_ptforprep
 
