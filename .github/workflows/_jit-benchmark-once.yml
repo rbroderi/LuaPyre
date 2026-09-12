@@ -19,5 +19,11 @@ jobs:
           python-version: '3.13'
       - name: Install LuaPyre and benchmark dependencies
         run: python -m pip install -e '.[dev]'
-      - name: Compare runtimes with localized JIT fuel sync
-        run: python benchmarks/compare_runtimes.py --repeats 7 --warmups 3 --require-all
+      - name: Validate permanent four-way benchmark
+        run: |
+          python benchmarks/compare_runtimes.py \
+            --repeats 7 \
+            --warmups 3 \
+            --require-all \
+            --json benchmark-results.json
+          python -m json.tool benchmark-results.json >/dev/null
