@@ -33,3 +33,14 @@ def test_hot_runtime_opcodes_have_specialized_handlers():
         assert len(set(handlers)) == len(handlers)
         for handler in handlers:
             assert "ins.op" not in inspect.getsource(handler)
+
+
+
+def test_gc_opcode_analysis_uses_complete_dispatch_tables():
+    from luapyre.bytecode import Op
+    from luapyre.gc import LuaGC, _RW_HANDLERS, _SUCCESSOR_HANDLERS
+
+    assert set(_RW_HANDLERS) == set(Op)
+    assert set(_SUCCESSOR_HANDLERS) == set(Op)
+    assert "elif op" not in inspect.getsource(LuaGC._ins_reads_writes)
+    assert "elif op" not in inspect.getsource(LuaGC._successors)
