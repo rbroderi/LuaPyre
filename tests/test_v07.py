@@ -156,7 +156,8 @@ return a,b,c,nextpos,#packed,string.packsize("<i4I2c3")
 
 def test_string_format_common_specifiers_and_q():
     result = run('return string.format("%04d %.2f %s %q %%", 7, 2.5, "ok", "a\\nb")')
-    assert result == b'0007 2.50 ok "a\\nb" %'
+    expected = b'0007 2.50 ok "a' + b'\\' + b'\n' + b'b" %'
+    assert result == expected
 
 
 def test_utf8_char_codepoint_len_codes_and_offset():
