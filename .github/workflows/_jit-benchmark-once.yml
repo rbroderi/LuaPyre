@@ -19,5 +19,5 @@ jobs:
           python-version: '3.13'
       - name: Install LuaPyre and benchmark dependencies
         run: python -m pip install -e '.[dev]'
-      - name: Compare runtimes after negative loop cache
+      - name: Compare runtimes with JFORLOOP quickening
         run: python benchmarks/compare_runtimes.py --repeats 7 --warmups 3 --require-all
