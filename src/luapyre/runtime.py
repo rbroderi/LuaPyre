@@ -8,6 +8,7 @@ from .threadvm import LuaThread
 from .gcvm import GarbageCollectedVM
 from .vm import HostFunction
 from .stdlib import install_safe_stdlib
+from .diagnostic_stdlib import install_diagnostic_stdlib
 
 
 class LuaRuntime:
@@ -23,6 +24,7 @@ class LuaRuntime:
         self.vm = GarbageCollectedVM(self.globals, fuel=fuel, max_frames=max_frames)
         if safe_stdlib:
             install_safe_stdlib(self.globals, self.vm)
+            install_diagnostic_stdlib(self.globals, self.vm)
 
     def _to_lua(self, value):
         if value is None or type(value) in (bool, float) or isinstance(value, bytes):
