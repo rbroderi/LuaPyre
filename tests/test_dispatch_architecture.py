@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import inspect
 
 from luapyre.binary_chunks import _PUC_TRANSLATORS, _Translator
@@ -44,3 +45,56 @@ def test_gc_opcode_analysis_uses_complete_dispatch_tables():
     assert set(_SUCCESSOR_HANDLERS) == set(Op)
     assert "elif op" not in inspect.getsource(LuaGC._ins_reads_writes)
     assert "elif op" not in inspect.getsource(LuaGC._successors)
+
+
+
+def test_jit_codegen_uses_dense_opcode_tables():
+    from luapyre.bytecode import Op
+    from luapyre.dense_jit import DenseEmitterJITMixin
+    from luapyre.jit_codegen import LEAF_EMITTERS, LOOP_EMITTERS
+
+    assert len(LOOP_EMITTERS) > max(op.value for op in Op)
+    assert len(LEAF_EMITTERS) > max(op.value for op in Op)
+    for op in (
+        Op.LOADK,
+        Op.MOVE,
+        Op.LOCAL,
+        Op.ADD_I,
+        Op.SUB_I,
+        Op.MUL_I,
+        Op.ADD_F,
+        Op.SUB_F,
+        Op.MUL_F,
+        Op.ADD,
+        Op.SUB,
+        Op.MUL,
+        Op.MOD,
+        Op.EQ,
+        Op.LT,
+        Op.LE,
+        Op.NOT,
+        Op.TOBOOL,
+    ):
+        assert LOOP_EMITTERS[op.value] is not None
+        assert LEAF_EMITTERS[op.value] is not None
+
+    source = inspect.getsource(DenseEmitterJITMixin._compile_loop)
+    assert "LOOP_EMITTERS" in source
+    assert "item.ins.op" in source
+    assert "elif op" not in source
+
+
+
+def test_jit_ast_pass_inlines_i64_assignment_once():
+    from luapyre.jit_codegen import optimize_generated_ast
+
+    tree = ast.parse("result = _i64(left() + right())")
+    optimized = optimize_generated_ast(tree)
+    text = ast.unparse(optimized)
+
+    assert "_i64(" not in text
+    assert text.count("left()") == 1
+    assert text.count("right()") == 1
+    assert "_MASK64" in text
+    assert "_SIGN64" in text
+    assert "_TWO64" in text
