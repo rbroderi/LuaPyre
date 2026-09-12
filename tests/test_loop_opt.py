@@ -37,10 +37,46 @@ local second: integer = zero(0, 7, 9)
 return first + second
 """
 
+_DYNAMIC_SOURCE = """-- luapyre: typed
+local function dynamic_bias(n: integer, a: integer): integer
+    local i: integer = 0
+    local total: integer = 0
+    while i < n do
+        local bias: integer = a + i
+        total = total + bias
+        i = i + 1
+    end
+    return total
+end
+return dynamic_bias(8, 3)
+"""
+
+_SHARED_UPDATE_SOURCE = """-- luapyre: typed
+local function shared_update(n: integer): integer
+    local i: integer = 0
+    local total: integer = 0
+    while i < n do
+        i = i + 1
+        total = total + i
+    end
+    return total
+end
+return shared_update(8)
+"""
+
 
 def _child(runtime: LuaRuntime, source: str, name: str):
     root = runtime.compile(source)
     return next(child for child in root.children if child.name == name)
+
+
+def _optimized(runtime: LuaRuntime, source: str, name: str):
+    child = _child(runtime, source, name)
+    cfg = CFGValueIRCompiler(child).compile()
+    assert cfg is not None
+    optimized = CFGLoopOptimizer(child, cfg).analyze()
+    assert len(optimized.loops) == 1
+    return cfg, optimized.loops[0]
 
 
 def _compiled_function_names(runtime: LuaRuntime) -> set[str]:
@@ -53,12 +89,7 @@ def _compiled_function_names(runtime: LuaRuntime) -> set[str]:
 
 def test_loop_optimizer_proves_licm_and_integer_induction():
     runtime = LuaRuntime(jit=False)
-    child = _child(runtime, _SOURCE, "sum_bias")
-    cfg = CFGValueIRCompiler(child).compile()
-    assert cfg is not None
-    optimized = CFGLoopOptimizer(child, cfg).analyze()
-    assert len(optimized.loops) == 1
-    loop = optimized.loops[0]
+    cfg, loop = _optimized(runtime, _SOURCE, "sum_bias")
 
     invariant_ops = {cfg.node(node_id).op for node_id in loop.invariant_nodes}
     assert "add_i" in invariant_ops
@@ -68,6 +99,19 @@ def test_loop_optimizer_proves_licm_and_integer_induction():
     assert induction.direct_update
     assert induction.compare_op == "lt"
     assert induction.limit_node is not None
+
+
+def test_licm_rejects_expression_depending_on_loop_carried_phi():
+    runtime = LuaRuntime(jit=False)
+    _cfg, loop = _optimized(runtime, _DYNAMIC_SOURCE, "dynamic_bias")
+    assert loop.invariant_nodes == ()
+
+
+def test_induction_direct_update_requires_no_other_consumer():
+    runtime = LuaRuntime(jit=False)
+    _cfg, loop = _optimized(runtime, _SHARED_UPDATE_SOURCE, "shared_update")
+    induction = next(item for item in loop.induction_variables if item.step == 1)
+    assert not induction.direct_update
 
 
 def test_optimized_cfg_loop_executes_licm_and_direct_induction_backend():
