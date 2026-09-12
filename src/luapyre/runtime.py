@@ -43,6 +43,13 @@ class LuaRuntime:
             for key, item in value.items():
                 t.rawset(self._to_lua(key), self._to_lua(item))
             return t
+
+        # Opaque host userdata is represented by the Python object itself.
+        # Do not replace this with a recyclable integer/ref-slot registry unless
+        # every reuse and finalization path validates the referent identity (or
+        # a generation token).  A stale reusable wrapper can otherwise become
+        # rebound to a different live host object; see Lupa GH-294 for the class
+        # of bug this direct-reference invariant deliberately avoids.
         return value
 
     def expose(self, name: str, fn):
