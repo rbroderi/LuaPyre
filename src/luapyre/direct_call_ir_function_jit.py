@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from copy import copy
 
-from .bytecode import Closure, Ins, Op, Proto
+from .bytecode import Closure, Op, Proto
 from .call_ir import CallIRPlan, analyze_direct_calls
 from .function_jit import CompiledAstFunction, _FUNC_RETURN, _FUNC_SUSPEND
 
@@ -27,9 +27,6 @@ _DIRECT_PARENT_OPS = frozenset(
         Op.MUL_F,
         Op.NOT,
         Op.TOBOOL,
-        Op.EQ,
-        Op.LT,
-        Op.LE,
         Op.CALL,
         Op.RETURN,
         Op.HALT,
@@ -46,10 +43,12 @@ class DirectCallIRFunctionJITMixin:
     allocates a real Closure, CALL still creates a real VM Frame through
     ``run_compiled_child``, and caller/child share the exact fuel meter.
 
-    The first admitted caller shape is deliberately straight-line. The callee
-    may itself contain branches/loops/table operations as long as one of the
-    proven older function backends can compile it. Unsupported shapes suspend or
-    fail closed to the existing tiers.
+    The first admitted caller shape is deliberately straight-line and contains
+    only operations whose typed semantics are helper-free and metamethod-free.
+    Scalar/table comparisons deliberately stay in older tiers until CALL IR has
+    their full typed/deopt facts. The callee may itself contain branches, loops,
+    tables, or other operations as long as a proven older function backend can
+    compile it. Everything else fails closed.
     """
 
     @staticmethod
@@ -163,11 +162,6 @@ class DirectCallIRFunctionJITMixin:
                 lines.extend(["    used += 1", f"    {a} = ({b} is None or {b} is False)"])
             elif op is Op.TOBOOL:
                 lines.extend(["    used += 1", f"    {a} = not ({b} is None or {b} is False)"])
-            elif op is Op.EQ:
-                lines.extend(["    used += 1", f"    {a} = ({b} == {c})"])
-            elif op in (Op.LT, Op.LE):
-                symbol = "<" if op is Op.LT else "<="
-                lines.extend(["    used += 1", f"    {a} = ({b} {symbol} {c})"])
             elif op is Op.CALL:
                 site = direct_by_pc[pc]
                 child_name = f"_child_{pc}"
