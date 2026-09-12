@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import copy
+
 from luapyre import LuaRuntime
 from luapyre.bytecode import Ins, Op, Proto
 from luapyre.typed_ir import TypedIRCompiler
@@ -13,6 +15,16 @@ def _value_plan(proto: Proto):
     plan = ValueIRCompiler(proto, typed).compile()
     assert plan is not None
     return plan
+
+
+def _reachable_value_plan(proto: Proto):
+    terminal = next(
+        pc for pc, ins in enumerate(proto.code) if ins.op in (Op.RETURN, Op.HALT)
+    )
+    analysis = copy(proto)
+    analysis.code = list(proto.code[: terminal + 1])
+    typed = TypedIRCompiler(analysis).compile((tuple(enumerate(analysis.code)),))
+    return ValueIRCompiler(analysis, typed).compile()
 
 
 def test_value_ir_constant_folds_exact_signed_64_wrap():
@@ -115,3 +127,59 @@ return result
 """
     assert runtime.execute(source) == -(1 << 63)
     assert "<luapyre-value-ir-function>" in _compiled_function_filenames(runtime)
+
+
+def test_static_leaf_call_is_represented_and_inlined_in_value_ir():
+    runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
+    source = """-- luapyre: typed
+local function outer(a: integer, b: integer): integer
+    local function add(x: integer, y: integer): integer
+        local first = x + y
+        local same = x + y
+        return same
+    end
+    local result = add(a, b)
+    return result
+end
+local answer: integer = outer(100, 23)
+return answer
+"""
+    root = runtime.compile(source)
+    outer = next(child for child in root.children if child.name == "outer")
+    plan = _reachable_value_plan(outer)
+    assert plan is not None
+    assert len(plan.call_sites) == 1
+    call = plan.call_sites[0]
+    assert outer.children[call.child_index].name == "add"
+    caller_terminal = next(
+        pc for pc, ins in enumerate(outer.code) if ins.op in (Op.RETURN, Op.HALT)
+    )
+    add = outer.children[call.child_index]
+    add_terminal = next(
+        pc for pc, ins in enumerate(add.code) if ins.op in (Op.RETURN, Op.HALT)
+    )
+    assert plan.instruction_count == (caller_terminal + 1) + (add_terminal + 1)
+
+    assert runtime.vm.run(root) == 123
+    assert "<luapyre-value-ir-function>" in _compiled_function_filenames(runtime)
+
+
+def test_captured_child_call_fails_closed_to_existing_function_compiler():
+    runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
+    source = """-- luapyre: typed
+local function outer(x: integer): integer
+    local bias = 3
+    local function add(y: integer): integer
+        return y + bias
+    end
+    local result = add(x)
+    return result
+end
+local answer: integer = outer(4)
+return answer
+"""
+    root = runtime.compile(source)
+    outer = next(child for child in root.children if child.name == "outer")
+    assert outer.children and outer.children[0].upvalues
+    assert _reachable_value_plan(outer) is None
+    assert runtime.vm.run(root) == 7
