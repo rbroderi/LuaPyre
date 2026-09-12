@@ -75,6 +75,13 @@ class Proto:
     # type guards for those specialized opcodes. Binary-chunk translation and
     # manually constructed Proto objects deliberately default to False.
     jit_trust_types: bool = False
+    # Set only for source compiled under the explicit ``-- luapyre: typed``
+    # contract. Every lexical binding in such a Proto has a non-Any type after
+    # inference/validation. Dynamic table/global boundaries may still emit
+    # GUARD instructions before values enter typed bindings. This stronger bit
+    # is intentionally separate from ``jit_trust_types`` so future JIT tiers can
+    # optimize typed source more aggressively without changing plain Lua.
+    jit_fully_typed: bool = False
 
     def add_const(self, value):
         for i, current in enumerate(self.constants):
