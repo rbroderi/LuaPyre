@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .ast_jit import AstPythonJIT
 from .bytecode import Op
+from .cfg_value_ir_function_jit import CFGValueIRFunctionJITMixin
 from .dense_jit import DenseEmitterJITMixin
 from .direct_call_ir_function_jit import DirectCallIRFunctionJITMixin
 from .function_jit import TypedFunctionJITMixin
@@ -13,6 +14,7 @@ from .value_ir_function_jit import ValueIRFunctionJITMixin
 
 
 class SuperPythonJIT(
+    CFGValueIRFunctionJITMixin,
     ValueIRFunctionJITMixin,
     DirectCallIRFunctionJITMixin,
     TypedIRFunctionJITMixin,
@@ -24,14 +26,13 @@ class SuperPythonJIT(
 ):
     """Typed compiler pipeline ending in the optimized Python-AST backend.
 
-    0.17 layers SSA-like value numbering and backend-neutral CALL facts over the
-    0.16 typed IR. Tiny pure lexical calls may disappear into the value graph;
-    larger statically resolved lexical calls retain real Lua closures/frames and
-    run through the same shared-meter direct-call machinery used by the proven
-    function compiler. Table/global functions retain the 0.16 typed-IR backend,
-    while specialized numeric regions keep the faster structured tiers.
+    0.18 gives merge-aware acyclic scalar CFGs first refusal before the 0.17
+    straight-line value/CALL IR. Forward branches use explicit phi-like merge
+    values and exact block-entry rematerialization on a fuel side exit. The 0.17
+    value tier still owns straight-line pure functions and lexical-call inlining;
+    larger static calls retain real Lua closures/frames through CALL IR.
 
-    The important boundary is architectural: optimization decisions live in the
+    The important boundary remains architectural: optimization decisions live in
     typed/value/CALL IR. Python AST is a backend, and every unsupported shape
     fails closed to an earlier exact tier or the interpreter.
     """
