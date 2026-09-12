@@ -30,11 +30,14 @@ class _LuaRandom:
     def next_u64(self) -> int:
         s0, s1, s2, s3 = self.state
         result = (_rotl((s1 * 5) & _MASK, 7) * 9) & _MASK
+        # Lua's implementation computes this from the original state[1],
+        # before state[1] is XORed with the updated state[2].
+        t = (s1 << 17) & _MASK
         s2 ^= s0
         s3 ^= s1
         s1 ^= s2
         s0 ^= s3
-        s2 ^= (s1 << 17) & _MASK
+        s2 ^= t
         s3 = _rotl(s3, 45)
         self.state[:] = (s0 & _MASK, s1 & _MASK, s2 & _MASK, s3 & _MASK)
         return result
@@ -177,7 +180,7 @@ def install_math_library(globals_table: LuaTable, vm) -> LuaTable:
             try:
                 return result / math.log(base)
             except (ValueError, ZeroDivisionError):
-                return math.nan if result != 0.0 else math.nan
+                return math.nan
         return result / math.log(base)
 
     register("log", log)
@@ -233,8 +236,7 @@ def install_math_library(globals_table: LuaTable, vm) -> LuaTable:
             raise LuaRuntimeError("wrong number of arguments to 'random'")
         if low > upper:
             raise LuaRuntimeError("bad argument #1 to 'random' (interval is empty)")
-        width = (upper & UINT_MASK) - (low & UINT_MASK)
-        width &= UINT_MASK
+        width = ((upper & UINT_MASK) - (low & UINT_MASK)) & UINT_MASK
         projected = rng.project(random_value, width)
         return i64(projected + (low & UINT_MASK))
 
