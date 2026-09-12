@@ -217,5 +217,7 @@ class CFGLoopOptimizationJITMixin:
 
         tree = ast.parse("\n".join(lines))
         ast.fix_missing_locations(tree)
-        exec(compile(tree, "<luapyre-cfg-value-ir-loop-opt>", "exec"), namespace)
+        # Keep the 0.19 code filename stable for architecture/tests/tooling while
+        # the Python function name identifies the optimized 0.20 lowering.
+        exec(compile(tree, "<luapyre-cfg-value-ir-loop>", "exec"), namespace)
         return CompiledAstFunction(proto, namespace["_jit_cfg_value_ir_loop_opt"])
