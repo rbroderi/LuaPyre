@@ -26,7 +26,6 @@ _BINARY_OPS = {
 }
 _UNARY_OPS = {Op.LEN, Op.BNOT, Op.NEG, Op.NOT, Op.TOBOOL}
 _CONDITIONAL_JUMPS = {Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL}
-_CALL_OPS = {Op.CALL, Op.CALLV, Op.TAILCALL, Op.TAILCALLV}
 _TERMINATORS = {Op.RETURN, Op.RETURNV, Op.HALT, Op.TAILCALL, Op.TAILCALLV}
 
 
@@ -63,7 +62,7 @@ def _rw_closure(proto: Proto, ins) -> tuple[set[int], set[int]]:
     return reads, {ins.a}
 
 
-def _rw_gettable(_proto: Proto, ins) -> tuple[set[int], set[int]]:
+def _rw_read_bc_write_a(_proto: Proto, ins) -> tuple[set[int], set[int]]:
     return {ins.b, ins.c}, {ins.a}
 
 
@@ -156,7 +155,12 @@ def _rw_returnv(_proto: Proto, ins) -> tuple[set[int], set[int]]:
     return reads, set()
 
 
-_RW_HANDLERS = {op: _rw_empty for op in Op}
+_RW_HANDLERS = {
+    Op.JMP: _rw_empty,
+    Op.CLOSE: _rw_empty,
+    Op.PCLOSE: _rw_empty,
+    Op.HALT: _rw_empty,
+}
 _RW_HANDLERS.update({
     Op.LOADK: _rw_write_a,
     Op.MOVE: _rw_read_b_write_a,
@@ -169,7 +173,7 @@ _RW_HANDLERS.update({
     Op.SETCELL: _rw_setcell,
     Op.CLOSURE: _rw_closure,
     Op.NEWTABLE: _rw_write_a,
-    Op.GETTABLE: _rw_gettable,
+    Op.GETTABLE: _rw_read_bc_write_a,
     Op.SETTABLE: _rw_settable,
     Op.SETLISTV: _rw_setlistv,
     Op.FORPREP: _rw_forprep,
@@ -194,7 +198,7 @@ _RW_HANDLERS.update({
     Op.GUARD: _rw_read_a,
 })
 for _op in _BINARY_OPS:
-    _RW_HANDLERS[_op] = _rw_gettable
+    _RW_HANDLERS[_op] = _rw_read_bc_write_a
 for _op in _UNARY_OPS:
     _RW_HANDLERS[_op] = _rw_read_b_write_a
 for _op in _CONDITIONAL_JUMPS:
@@ -235,7 +239,21 @@ def _succ_ptforprep(code, _index: int, ins) -> tuple[int, ...]:
     return (ins.d,) if 0 <= ins.d < len(code) else ()
 
 
-_SUCCESSOR_HANDLERS = {op: _succ_fallthrough for op in Op}
+_SUCCESSOR_HANDLERS = {
+    op: _succ_fallthrough
+    for op in (
+        Op.LOADK, Op.MOVE, Op.LOCAL,
+        Op.GETGLOBAL, Op.SETGLOBAL, Op.GETUPVAL, Op.SETUPVAL, Op.GETCELL, Op.SETCELL, Op.CLOSURE,
+        Op.NEWTABLE, Op.GETTABLE, Op.SETTABLE, Op.SETLISTV, Op.LEN,
+        Op.ADD, Op.ADD_I, Op.ADD_F, Op.SUB, Op.SUB_I, Op.SUB_F,
+        Op.MUL, Op.MUL_I, Op.MUL_F, Op.DIV, Op.IDIV, Op.MOD, Op.POW,
+        Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR, Op.BNOT, Op.CONCAT, Op.NEG, Op.NOT, Op.TOBOOL,
+        Op.EQ, Op.LT, Op.LE,
+        Op.CALL, Op.CALLV, Op.VARARG, Op.UNPACK,
+        Op.TBC, Op.CLOSE, Op.CHECKNIL, Op.GUARD,
+        Op.PTBC, Op.PCLOSE, Op.PVARARG, Op.PGETVARG,
+    )
+}
 for _op in _TERMINATORS:
     _SUCCESSOR_HANDLERS[_op] = _succ_terminate
 _SUCCESSOR_HANDLERS[Op.JMP] = _succ_jump
