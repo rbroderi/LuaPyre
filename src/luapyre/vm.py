@@ -28,6 +28,10 @@ class Frame:
     close_stack: list[object] = field(default_factory=list)
     pending_close_target: int | None = None
     pending_error: LuaRuntimeError | None = None
+    # PUC-Lua bytecode closes values by register threshold rather than by the
+    # compiler-maintained lexical close depth used by native LuaPyre bytecode.
+    puc_close_stack: list[tuple[int, object]] = field(default_factory=list)
+    pending_puc_close_reg: int | None = None
 
     @property
     def proto(self):
@@ -307,6 +311,23 @@ class VM:
 
     def _drive_pending(self, frames, frame):
         if frame.pending_error is not None:
+            if frame.puc_close_stack:
+                _reg, value = frame.puc_close_stack.pop()
+                if value is None or value is False:
+                    return True
+                tm = self._tm(value, b"__close")
+                if tm is None:
+                    frame.pending_error = LuaRuntimeError("attempt to close a non-closable value")
+                    return True
+                self._invoke(
+                    frames,
+                    frame,
+                    tm,
+                    [value, self._error_object(frame.pending_error)],
+                    0,
+                    0,
+                )
+                return True
             if frame.close_stack:
                 value = frame.close_stack.pop()
                 if value is None or value is False:
@@ -330,6 +351,19 @@ class VM:
                 frames[-1].pending_error = error
                 return True
             raise error
+
+        if frame.pending_puc_close_reg is not None:
+            target = frame.pending_puc_close_reg
+            if frame.puc_close_stack and frame.puc_close_stack[-1][0] >= target:
+                _reg, value = frame.puc_close_stack.pop()
+                if value is None or value is False:
+                    return True
+                tm = self._tm(value, b"__close")
+                if tm is None:
+                    raise LuaRuntimeError("attempt to close a non-closable value")
+                self._invoke(frames, frame, tm, [value], 0, 0)
+                return True
+            frame.pending_puc_close_reg = None
 
         if frame.pending_close_target is not None:
             target = frame.pending_close_target
