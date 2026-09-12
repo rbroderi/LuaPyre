@@ -51,6 +51,25 @@ assert result == 42
 
 Host capabilities are explicit. The default runtime does not expose filesystem, networking, process execution, Python import/eval, package loading, `io`, `os`, `debug`, or Python object introspection.
 
+## 0.8 binary chunks
+
+The 0.8 tranche adds binary-function serialization and PUC-Lua 5.5 binary input without making PUC bytecode the internal execution format:
+
+- `string.dump` serializes LuaPyre closures into a bounded, non-pickle LuaPyre-native binary format
+- `load` accepts LuaPyre-native binary chunks through ordinary `"b"`/`"bt"` mode handling
+- loaded native chunks receive fresh root upvalues, with the first upvalue initialized from the supplied `load(..., env)` environment
+- reader-function loading supports binary chunks assembled from multiple pieces, with a bounded total chunk size
+- PUC-Lua 5.5 binary chunks are validated and translated into LuaPyre register bytecode before execution
+- the PUC reader validates version/format sentinels, platform sizes, integer/number representations, string references, prototype nesting, instruction counts, constant counts, and truncation
+- PUC compiler patterns such as mandatory `NEWTABLE`/`EXTRAARG`, tail-call/dead-return pairs, `LFALSESKIP`/`LOADTRUE`, numeric and generic `for`, varargs, shared closure upvalues, metamethod companion instructions, and `<close>` state are normalized or lowered explicitly
+- compatibility opcodes exist only where PUC frame layout differs materially from LuaPyre's internal bytecode; ordinary operations lower back into the existing VM instruction set
+- the Lua-aware GC liveness pass understands the PUC compatibility operations, so translated loop state, varargs, and pending to-be-closed registers remain semantic roots when required
+- malformed or unsupported chunks fail as Lua `load` errors instead of being trusted as executable host data
+
+LuaPyre intentionally keeps the two formats separate. `string.dump` does **not** claim to emit an official PUC-Lua chunk; it emits LuaPyre's own serialization of LuaPyre prototypes. PUC-Lua chunks are an interoperability input path that is decoded and translated into LuaPyre bytecode before execution. This preserves the custom VM/optimizer/JIT architecture while still allowing compiled Lua 5.5 code to enter through `load`.
+
+The PUC compatibility suite differentially executes compiler-generated binary chunks against `lupa.lua55`, covering arithmetic and comparison expressions, tables, branches, numeric and generic loops, closures/upvalues, varargs and multiple results, metamethod fallback, tail calls, `<close>`, and GC-sensitive liveness. Exact Lua 5.5.1 remains the release-level format authority.
+
 ## 0.7 safe standard libraries
 
 The 0.7 tranche fills out the deterministic, in-memory part of Lua 5.5's standard library while keeping the default runtime sandboxed:
@@ -68,7 +87,7 @@ The 0.7 tranche fills out the deterministic, in-memory part of Lua 5.5's standar
 - synchronous Lua callbacks from library functions reuse the existing shared opcode handlers and remain visible to the Lua-aware GC root tracer
 - `load(..., env)` correctly initializes the loaded chunk's lexical `_ENV`
 
-The default sandbox still deliberately omits `io`, `os`, `package`, and `debug`, along with file loaders and unrestricted host output. `string.dump` is deferred until LuaPyre has binary-chunk loading, so the runtime does not advertise a bytecode format that it cannot consume.
+The default sandbox still deliberately omits `io`, `os`, `package`, and `debug`, along with file loaders and unrestricted host output. Binary loading in 0.8 remains in-memory and does not add filesystem access or other ambient host capabilities.
 
 Standard-library callbacks are currently synchronous continuation boundaries. Calling Lua from `__pairs`, `__tostring`, `table.sort`, `pcall`/`xpcall`, pattern replacements, and similar library paths is supported, but yielding through one of those native-library callback boundaries is rejected. Full C/API-style yieldable continuations remain a later compatibility tranche rather than being approximated unsafely.
 
@@ -124,9 +143,9 @@ The 0.4 tranche already provides `goto`/labels, local `<const>`/`<close>`, Lua 5
 
 CI runs on Python 3.13 and 3.14 and installs Lupa 2.8+, then explicitly imports `lupa.lua55`. This gives the differential suite an in-process PUC-Lua 5.5 oracle without compiling or launching a separate Lua executable. CI verifies that the selected backend reports `_VERSION == "Lua 5.5"` before running tests.
 
-Differential coverage now includes the safe standard libraries, Lua patterns, packing/unpacking, explicit-seed random output, UTF-8 iteration/offsets, `__pairs`, protected calls, text loading environments, weak keys/values, ephemerons, finalizer ordering, resurrection interactions, and weak-table behavior across finalization. For exact micro-release conformance, LuaPyre targets Lua 5.5.1 and the official 5.5.1 tests/reference implementation remain the final authority. Lupa is the fast per-commit differential oracle; release-level conformance will additionally be checked against the exact 5.5.1 distribution.
+Differential coverage now includes safe standard libraries, Lua patterns, packing/unpacking, explicit-seed random output, UTF-8 iteration/offsets, `__pairs`, protected calls, text loading environments, weak keys/values, ephemerons, finalizer ordering, resurrection interactions, weak-table behavior across finalization, and execution of compiler-generated PUC-Lua 5.5 binary chunks through LuaPyre's translator. For exact micro-release conformance, LuaPyre targets Lua 5.5.1 and the official 5.5.1 tests/reference implementation remain the final authority. Lupa is the fast per-commit differential oracle; release-level conformance will additionally be checked against the exact 5.5.1 distribution.
 
-The full official Lua test suite is **not** expected to pass yet. Major remaining work includes automatic incremental/generational GC pacing, binary chunks/`string.dump`, detailed source-location/error/debug compatibility, yieldable native-library/C-API continuations, userdata/C-API GC behavior outside the sandbox value model, and substantially broader coverage of the official Lua 5.5.1 suite. The unsafe host-facing libraries remain intentionally absent from the default sandbox rather than being treated as missing semantic work.
+The full official Lua test suite is **not** expected to pass yet. Major remaining work includes automatic incremental/generational GC pacing, detailed source-location/error/debug compatibility, yieldable native-library/C-API continuations, userdata/C-API GC behavior outside the sandbox value model, and substantially broader coverage of the official Lua 5.5.1 suite. The unsafe host-facing libraries remain intentionally absent from the default sandbox rather than being treated as missing semantic work.
 
 ## Performance roadmap
 

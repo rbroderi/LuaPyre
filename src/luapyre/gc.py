@@ -169,6 +169,17 @@ class LuaGC:
         elif op is Op.FORLOOP:
             reads.update((ins.a, ins.b, ins.c))
             writes.add(ins.a)
+        elif op is Op.PFORPREP:
+            reads.update((ins.a, ins.a + 1, ins.a + 2))
+            writes.update((ins.a, ins.a + 1, ins.a + 2))
+        elif op is Op.PFORLOOP:
+            reads.update((ins.a, ins.a + 1, ins.a + 2))
+            writes.update((ins.a, ins.a + 2))
+        elif op is Op.PTFORPREP:
+            reads.update((ins.a + 2, ins.a + 3))
+            writes.update((ins.a + 2, ins.a + 3))
+        elif op is Op.PTFORLOOP:
+            reads.add(ins.a + 3)
         elif op in _CALL_OPS:
             reads.add(ins.b)
             reads.update(range(ins.c, ins.c + max(0, ins.d)))
@@ -183,10 +194,20 @@ class LuaGC:
                 writes.add(ins.a)
             else:
                 writes.update(range(ins.a, ins.a + max(0, ins.b)))
+        elif op is Op.PVARARG:
+            if ins.c >= 0:
+                reads.add(ins.c)
+            if ins.b == -1:
+                writes.add(ins.a)
+            else:
+                writes.update(range(ins.a, ins.a + max(0, ins.b)))
+        elif op is Op.PGETVARG:
+            reads.add(ins.b)
+            writes.add(ins.a)
         elif op is Op.UNPACK:
             reads.add(ins.b)
             writes.update(range(ins.a, ins.a + max(0, ins.c)))
-        elif op is Op.TBC:
+        elif op in (Op.TBC, Op.PTBC):
             reads.add(ins.a)
         elif op is Op.CHECKNIL:
             reads.add(ins.a)
@@ -216,13 +237,15 @@ class LuaGC:
             if 0 <= ins.a < n:
                 out.append(ins.a)
             return tuple(out)
-        if op in (Op.FORPREP, Op.FORLOOP):
+        if op in (Op.FORPREP, Op.FORLOOP, Op.PFORPREP, Op.PFORLOOP, Op.PTFORLOOP):
             out = []
             if index + 1 < n:
                 out.append(index + 1)
             if 0 <= ins.d < n:
                 out.append(ins.d)
             return tuple(out)
+        if op is Op.PTFORPREP:
+            return (ins.d,) if 0 <= ins.d < n else ()
         return (index + 1,) if index + 1 < n else ()
 
     def _live_sets(self, proto: Proto) -> tuple[frozenset[int], ...]:
@@ -282,6 +305,8 @@ class LuaGC:
             for value in frame.varargs:
                 mark(value)
             for value in frame.close_stack:
+                mark(value)
+            for _reg, value in frame.puc_close_stack:
                 mark(value)
             if isinstance(frame.pending_error, LuaRaisedError):
                 mark(frame.pending_error.value)
