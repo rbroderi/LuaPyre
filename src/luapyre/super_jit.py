@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .ast_jit import AstPythonJIT
+from .bytecode import Op
 from .dense_jit import DenseEmitterJITMixin
 from .function_jit import TypedFunctionJITMixin
 from .region_jit import RegionPythonJIT
@@ -17,11 +18,31 @@ class SuperPythonJIT(
 ):
     """Typed optimizer pipeline ending in the Python-AST backend.
 
-    0.16 makes the architectural boundary explicit: fully typed regions are
-    lowered through a small backend-neutral IR before Python-specific AST
-    specialization. Earlier proven tiers remain in the MRO as fail-closed
-    fallbacks for unsupported shapes and ordinary Lua.
+    0.16 makes the architectural boundary explicit: fully typed regions with
+    IR-relevant operations are lowered through a small backend-neutral IR before
+    Python-specific AST specialization. Pure numeric straight-line loops retain
+    the proven 0.15 structured backend until their IR lowering is at least as
+    fast. Earlier tiers remain fail-closed fallbacks for unsupported shapes and
+    ordinary Lua.
     """
+
+    _IR_PRIMARY_OPS = frozenset({Op.GETUPVAL, Op.GETTABLE, Op.SETTABLE})
+
+    def _compile_loop(self, frame, start_pc: int, backedge_pc: int):
+        # Compiler-tier routing belongs here rather than inside Python AST
+        # peepholes. Table/environment operations are precisely where the new
+        # typed IR carries alias, constant-key, cache and loop-invariance facts,
+        # so give that optimizer first refusal. Unsupported IR shapes return
+        # None and immediately fall through to the proven 0.15 tiers.
+        if frame.proto.jit_fully_typed:
+            body = frame.proto.code[start_pc:backedge_pc]
+            if any(ins.op in self._IR_PRIMARY_OPS for ins in body):
+                compiled = TypedIRLoopJITMixin._compile_ast_loop(
+                    self, frame, start_pc, backedge_pc
+                )
+                if compiled is not None:
+                    return compiled
+        return super()._compile_loop(frame, start_pc, backedge_pc)
 
     def _emit_instruction(self, *args, **kwargs):
         """Route the two deliberately different region-emitter protocols.
