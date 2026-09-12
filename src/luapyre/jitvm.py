@@ -8,6 +8,7 @@ from .jit import CompiledLoop, DEOPT, PythonJIT
 from .inline_cache import CacheState, InlineCacheFeedback
 from .opdispatch import OPCODE_HANDLERS
 from .threadvm import _CloseSelfSignal, _YieldSignal
+from .trace_jit import TRACE_RETURN, TRACE_SIDE_EXIT, TraceJIT
 from .vm import Frame
 
 
@@ -76,6 +77,14 @@ _JIT_OPCODE_HANDLERS[Op.GETTABLE] = _jit_gettable
 _JIT_OPCODE_HANDLERS[Op.SETTABLE] = _jit_settable
 
 
+def _jit_cfg_branch(vm, frames, frame, ins, regs, constants):
+    source = frame.pc - 1
+    result = OPCODE_HANDLERS[ins.op](vm, frames, frame, ins, regs, constants)
+    if result is not None or not frame.proto.jit_fully_typed:
+        return result
+    return vm._trace_transition(frames, frame, source, frame.pc)
+
+
 class TieredJITVM(GarbageCollectedVM):
     """GarbageCollectedVM with an optional guarded tier-2 Python JIT.
 
@@ -105,6 +114,7 @@ class TieredJITVM(GarbageCollectedVM):
         self._jit_loop_states: dict[int, int | bool | CompiledLoop] = {}
         self.inline_caches = InlineCacheFeedback()
         self._call_site_arrays: dict[int, tuple[Proto, list[object | None]]] = {}
+        self.trace_jit = TraceJIT(threshold=jit_threshold)
         from .table import LuaTable, _hash_key
         self._ic_table_type = LuaTable
         self._ic_hash_key = _hash_key
@@ -187,6 +197,44 @@ class TieredJITVM(GarbageCollectedVM):
         self.jit.stats.cache_invalidations = sum(
             site.invalidations for site in table_sites
         )
+
+    def _trace_transition(self, frames, frame, source: int, target: int):
+        entries = self.trace_jit.record_edge(frame.proto, source, target)
+        if entries < self.trace_jit.threshold:
+            return None
+        key = (id(frame.proto), target)
+        was_cached = key in self.trace_jit.cache
+        compiled = self.trace_jit.maybe_trace(frame.proto, target)
+        if not was_cached and compiled is not None:
+            self.jit.stats.trace_compiles += 1
+        if compiled is None:
+            return None
+        self.jit.stats.osr_entries += 1
+        return self._execute_trace(frames, frame, compiled)
+
+    def _execute_trace(self, frames, frame, compiled, depth: int = 0):
+        used, status, values = compiled.runner(self, frame, self._jit_budget())
+        if used:
+            self._jit_consume(used)
+            self.jit.stats.trace_executions += 1
+        if status == TRACE_SIDE_EXIT:
+            self.jit.stats.trace_side_exits += 1
+            hot = self.trace_jit.record_side_exit(frame.proto, frame.pc)
+            if hot >= self.trace_jit.threshold and depth < 4:
+                key = (id(frame.proto), frame.pc)
+                was_cached = key in self.trace_jit.cache
+                successor = self.trace_jit.maybe_trace(frame.proto, frame.pc)
+                if not was_cached and successor is not None:
+                    self.jit.stats.trace_compiles += 1
+                if successor is not None and successor is not compiled:
+                    self.jit.stats.osr_entries += 1
+                    return self._execute_trace(
+                        frames, frame, successor, depth + 1
+                    )
+            return None
+        if status == TRACE_RETURN:
+            return self._return(frames, frame, values)
+        return None
 
     def _jit_budget(self) -> int:
         thread = self.current_thread
@@ -304,6 +352,9 @@ class TieredJITVM(GarbageCollectedVM):
             handlers[Op.CALL] = synced(OPCODE_HANDLERS[Op.CALL], leaf_allowed=True)
             handlers[Op.CALLV] = synced(OPCODE_HANDLERS[Op.CALLV], leaf_allowed=True)
             handlers[Op.JFORLOOP] = synced(_jit_forloop)
+            if proto.jit_fully_typed:
+                for branch_op in (Op.JMP, Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL):
+                    handlers[branch_op] = synced(_jit_cfg_branch)
 
             while frames:
                 try:

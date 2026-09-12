@@ -53,3 +53,4 @@ For performance comparisons, compare runs on the same runner class and Python ve
 - `vm_dispatch.py` measures Python opcode-dispatch strategies in isolation.
 - `inline_cache_ab.py` isolates monomorphic calls, stable table reads, and
   version-invalidated table reads for same-runner release comparisons.
+- `trace_osr_ab.py` measures first-invocation OSR into a cyclic typed CFG trace.
