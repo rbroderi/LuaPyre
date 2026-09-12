@@ -45,6 +45,26 @@ return s
 """,
         32036000,
     ),
+    "direct_branch_call": (
+        """-- luapyre: typed
+local function outer(x: integer): integer
+    local function choose(y: integer): integer
+        if y < 0 then
+            return y - 1
+        end
+        return y + 1
+    end
+    local result: integer = choose(x)
+    return result
+end
+local s = 0
+for i = 1, 8000 do
+    s = s + outer(i - 4000)
+end
+return s
+""",
+        4002,
+    ),
     "constant_fold_leaf": (
         """-- luapyre: typed
 local function folded(x: integer): integer
