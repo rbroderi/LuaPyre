@@ -50,14 +50,14 @@ jobs:
           source = path.read_text(encoding='utf-8')
           lines = source.splitlines()
 
-          print('--- exact math.lua lines 430-455 ---')
-          for number in range(430, 456):
+          print('--- exact math.lua lines 630-655 ---')
+          for number in range(630, 656):
               print(f'{number}: {lines[number - 1]!r}')
           print('--- assertion reach markers ---')
 
           instrumented = []
           for number, line in enumerate(lines, 1):
-              if 430 <= number <= 455 and line.lstrip().startswith('assert('):
+              if 630 <= number <= 655 and line.lstrip().startswith('assert('):
                   instrumented.append(f"print('MARK{number}')")
               instrumented.append(line)
 
