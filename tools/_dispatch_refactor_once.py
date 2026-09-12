@@ -26,10 +26,10 @@ if_node = next(node for node in while_node.body if isinstance(node, ast.If))
 
 
 def segment(node: ast.AST) -> str:
-    value = ast.get_source_segment(source, node)
-    if value is None:
-        raise RuntimeError(f"could not recover source for {type(node).__name__}")
-    return textwrap.dedent(value)
+    # ast.unparse deliberately normalizes indentation. get_source_segment keeps
+    # original continuation indentation after removing the first-line column,
+    # which makes moved compound statements invalid when re-indented.
+    return ast.unparse(node)
 
 
 def handler_name(test: ast.expr) -> str:
@@ -113,7 +113,7 @@ for test, body in branches:
     else:
         table_dict_entries.extend(generated)
 
-# Preserve all finalization logic after the translation loop exactly as source.
+# Preserve all finalization logic after the translation loop semantically.
 after_while = translate.body[translate.body.index(while_node) + 1:]
 after_text = "\n".join(segment(stmt) for stmt in after_while)
 after_text = textwrap.indent(after_text, "        ")
