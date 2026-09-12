@@ -20,18 +20,18 @@ from .errors import LuaRuntimeError
 from .jit import CompiledLoop
 from .opdispatch import _float_divide, _float_modulo, _float_power, _shift, _to_lua_string
 from .table import LuaTable, _ABSENT, _hash_key
-from .typed_ir import IRValue, IRValueKind, TypedIRCompiler, TypedIRInstruction, TypedIRPlan
+from .typed_ir import IRValue, IRValueKind, TypedIRCompiler, TypedIRPlan
 from .values import coerce_lua_integer, lua_equal, static_value_type, type_matches
 
 
 class TypedIRLoopJITMixin:
     """Compile the small typed IR to optimized Python AST.
 
-    The IR owns value/type propagation and deoptimization facts. This mixin is a
-    Python backend only: it chooses concrete inline-cache layouts and emits the
-    Python control flow. Keeping that boundary explicit is the 0.16 direction:
-    LuaPyre optimizations should target the IR, not grow Python-specific
-    peepholes in the semantic compiler.
+    The IR owns value/type propagation, loop-invariance, and deoptimization
+    facts. This mixin is a Python backend only: it chooses concrete inline-cache
+    layouts and emits the Python control flow. Keeping that boundary explicit is
+    the 0.16 direction: LuaPyre optimizations target the IR rather than growing
+    Python-specific peepholes in the semantic compiler.
     """
 
     @staticmethod
@@ -117,6 +117,15 @@ class TypedIRLoopJITMixin:
             "global_get",
             "table_get_const",
         ):
+            if pc in plan.invariant_sites:
+                # IR proved that nothing in this loop can mutate/re-enter _ENV.
+                # Keep the Lua fuel charge at the original bytecode position but
+                # use the value loaded once before the generated Python loop.
+                return [
+                    f"{indent}used += 1",
+                    f"{indent}_r{ins.a} = _licm_{pc}_value",
+                ]
+
             table_value = site.value_for(ins.b)
             key_value = site.value_for(ins.c)
             if key_value.kind is not IRValueKind.CONSTANT:
@@ -293,6 +302,53 @@ class TypedIRLoopJITMixin:
         ]
         for reg in registers:
             lines.append(f"    _r{reg} = regs[{reg}]")
+
+        # Loop-invariant global reads are an IR optimization, not a Python AST
+        # peephole. The backend performs the proven access exactly once per JIT
+        # runner invocation. If the receiver has become dynamic/metatable-backed,
+        # fail closed before executing any Lua instruction and let Tier 0 resume
+        # at the original loop start with untouched registers/fuel.
+        for pc in plan.invariant_sites:
+            site = plan.instruction(pc)
+            if site is None:
+                return None
+            ins = site.ins
+            table_value = site.value_for(ins.b)
+            key_value = site.value_for(ins.c)
+            if key_value.kind is not IRValueKind.CONSTANT:
+                return None
+            table_expr = self._ir_expr(table_value)
+            key = frame.proto.constants[key_value.index]
+            array_index = self._constant_array_index(key)
+            table_tmp = f"_licm_{pc}_table"
+            item_tmp = f"_licm_{pc}_item"
+            token = f"_key_token_{pc}"
+            lines.extend(
+                [
+                    f"    {table_tmp} = {table_expr}",
+                    f"    if not isinstance({table_tmp}, _LuaTable) or {table_tmp}.metatable is not None:",
+                    f"        frame.pc = {ir.start_pc}",
+                    "        return 0, False",
+                ]
+            )
+            if array_index is not None:
+                lines.extend(
+                    [
+                        f"    if {array_index} <= len({table_tmp}.array):",
+                        f"        _licm_{pc}_value = {table_tmp}.array[{array_index - 1}]",
+                        "    else:",
+                        f"        {item_tmp} = {table_tmp}.hash.get({token}, _ABSENT)",
+                        f"        _licm_{pc}_value = None if {item_tmp} is _ABSENT else {item_tmp}[1]",
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        f"    {item_tmp} = {table_tmp}.hash.get({token}, _ABSENT)",
+                        f"    _licm_{pc}_value = None if {item_tmp} is _ABSENT else {item_tmp}[1]",
+                    ]
+                )
+
         for pc in plan.cache_sites:
             lines.extend(
                 [
