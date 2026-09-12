@@ -24,4 +24,4 @@ __all__ = [
     "LuaTraceFrame",
 ]
 
-__version__ = "0.13.0a1"
+__version__ = "0.14.0a1"
