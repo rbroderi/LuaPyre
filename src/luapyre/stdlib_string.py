@@ -246,6 +246,34 @@ def _pack(fmt: bytes, values):
     return bytes(out)
 
 
+def _unpack_integer(data: bytes, offset: int, size: int, endian: str, signed: bool) -> int:
+    """Mirror Lua 5.5 ``unpackint`` using a 64-bit lua_Unsigned accumulator."""
+    end = offset + size
+    if end > len(data):
+        raise LuaRuntimeError("data string too short")
+
+    if size <= 8:
+        raw = data[offset:end]
+        unsigned = int.from_bytes(raw, endian, signed=False)
+        if signed and size < 8 and unsigned & (1 << (size * 8 - 1)):
+            unsigned |= UINT_MASK ^ ((1 << (size * 8)) - 1)
+    else:
+        if endian == "little":
+            low = data[offset:offset + 8]
+            extra = data[offset + 8:end]
+        else:
+            low = data[end - 8:end]
+            extra = data[offset:end - 8]
+        unsigned = int.from_bytes(low, endian, signed=False)
+        signed_value = unsigned if unsigned <= INT_MAX else unsigned - (1 << 64)
+        extension = 0xFF if signed and signed_value < 0 else 0x00
+        if any(byte != extension for byte in extra):
+            raise LuaRuntimeError(f"{size}-byte integer does not fit into Lua Integer")
+
+    unsigned &= UINT_MASK
+    return unsigned if unsigned <= INT_MAX else unsigned - (1 << 64)
+
+
 def _unpack(fmt: bytes, data: bytes, position: int):
     parser = _PackFormat(fmt)
     offset = position
@@ -261,14 +289,8 @@ def _unpack(fmt: bytes, data: bytes, position: int):
         if kind == "align":
             continue
         if kind == "int":
-            end = offset + size
-            if end > len(data):
-                raise LuaRuntimeError("data string too short")
-            integer = int.from_bytes(data[offset:end], endian, signed=bool(detail))
-            if not INT_MIN <= integer <= INT_MAX:
-                raise LuaRuntimeError("integer does not fit into Lua Integer")
-            values.append(integer)
-            offset = end
+            values.append(_unpack_integer(data, offset, size, endian, bool(detail)))
+            offset += size
         elif kind == "float":
             end = offset + size
             if end > len(data):
@@ -293,10 +315,10 @@ def _unpack(fmt: bytes, data: bytes, position: int):
             prefix_end = offset + size
             if prefix_end > len(data):
                 raise LuaRuntimeError("data string too short")
-            length = int.from_bytes(data[offset:prefix_end], endian, signed=False)
-            end = prefix_end + length
-            if end > len(data):
+            length = _unpack_integer(data, offset, size, endian, False) & UINT_MASK
+            if length > len(data) - prefix_end:
                 raise LuaRuntimeError("data string too short")
+            end = prefix_end + length
             values.append(data[prefix_end:end])
             offset = end
     values.append(offset + 1)
@@ -513,9 +535,12 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                         built.extend(s[match.start:match.end])
                     elif 49 <= code <= 57:
                         capture_index = code - 49
-                        if capture_index >= len(captures):
+                        if capture_index < len(captures):
+                            value = captures[capture_index]
+                        elif capture_index == 0 and not captures:
+                            value = s[match.start:match.end]
+                        else:
                             raise LuaRuntimeError("invalid capture index")
-                        value = captures[capture_index]
                         built.extend(_replacement_bytes(value) or b"")
                     else:
                         raise LuaRuntimeError("invalid use of '%' in replacement string")
@@ -603,8 +628,6 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
     ):
         register(name, fn)
 
-    # string.dump belongs with binary-chunk support; keeping it absent avoids
-    # claiming a serialization format before LuaPyre can load it back.
     string_mt = LuaTable()
     string_mt.rawset(b"__index", lib)
     vm.type_metatables[b"string"] = string_mt

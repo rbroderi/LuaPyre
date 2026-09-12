@@ -1,14 +1,14 @@
 # LuaPyre
 
-LuaPyre is a clean-slate Lua runtime written in Python. It targets Lua 5.5.1 semantics, a sandbox-first embedding model, and optional gradual type annotations that feed the optimizer without creating a second runtime.
+LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that can feed later optimization without creating a second runtime.
 
-**Python 3.13+**.
+**Python 3.13+** · **current pre-alpha: 0.11.0a1**
 
-LuaPyre is still pre-alpha and is not yet a complete Lua 5.5.1 implementation. The runtime is deliberately built around a register VM and explicit Lua frames so later quickening and JIT work can specialize stable semantics rather than replace an AST interpreter.
+LuaPyre is not yet a complete Lua 5.5.1 implementation. Correct semantics come first; the runtime is deliberately built around a register VM and explicit Lua frames so later quickening and JIT work can specialize stable behavior instead of replacing an AST interpreter.
 
 ## Language model
 
-Plain Lua is dynamic. Optional annotations add static guarantees and optimization facts:
+Plain Lua remains dynamic. Optional annotations add static guarantees and optimization facts:
 
 ```lua
 local dynamic = get_value()       -- Any
@@ -19,7 +19,7 @@ local function add(a: integer, b: integer): integer
 end
 ```
 
-Missing annotations mean `Any`. Typed and untyped code use the same parser, compiler, register bytecode, and VM.
+Missing annotations mean `Any`. Typed and untyped code use the same parser, compiler, bytecode, VM, tables, closures, and standard library.
 
 Lua 5.5 declarations and LuaPyre annotations can be combined:
 
@@ -49,149 +49,152 @@ return add(x, 22)
 assert result == 42
 ```
 
-Host capabilities are explicit. The default runtime does not expose filesystem, networking, process execution, Python import/eval, package loading, `io`, `os`, `debug`, or Python object introspection.
+Host capabilities are explicit. A default runtime has no ambient filesystem, networking, process execution, Python import/eval, `io`, `os`, `debug`, native-library loading, or Python object introspection.
 
-## 0.10 PUC debug fidelity and exact-suite infrastructure
+### Output and warnings
 
-The 0.10 tranche extends conformance work from text/LuaPyre-native diagnostics into official PUC-Lua 5.5 binary chunks and adds a pinned path to the exact Lua 5.5.1 upstream test suite:
+Lua `print` is safe and available by default. It applies Lua `tostring` semantics, including `__tostring`, uses tab separators, appends a newline, and sends the already-formatted bytes to an output sink. The default sink delegates to Python `print`.
 
-- the PUC reader now preserves and validates signed line-delta tables, absolute-line checkpoints, local-variable ranges, source names, and upvalue debug names instead of merely consuming/discarding them
-- Lua 5.5's delta/absolute line encoding is reconstructed into exact source lines before PUC instructions are lowered into LuaPyre VM instructions
-- every translated VM instruction receives the source line of the PUC instruction that produced it, including lowering sequences where one PUC instruction expands into several LuaPyre instructions
-- nested PUC prototypes retain their own source/line metadata recursively
-- stripped PUC chunks remain stripped: LuaPyre does not invent source or line information when `string.dump(..., true)` removed it
-- translated PUC arithmetic errors now preserve sparse compile/load-time value provenance and can match Lua-style `(field 'name')`, `(global 'name')`, and `(upvalue 'name')` suffixes
-- diagnostic provenance is consulted only after an exception occurs; successful opcode execution still carries no runtime provenance-tracking work
-- PUC local-variable metadata is retained for broader future name/debug compatibility even where LuaPyre does not yet reproduce every `getobjname` category
+```python
+captured = []
+lua = LuaRuntime(output=captured.append)
+lua.execute('print("hello", 42)')
+assert captured == [b"hello\t42\n"]
+```
 
-The new `tools/official_551.py` developer harness pins the exact official `lua-5.5.1-tests.tar.gz` archive by SHA-256 (`da07b543872dc0bb2ff12aabd0c248578d78df3eb6b67efdc537a46d455c7f31`). It verifies the archive before use, bounds compressed and expanded sizes, rejects traversal paths, symlinks, hard links, devices, and other non-file/non-directory tar members, and extracts without `tarfile.extractall`. It can inventory the suite or execute explicitly selected `.lua` files in fresh LuaPyre runtimes.
+`warn` has a separate byte-oriented sink and preserves Lua 5.5 `@off` / `@on` controls:
 
-A separate manual GitHub Actions workflow, `official Lua 5.5.1 conformance`, downloads/verifies/inventories that exact upstream suite. Selected files can then be run explicitly. This workflow is intentionally separate from ordinary push/PR CI: upstream's full suite includes filesystem, OS, package/C-library, debug, and C-API assumptions that LuaPyre's default sandbox intentionally does not grant, and broad official-suite conformance is still in progress. The harness measures that work without weakening the embedding security model or making ordinary CI depend on lua.org availability.
+```python
+messages = []
+lua = LuaRuntime(warning=messages.append)
+lua.execute('warn("hello")')
+assert messages == [b"hello"]
+```
 
-## 0.9 source and error fidelity
+Sinks can be changed later with `set_output_sink()` and `set_warning_sink()`.
 
-The 0.9 tranche makes runtime diagnostics carry Lua source information without putting debug work into the hot opcode path:
+### Safe modules
 
-- source/chunk names and per-instruction source lines are recorded while compiling text Lua
-- `LuaRuntime.compile`, `execute`, and `disassemble` accept an explicit `chunkname`
-- runtime-generated errors receive Lua-style `chunk:line:` prefixes on the exceptional path
-- `error(value, level)` follows Lua 5.5 stack-level rules, including `level = 0`, out-of-range levels, non-string error objects, and the special `error(nil)` conversion to `<no error object>`
-- `assert`, `pcall`, and `xpcall` preserve Lua error objects while participating in the same source-aware error model
-- text `load` follows Lua's source-name rules: a string source is its own default chunk name, while reader functions default to `=(load)`
-- syntax/load failures carry the requested chunk name and source line
-- `LuaRuntimeError` keeps a structured Lua stack as `LuaTraceFrame` records before unwind destroys the frames
-- `LuaRuntime.traceback(error)` formats that captured stack for embedders without enabling the sandboxed-out `debug` library
-- source diagnostics are captured for main execution, synchronous standard-library callbacks, and coroutine failures
-- LuaPyre-native `string.dump` wraps the existing validated VM payload in a bounded debug-metadata envelope; `strip = false` preserves source/line data and `strip = true` removes it with Lua-compatible observable behavior
-- the debug envelope is independently validated and remains subject to the same bounded in-memory loading policy
+The default runtime exposes `package` and `require`, but only the in-memory preload searcher is enabled. There is no ambient filesystem search and no C/native loader.
 
-Source and line bookkeeping is deliberately compile/load-time metadata. The shared opcode handlers do not perform per-instruction diagnostic work, so the 0.8 dispatch architecture stays unchanged on successful execution.
+```python
+lua = LuaRuntime()
+lua.preload("answer", "return { value = 42 }")
+assert lua.execute("return require('answer').value") == 42
+```
 
-The 0.9 differential suite checks default/explicit error levels, `assert`, `error(nil)`, string and reader-function chunk names, runtime-error line prefixes, syntax-error source prefixes, and stripped/unstripped native dump reload behavior against `lupa.lua55`.
+`LuaRuntime.preload()` accepts Lua source text/bytes, an existing LuaPyre Lua/host function, or a Python callable. `package.loaded`, `package.preload`, `package.searchers`, and `package.searchpath` are available. `package.cpath` is empty and `package.loadlib` is intentionally absent.
 
-PUC-Lua diagnostics are extended further by 0.10. A public `debug` library remains intentionally absent from the default sandbox, and not every Lua `getobjname`/variable-description category is claimed yet.
+### Explicit file loading
 
-## 0.8 binary chunks
+`loadfile`, `dofile`, and the Lua-file `require` searcher appear only when the embedder provides a file-loader capability:
 
-The 0.8 tranche adds binary-function serialization and PUC-Lua 5.5 binary input without making PUC bytecode the internal execution format:
+```python
+files = {
+    "answer.lua": b"return 42",
+    "game/vector.lua": b"return { x = 1, y = 2 }",
+}
 
-- `string.dump` serializes LuaPyre closures into a bounded, non-pickle LuaPyre-native binary format
-- `load` accepts LuaPyre-native binary chunks through ordinary `"b"`/`"bt"` mode handling
-- loaded native chunks receive fresh root upvalues, with the first upvalue initialized from the supplied `load(..., env)` environment
-- reader-function loading supports binary chunks assembled from multiple pieces, with a bounded total chunk size
-- PUC-Lua 5.5 binary chunks are validated and translated into LuaPyre register bytecode before execution
-- the PUC reader validates version/format sentinels, platform sizes, integer/number representations, string references, prototype nesting, instruction counts, constant counts, and truncation
-- PUC compiler patterns such as mandatory `NEWTABLE`/`EXTRAARG`, tail-call/dead-return pairs, `LFALSESKIP`/`LOADTRUE`, numeric and generic `for`, varargs, shared closure upvalues, metamethod companion instructions, and `<close>` state are normalized or lowered explicitly
-- compatibility opcodes exist only where PUC frame layout differs materially from LuaPyre's internal bytecode; ordinary operations lower back into the existing VM instruction set
-- the Lua-aware GC liveness pass understands the PUC compatibility operations, so translated loop state, varargs, and pending to-be-closed registers remain semantic roots when required
-- malformed or unsupported chunks fail as Lua `load` errors instead of being trusted as executable host data
+lua = LuaRuntime(file_loader=files.get)
+assert lua.execute("return dofile('answer.lua')") == 42
+assert lua.execute("return require('game.vector').x") == 1
+```
 
-LuaPyre intentionally keeps the two formats separate. `string.dump` does **not** claim to emit an official PUC-Lua chunk; it emits LuaPyre's own serialization of LuaPyre prototypes. PUC-Lua chunks are an interoperability input path that is decoded and translated into LuaPyre bytecode before execution. This preserves the custom VM/optimizer/JIT architecture while still allowing compiled Lua 5.5 code to enter through `load`.
+The loader receives a logical UTF-8 name and may return `bytes`, `str`, or `None`. LuaPyre never turns that name into a Python filesystem operation itself. Applications can back the capability with a real filesystem, virtual filesystem, zip/archive, database, package resources, or anything else they choose.
 
-The PUC compatibility suite differentially executes compiler-generated binary chunks against `lupa.lua55`, covering arithmetic and comparison expressions, tables, branches, numeric and generic loops, closures/upvalues, varargs and multiple results, metamethod fallback, tail calls, `<close>`, GC-sensitive liveness, source/debug lines, and selected Lua-style error-name attribution. Exact Lua 5.5.1 remains the release-level format authority.
+The capability can be changed dynamically with `set_file_loader()`. Removing it removes `loadfile`, `dofile`, and the file searcher again while leaving preload-only `require` available.
 
-## 0.7 safe standard libraries
+See [`docs/embedding-0.11.md`](docs/embedding-0.11.md) for the complete 0.11 embedding contract.
 
-The 0.7 tranche fills out the deterministic, in-memory part of Lua 5.5's standard library while keeping the default runtime sandboxed:
+## Implemented runtime semantics
 
-- expanded base library with `tostring`/`__tostring`, `tonumber`, `select`, `pcall`, `xpcall`, `warn`, and text-mode `load`
-- `pairs` honors `__pairs` and Lua 5.5's four-result iterator protocol
-- `ipairs` uses ordinary indexing, including `__index`
-- string values use the standard string metatable, so method syntax such as `("text"):upper()` works
-- `table.concat`, `table.create`, `table.insert`, `table.move`, `table.pack`, `table.remove`, `table.sort`, and `table.unpack`
-- the safe `math` library, including integer-aware helpers and Lua 5.5-compatible explicit-seed xoshiro256** random sequences
-- the safe `string` library, including byte-string operations, Lua pattern matching, replacement callbacks/tables, formatting, and `pack`/`packsize`/`unpack`
-- native Lua-pattern support for captures, sets/classes, greedy and minimal repetition, balanced matches, frontier patterns, backreferences, and position captures
-- Lua 5.5 `%q` literal serialization, including exact control-character/newline treatment, minimum-integer handling, and hexadecimal floating-point literals
-- the `utf8` library with `char`, `charpattern`, `codes`, `codepoint`, `len`, and Lua 5.5's two-result `offset`
-- synchronous Lua callbacks from library functions reuse the existing shared opcode handlers and remain visible to the Lua-aware GC root tracer
-- `load(..., env)` correctly initializes the loaded chunk's lexical `_ENV`
+LuaPyre currently includes substantial Lua 5.5 behavior, including:
 
-The default sandbox still deliberately omits `io`, `os`, `package`, and `debug`, along with file loaders and unrestricted host output. Binary loading remains in-memory and does not add filesystem access or other ambient host capabilities.
+- lexical scopes, closures, recursive locals, and shared mutable upvalues
+- multiple returns and last-expression expansion
+- Lua 5.5 named varargs
+- lexical `_ENV`
+- signed 64-bit integer behavior and Lua numeric/table-key semantics
+- metatables and the core indexing/call/arithmetic/bitwise/comparison metamethod families
+- `do`, `repeat`, `break`, numeric/generic `for`, `goto`, and labels
+- proper Lua tail calls by explicit frame replacement
+- local `<const>` and `<close>` plus reverse-order `__close` unwinding
+- Lua 5.5 global declarations and strict-global behavior after explicit declaration
+- persistent Lua threads/coroutines, including nested yields, wrapping, status, close, and pending `<close>` cleanup
+- Lua-aware weak tables, ephemerons, finalizers, resurrection, and GC-observable reachability
+- text loading and LuaPyre-native binary `string.dump` / `load`
+- validated PUC-Lua 5.5 binary chunk input translated into LuaPyre bytecode
+- source/chunk names, line information, structured host tracebacks, and PUC debug-line reconstruction
+- selected Lua-style field/global/upvalue attribution in runtime errors
 
-Standard-library callbacks are currently synchronous continuation boundaries. Calling Lua from `__pairs`, `__tostring`, `table.sort`, `pcall`/`xpcall`, pattern replacements, and similar library paths is supported, but yielding through one of those native-library callback boundaries is rejected. Full C/API-style yieldable continuations remain a later compatibility tranche rather than being approximated unsafely.
+The VM uses explicit Lua frames rather than Python recursion for ordinary Lua calls. ASTs are compile-time only and are never interpreted directly.
 
-## 0.6 weak tables and finalization
+## Safe standard library
 
-The 0.6 tranche adds the GC-observable semantics needed by Lua programs while leaving physical memory ownership to Python:
+The default safe environment includes the deterministic/in-memory portions of the Lua 5.5 libraries:
 
-- Lua-aware tracing from globals, active Lua frames, suspended coroutine stacks, closures/upvalues, varargs, and pending `<close>` state
-- bytecode liveness analysis for GC roots, so stale physical VM register slots do not keep logically dead Lua objects alive
-- weak-value tables with `__mode = "v"`
-- weak-key tables with `__mode = "k"`
-- all-weak tables with `__mode = "kv"`
-- Lua-compatible treatment of strings and other non-object values in weak tables
-- ephemeron semantics for weak-key/strong-value tables, including fixed-point convergence
-- two-phase weak-table processing around finalization, including the different resurrection rules for weak keys and weak values
-- table `__gc` finalizers when the metatable already contains `__gc` at `setmetatable` time
-- reverse finalization order for objects collected in the same cycle
-- resurrection and explicit re-marking for later finalization
-- non-yieldable finalizers; attempts to collect recursively from a finalizer are rejected
-- finalizer errors become warnings instead of propagating as ordinary Lua errors
-- `collectgarbage` support for `collect`, `stop`, `restart`, `isrunning`, `count`, `step`, `incremental`, `generational`, and `param`
-- `LuaRuntime.collect()` for embedders that want an explicit full Lua-observable collection cycle
+- base functions such as `assert`, `error`, `type`, `tostring`, `tonumber`, `select`, `pcall`, `xpcall`, `pairs`, `ipairs`, `next`, `rawget`, `rawset`, `rawlen`, `getmetatable`, `setmetatable`, `load`, `print`, `warn`, and `collectgarbage`
+- `coroutine`
+- `string`, including native Lua patterns, formatting, `%q`, packing/unpacking, and `string.dump`
+- `table`, including Lua 5.5 `table.create`
+- `math`, including Lua-compatible explicit-seed xoshiro256** random sequences
+- `utf8`
+- safe `package` / `require` with preload-only loading by default
 
-LuaPyre intentionally uses its own Lua reachability model instead of Python weak references or refcounts. This is required for ephemerons, resurrection, finalizer ordering, and suspended Lua stacks to match Lua semantics even though Python remains responsible for reclaiming the underlying Python objects.
+`io`, `os`, `debug`, C/native module loading, and ambient file loading are intentionally excluded from the default sandbox.
 
-In 0.6, collection is explicit and deterministic at `collectgarbage`/host collection safe points. `collectgarbage("step")` completes a full observable cycle, `count` is an approximate Lua-reachable-memory estimate, and incremental/generational mode parameters are represented by the compatibility control surface; automatic byte-debt scheduling of Lua's incremental/generational collectors is not yet modeled.
+Standard-library callbacks are currently synchronous continuation boundaries. Lua callbacks from facilities such as `__pairs`, `__tostring`, `table.sort`, protected calls, and pattern replacements work, but yielding through those native-library callback boundaries is still rejected. Full C/API-style yieldable continuations are future work.
 
-## 0.5 coroutine core
+## Binary chunks
 
-The 0.5 tranche adds persistent Lua threads on top of the explicit-frame VM:
+LuaPyre keeps its own VM serialization separate from PUC bytecode:
 
-- `LuaThread` values with Lua `thread` type identity
-- `coroutine.create`
-- `coroutine.resume`
-- `coroutine.yield`, including yields from nested Lua calls
-- resume arguments becoming the return values of the suspended `coroutine.yield(...)` expression
-- correct handling of `return coroutine.yield(...)` in tail position
-- `coroutine.status` with `running`, `suspended`, `normal`, and `dead`
-- `coroutine.running`, including main-thread identification
-- `coroutine.isyieldable`
-- `coroutine.wrap`
-- `coroutine.close` for suspended and errored threads
-- self-closing running coroutines, where `coroutine.close()` does not return to the coroutine body
-- preservation of an errored coroutine's Lua stack until it is explicitly closed
-- integration with 0.4 `<close>` state so pending `__close` methods run when a suspended or errored coroutine is closed
-- the original Lua error object is supplied to pending `__close` methods during coroutine error cleanup
+- `string.dump` emits a bounded, non-pickle LuaPyre-native serialization of LuaPyre prototypes
+- `load` can reload those chunks through normal binary/text mode checks
+- PUC-Lua 5.5 binary chunks are a separate interoperability input path
+- PUC chunks are validated and translated to LuaPyre register bytecode before execution
+- malformed, truncated, version/format-mismatched, or unsupported chunks fail as Lua load errors instead of being trusted as host data
 
-Coroutine stacks own the same Lua `Frame` objects used by the register VM, so registers, closures, upvalues, program counters, pending close state, and nested Lua calls survive suspension directly. Ordinary main-chunk execution continues through the established VM path; coroutine execution reuses the same opcode and semantic helpers with a persistent per-thread frame list.
+This separation preserves the custom optimizer/JIT architecture while allowing compiled Lua 5.5 code to enter through `load`.
 
-The 0.4 tranche already provides `goto`/labels, local `<const>`/`<close>`, Lua 5.5 global declarations, strict-global behavior, and unified scope/error unwinding. The 0.3 tranche provides metatable/metamethod dispatch, additional control flow, anonymous functions, method syntax, generic iteration, and proper tail calls. Earlier semantic-core work includes lexical closures/upvalues, multiple returns, Lua 5.5 named varargs, lexical `_ENV`, split Lua tables, byte strings, signed 64-bit integer behavior, optional type guards, explicit host capabilities, and fuel/frame limits.
+## Garbage collection semantics
 
-## Compatibility testing
+Python remains responsible for physical memory reclamation, but LuaPyre maintains a separate Lua-level reachability model for observable GC behavior. It traces Lua roots, uses bytecode liveness rather than stale physical register contents, implements weak values/keys/all-weak tables and ephemerons, and models finalization/resurrection ordering.
 
-CI runs on Python 3.13 and 3.14 and installs Lupa 2.8+, then explicitly imports `lupa.lua55`. This gives the differential suite an in-process PUC-Lua 5.5 oracle without compiling or launching a separate Lua executable. CI verifies that the selected backend reports `_VERSION == "Lua 5.5"` before running tests.
+Collection is currently explicit/deterministic at `collectgarbage` or `LuaRuntime.collect()` safe points. Automatic byte-debt pacing for Lua's incremental/generational collectors is not yet modeled; `collectgarbage("count")` is an approximate Lua-reachable-memory estimate.
 
-Differential coverage now includes source/error diagnostics, PUC source-line reconstruction and selected variable-name attribution, safe standard libraries, Lua patterns, packing/unpacking, explicit-seed random output, UTF-8 iteration/offsets, `__pairs`, protected calls, text loading environments, weak keys/values, ephemerons, finalizer ordering, resurrection interactions, weak-table behavior across finalization, and execution of compiler-generated PUC-Lua 5.5 binary chunks through LuaPyre's translator.
+## Lua 5.5.1 conformance
 
-For exact micro-release conformance, LuaPyre targets Lua 5.5.1. The manual exact-suite workflow and `tools/official_551.py` use the checksum-pinned official 5.5.1 test archive as the release-level authority, while Lupa remains the fast per-commit differential oracle.
+Normal CI runs on Python 3.13 and 3.14 and installs Lupa 2.8+, explicitly selecting `lupa.lua55` as the fast PUC-Lua 5.5 differential oracle.
 
-The full official Lua test suite is **not** expected to pass yet. Major remaining work includes automatic incremental/generational GC pacing, additional exact runtime-error/debug-name categories, yieldable native-library/C-API continuations, userdata/C-API GC behavior outside the sandbox value model, and substantially broader coverage of the official Lua 5.5.1 suite. The unsafe host-facing libraries remain intentionally absent from the default sandbox rather than being treated as missing semantic work.
+For exact micro-release work, `tools/official_551.py` pins the official `lua-5.5.1-tests.tar.gz` archive to SHA-256:
+
+```text
+da07b543872dc0bb2ff12aabd0c248578d78df3eb6b67efdc537a46d455c7f31
+```
+
+The harness bounds archive/download/extraction sizes, rejects traversal paths and links/devices, classifies the upstream suite by dependency type, and runs selected files in fresh LuaPyre runtimes. Its read-only suite access is supplied through the same production `file_loader` capability used by embedders; it no longer replaces `package`, `require`, `loadfile`, `dofile`, or `print` with test-only Lua implementations.
+
+The committed 0.11 release gate contains only unchanged upstream test files that are currently proven to pass. Additional official files remain explicit probes until their semantic gaps are fixed; the baseline is never weakened by marking failures as expected passes.
+
+The complete official suite does **not** pass yet. Some upstream tests depend on Lua's internal C test API, debug/io/os/native-module facilities, allocator details, or stress behavior that is outside the default sandbox. Other failures identify genuine remaining Lua semantics and are tracked through explicit suite runs.
+
+## Current compatibility gaps
+
+Major remaining work includes:
+
+- broader official Lua 5.5.1 suite coverage
+- additional exact runtime-error / `getobjname` categories
+- automatic incremental/generational GC pacing
+- yieldable native-library / C-API continuation semantics
+- fuller userdata/C-API behavior beyond the current sandbox value model
+- host-facing `io`, `os`, and `debug` capabilities where an embedding explicitly wants them
+
+Unsafe host-facing libraries are not treated as default-sandbox requirements.
 
 ## Performance roadmap
 
-Correct semantics come first. Once the runtime is broad enough for the Lua 5.5.1 test suite, the performance path is:
+Correct semantics come first. Once compatibility is broad enough, the intended performance path is:
 
 1. adaptive quickening and inline caches
 2. table/global/call specialization
@@ -199,4 +202,4 @@ Correct semantics come first. Once the runtime is broad enough for the Lua 5.5.1
 4. hot-function compilation to Python code using Python locals for Lua registers
 5. deoptimization back to the VM when specialization assumptions fail
 
-Typed code can skip many dynamic guards because its annotations survive into compiler optimization metadata.
+Typed code can skip many dynamic guards because annotations survive into compiler optimization metadata. CPython's optimizer/JIT is an optional accelerator, never a correctness dependency.

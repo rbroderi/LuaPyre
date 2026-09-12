@@ -13,11 +13,15 @@ on:
         required: false
         default: false
         type: boolean
+  push:
+    branches:
+      - main
+      - v0.11-official-suite-baseline
 
 jobs:
   official-suite:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,10 +29,15 @@ jobs:
           python-version: "3.13"
       - name: Install LuaPyre
         run: python -m pip install -e .[dev]
-      - name: Verify and inventory exact Lua 5.5.1 suite
-        run: python tools/official_551.py --work-dir .official-lua-551 --list
+      - name: Verify, classify, and run exact Lua 5.5.1 baseline
+        run: |
+          python tools/official_551.py \
+            --work-dir .official-lua-551 \
+            --classify \
+            --baseline \
+            --report-json .official-lua-551/report.json
       - name: Run explicitly selected upstream files
-        if: ${{ inputs.files != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.files != '' }}
         env:
           OFFICIAL_FILES: ${{ inputs.files }}
           FULL_MODE: ${{ inputs.full_mode }}
@@ -53,3 +62,10 @@ jobs:
               cmd.append("--full-mode")
           raise SystemExit(subprocess.call(cmd))
           PY
+      - name: Upload conformance report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-lua-551-report
+          path: .official-lua-551/report.json
+          if-no-files-found: ignore

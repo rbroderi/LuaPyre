@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from .binary_chunks import fresh_loaded_closure
+from .bytecode import Closure
+from .capabilities import RuntimeCapabilities
 from .diagnostics import format_traceback
 from .diagnostic_stdlib import install_diagnostic_stdlib
 from .errors import LuaRuntimeError
@@ -7,6 +10,8 @@ from .gcvm import GarbageCollectedVM
 from .parser import Parser
 from .source_compiler import SourceCompiler
 from .stdlib import install_safe_stdlib
+from .stdlib_output import install_output_library
+from .stdlib_package import install_package_library
 from .table import LuaTable
 from .threadvm import LuaThread
 from .values import MultiValue, i64
@@ -16,17 +21,36 @@ from .vm import HostFunction
 class LuaRuntime:
     """Sandbox-first LuaPyre runtime.
 
-    The default environment contains only deterministic, in-memory helpers.
-    Filesystem, network, process, import, eval, and Python introspection are
-    absent unless the embedding application exposes an explicit capability.
+    The default environment contains deterministic, in-memory helpers plus
+    console output. Filesystem, network, process, native-library loading, and
+    Python introspection remain absent unless the embedding application exposes
+    an explicit capability.
     """
 
-    def __init__(self, *, fuel=1_000_000, max_frames=1000, safe_stdlib=True):
+    def __init__(
+        self,
+        *,
+        fuel=1_000_000,
+        max_frames=1000,
+        safe_stdlib=True,
+        output=None,
+        warning=None,
+        file_loader=None,
+    ):
         self.globals = LuaTable()
         self.vm = GarbageCollectedVM(self.globals, fuel=fuel, max_frames=max_frames)
+        self.capabilities = RuntimeCapabilities()
+        self.capabilities.set_output_sink(output)
+        self.capabilities.set_warning_sink(warning)
+        self.capabilities.set_file_loader(file_loader)
+        self._package_state = None
         if safe_stdlib:
             install_safe_stdlib(self.globals, self.vm)
+            install_output_library(self.globals, self.vm, self.capabilities)
             install_diagnostic_stdlib(self.globals, self.vm)
+            self._package_state = install_package_library(
+                self.globals, self.vm, self.capabilities
+            )
 
     def _to_lua(self, value):
         if value is None or type(value) in (bool, float) or isinstance(value, bytes):
@@ -35,7 +59,7 @@ class LuaRuntime:
             return i64(value)
         if isinstance(value, str):
             return value.encode("utf-8")
-        if isinstance(value, (LuaTable, LuaThread)):
+        if isinstance(value, (LuaTable, LuaThread, Closure, HostFunction)):
             return value
         if isinstance(value, (list, tuple)):
             t = LuaTable()
@@ -71,6 +95,50 @@ class LuaRuntime:
 
     def get(self, name: str):
         return self.globals.rawget(name.encode("utf-8"))
+
+    def set_output_sink(self, sink=None) -> None:
+        """Replace the byte-oriented sink used by Lua ``print``."""
+        self.capabilities.set_output_sink(sink)
+
+    def set_warning_sink(self, sink=None) -> None:
+        """Replace the byte-oriented sink used by Lua ``warn``."""
+        self.capabilities.set_warning_sink(sink)
+
+    def set_file_loader(self, loader=None) -> None:
+        """Install or remove the host's read-only Lua file capability."""
+        self.capabilities.set_file_loader(loader)
+        if self._package_state is not None:
+            self._package_state.refresh_file_capability()
+
+    def preload(self, name: str | bytes, module) -> None:
+        """Register an in-memory module for the standard preload searcher.
+
+        ``module`` may be Lua source text/bytes, a Lua function, or a Python
+        callable. Python callables receive the standard loader arguments
+        ``(module_name, loader_data)`` and have their result converted through
+        the ordinary host boundary.
+        """
+        if self._package_state is None:
+            raise RuntimeError("preload requires safe_stdlib=True")
+        key = name.encode("utf-8") if isinstance(name, str) else name
+        if not isinstance(key, bytes):
+            raise TypeError("module name must be str or bytes")
+
+        if isinstance(module, str):
+            proto = self.compile(module, chunkname=b"@" + key)
+            loader = fresh_loaded_closure(proto, self.globals)
+        elif isinstance(module, bytes):
+            proto = self.compile(module.decode("utf-8"), chunkname=b"@" + key)
+            loader = fresh_loaded_closure(proto, self.globals)
+        elif isinstance(module, (Closure, HostFunction)):
+            loader = module
+        elif callable(module):
+            def boundary(*args):
+                return self._to_lua(module(*args))
+            loader = HostFunction(boundary, f"package.preload[{key!r}]")
+        else:
+            raise TypeError("preloaded module must be Lua source or callable")
+        self._package_state.preload.rawset(key, loader)
 
     @staticmethod
     def multi_return(*values):

@@ -33,16 +33,24 @@ class PatternMatch:
 class LuaPattern:
     """Backtracking matcher for Lua 5.5 byte patterns.
 
-    Lua patterns are deliberately smaller than regular expressions.  Keeping a
+    Lua patterns are deliberately smaller than regular expressions. Keeping a
     native matcher avoids subtly incorrect regex translations, especially for
     frontier patterns, balanced matches, position captures, and Lua's minimal
     ``-`` repetition.
+
+    A matcher also retains the endpoint of its previous successful search.
+    Lua's ``gmatch`` and ``gsub`` reuse one MatchState and deliberately reject a
+    second match ending at the same position (the 5.3.3+ empty-match rule).
+    ``find`` and ``match`` create a matcher for one search, so this state is not
+    observable there.
     """
 
     MAX_CAPTURES = 32
 
     def __init__(self, pattern: bytes):
         self.pattern = pattern
+        self._last_end: int | None = None
+        self._anchored_searched = False
 
     @staticmethod
     def _class_match(ch: int, cls: int) -> bool:
@@ -271,11 +279,19 @@ class LuaPattern:
     def search(self, subject: bytes, init: int = 0, *, gmatch=False):
         pattern = self.pattern
         anchored = bool(pattern) and pattern[0] == ord("^") and not gmatch
+        if anchored and self._anchored_searched:
+            return None
+        if anchored:
+            self._anchored_searched = True
         pattern_start = 1 if anchored else 0
         positions = (init,) if anchored else range(init, len(subject) + 1)
         for start in positions:
             result = self._match(subject, start, pattern_start, ())
-            if result is not None:
-                end, captures = result
-                return PatternMatch(start, end, captures)
+            if result is None:
+                continue
+            end, captures = result
+            if self._last_end is not None and end == self._last_end:
+                continue
+            self._last_end = end
+            return PatternMatch(start, end, captures)
         return None
