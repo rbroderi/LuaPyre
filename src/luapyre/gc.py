@@ -27,7 +27,6 @@ _BINARY_OPS = {
 _UNARY_OPS = {Op.LEN, Op.BNOT, Op.NEG, Op.NOT, Op.TOBOOL}
 _CONDITIONAL_JUMPS = {Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL}
 _CALL_OPS = {Op.CALL, Op.CALLV, Op.TAILCALL, Op.TAILCALLV}
-_TAILCALL_OPS = {Op.TAILCALL, Op.TAILCALLV}
 _TERMINATORS = {Op.RETURN, Op.RETURNV, Op.HALT, Op.TAILCALL, Op.TAILCALLV}
 
 
@@ -67,6 +66,9 @@ class LuaGC:
         self.stats = GCStats()
         self.in_finalizer = False
 
+        # Lua keeps marked-for-finalization objects alive until their finalizer
+        # has run. Strong Python references here model that internal Lua list;
+        # they are intentionally *not* ordinary tracing roots.
         self._finalizable: list[LuaTable] = []
         self._finalizable_ids: set[int] = set()
         self._finalized_ids: set[int] = set()
@@ -91,14 +93,17 @@ class LuaGC:
         return mode if isinstance(mode, bytes) and mode in _VALID_WEAK_MODES else None
 
     def mark_finalizable(self, table: LuaTable, metatable: LuaTable | None) -> None:
-        """Mark a table only when the assigned metatable already has ``__gc``."""
+        """Mark a table when its newly assigned metatable already has ``__gc``."""
         if not isinstance(table, LuaTable) or not isinstance(metatable, LuaTable):
             return
         if metatable.rawget(b"__gc") is None:
             return
         ident = id(table)
-        if ident in self._finalizable_ids or ident in self._finalized_ids:
+        if ident in self._finalizable_ids:
             return
+        # Explicitly setting a __gc metatable after a previous finalization is
+        # how Lua code can mark a resurrected object for finalization again.
+        self._finalized_ids.discard(ident)
         self._finalizable_ids.add(ident)
         self._finalizable.append(table)
 
@@ -251,14 +256,10 @@ class LuaGC:
 
     def _live_regs(self, frame: Frame) -> frozenset[int]:
         live = self._live_sets(frame.proto)
-        pc = frame.pc
-        if pc < 0:
-            pc = 0
-        if pc >= len(live):
-            pc = len(live) - 1
+        pc = max(0, min(frame.pc, len(live) - 1))
         return live[pc]
 
-    def _trace(self):
+    def _trace(self, extra_roots=()):
         marked: dict[int, object] = {}
         weak_tables: dict[int, tuple[LuaTable, bytes]] = {}
         ephemerons: list[tuple[object, object]] = []
@@ -272,18 +273,12 @@ class LuaGC:
             excluded = excluded or set()
 
             mark(frame.closure)
-            live = self._live_regs(frame)
-            for reg in live:
+            for reg in self._live_regs(frame):
                 if reg in excluded or reg < 0 or reg >= len(frame.regs):
                     continue
                 cell = frame.cells.get(reg)
-                if cell is not None:
-                    mark(cell.value)
-                else:
-                    mark(frame.regs[reg])
+                mark(cell.value if cell is not None else frame.regs[reg])
 
-            # Varargs remain semantically addressable through `...` for the
-            # lifetime of the frame. Close-stack values are roots until closed.
             for value in frame.varargs:
                 mark(value)
             for value in frame.close_stack:
@@ -297,9 +292,7 @@ class LuaGC:
                 if index + 1 < len(frames):
                     child = frames[index + 1]
                     if child.return_reg >= 0:
-                        excluded.update(
-                            self._call_result_regs(child.return_reg, child.return_want)
-                        )
+                        excluded.update(self._call_result_regs(child.return_reg, child.return_want))
 
                 if active:
                     active_call = getattr(self.vm, "_active_call_result", None)
@@ -325,8 +318,7 @@ class LuaGC:
             if isinstance(value, LuaRaisedError):
                 return mark(value.value)
 
-            collectable = self._is_collectable(value)
-            if not collectable:
+            if not self._is_collectable(value):
                 return False
             ident = id(value)
             if ident in marked:
@@ -352,8 +344,6 @@ class LuaGC:
                             ephemerons.append((key, item))
                         else:
                             mark(item)
-                else:  # b"kv"
-                    pass
                 return True
 
             if isinstance(value, Closure):
@@ -376,9 +366,6 @@ class LuaGC:
                 mark(value.error.value)
             return True
 
-        # Active frames are visited first so result slots currently being
-        # overwritten by a host call are excluded before a reachable thread can
-        # lead back to the same frame stack.
         active_frames = getattr(self.vm, "_active_frames", None)
         if active_frames:
             mark_frame_stack(active_frames, active=True)
@@ -395,7 +382,11 @@ class LuaGC:
         main = getattr(self.vm, "main_thread", None)
         if main is not None and main is not current:
             mark(main)
+        for value in extra_roots:
+            mark(value)
 
+        # Ephemeron convergence must reach a fixed point because marking a
+        # value can make a key in another ephemeron reachable.
         while True:
             before = len(marked)
             index = 0
@@ -414,9 +405,9 @@ class LuaGC:
         weak_tables: dict[int, tuple[LuaTable, bytes]],
         marked: dict[int, object],
         *,
-        preserve_weak_keys: set[int] | None = None,
+        keys: bool,
+        values: bool,
     ) -> int:
-        preserve_weak_keys = preserve_weak_keys or set()
         marked_ids = set(marked)
         cleared = 0
 
@@ -424,13 +415,14 @@ class LuaGC:
             doomed = []
             for key, value in list(table.items()):
                 dead_key = (
-                    b"k" in mode
+                    keys
+                    and b"k" in mode
                     and self._is_collectable(key)
                     and id(key) not in marked_ids
-                    and id(key) not in preserve_weak_keys
                 )
                 dead_value = (
-                    b"v" in mode
+                    values
+                    and b"v" in mode
                     and self._is_collectable(value)
                     and id(value) not in marked_ids
                 )
@@ -515,17 +507,35 @@ class LuaGC:
         if self.in_finalizer:
             raise LuaRuntimeError("cannot run garbage collector from a finalizer")
 
+        # Phase 1 mirrors Lua's atomic mark phase: find the strongly reachable
+        # graph and clear weak values before objects are moved to finalization.
         marked, weak_tables = self._trace()
-        dead = [table for table in self._finalizable if id(table) not in marked]
-        resurrected_for_cycle = {id(table) for table in dead}
-
         cleared = self._clear_weak_tables(
             weak_tables,
             marked,
-            preserve_weak_keys=resurrected_for_cycle,
+            keys=False,
+            values=True,
         )
 
-        dead_ids = resurrected_for_cycle
+        dead = [table for table in self._finalizable if id(table) not in marked]
+        dead_ids = {id(table) for table in dead}
+
+        # Phase 2 resurrects objects selected for finalization and everything
+        # reachable through them. This can discover weak tables that themselves
+        # were unreachable in phase 1 (e.g. captured only by a __gc closure).
+        resurrected_marked, resurrected_weak_tables = self._trace(dead)
+
+        # After resurrection, weak keys can be cleared safely: finalizing objects
+        # and objects reachable only through them are now marked, so their keys
+        # remain until the next collection. Weak values in newly resurrected
+        # weak tables must still be cleared before any finalizer runs.
+        cleared += self._clear_weak_tables(
+            resurrected_weak_tables,
+            resurrected_marked,
+            keys=True,
+            values=True,
+        )
+
         if dead_ids:
             self._finalizable = [t for t in self._finalizable if id(t) not in dead_ids]
             self._finalizable_ids.difference_update(dead_ids)
@@ -594,6 +604,8 @@ class LuaGC:
         if option == b"count":
             return self.count_kbytes()
         if option == b"step":
+            # Explicit stepping is deterministic in 0.6: a step completes one
+            # full observable cycle. Automatic incremental pacing is future work.
             self.collect()
             return True
         if option in (b"incremental", b"generational"):
