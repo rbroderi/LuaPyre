@@ -513,9 +513,15 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                         built.extend(s[match.start:match.end])
                     elif 49 <= code <= 57:
                         capture_index = code - 49
-                        if capture_index >= len(captures):
+                        if capture_index < len(captures):
+                            value = captures[capture_index]
+                        elif capture_index == 0 and not captures:
+                            # PUC-Lua's get_onecapture treats capture zero as
+                            # the whole match when there are no explicit
+                            # captures. In a replacement string that is %1.
+                            value = s[match.start:match.end]
+                        else:
                             raise LuaRuntimeError("invalid capture index")
-                        value = captures[capture_index]
                         built.extend(_replacement_bytes(value) or b"")
                     else:
                         raise LuaRuntimeError("invalid use of '%' in replacement string")
