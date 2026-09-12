@@ -106,3 +106,59 @@ def test_puc_generic_for():
 
 def test_puc_arithmetic_metamethod_path():
     assert run_puc(b"local t=setmetatable({}, {__add=function(a,b) return 42 end}); return t+1") == 42
+
+
+def test_puc_gc_keeps_live_values_across_numeric_and_generic_loops():
+    assert run_puc(b'''
+local weak=setmetatable({}, {__mode="v"})
+local held={answer=42}
+weak[1]=held
+local total=0
+for i=1,2 do
+  collectgarbage()
+  total=total+i
+end
+for _,v in pairs({3,4}) do
+  collectgarbage()
+  total=total+v
+end
+return weak[1] == held, held.answer, total
+''') == (True, 42, 10)
+
+
+def test_puc_tbc_value_is_a_gc_root_until_scope_close():
+    assert run_puc(b'''
+local weak=setmetatable({}, {__mode="v"})
+local closed=0
+do
+  local value <close> = setmetatable({}, {__close=function() closed=closed+1 end})
+  weak[1]=value
+  collectgarbage()
+  assert(weak[1] == value)
+end
+return closed
+''') == 1
+
+
+def test_truncated_puc_chunk_fails_closed():
+    blob = puc_dump(b"return 42")
+    lua = LuaRuntime()
+    lua.set("bad", blob[:-5])
+    assert lua.execute('local f,e=load(bad,nil,"b"); return f,type(e)') == (None, b"string")
+
+
+def test_puc_version_and_platform_header_mismatch_fail_closed():
+    blob = puc_dump(b"return 42")
+
+    bad_version = bytearray(blob)
+    bad_version[4] = 0x54
+    lua = LuaRuntime()
+    lua.set("bad", bytes(bad_version))
+    assert lua.execute('local f,e=load(bad,nil,"b"); return f,type(e)') == (None, b"string")
+
+    # signature(4) + version + format + LUAC_DATA(6) => sizeof(int) at byte 12
+    bad_size = bytearray(blob)
+    bad_size[12] = 8
+    lua = LuaRuntime()
+    lua.set("bad", bytes(bad_size))
+    assert lua.execute('local f,e=load(bad,nil,"b"); return f,type(e)') == (None, b"string")
