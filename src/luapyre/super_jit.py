@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .ast_jit import AstPythonJIT
+from .dense_jit import DenseEmitterJITMixin
 from .function_jit import TypedFunctionJITMixin
 from .region_jit import RegionPythonJIT
 from .structured_jit import StructuredTypedLoopJITMixin
@@ -9,9 +10,10 @@ from .structured_jit import StructuredTypedLoopJITMixin
 class SuperPythonJIT(
     TypedFunctionJITMixin,
     StructuredTypedLoopJITMixin,
+    DenseEmitterJITMixin,
     AstPythonJIT,
 ):
-    """0.15 Python backend: structured loops, super-regions, and functions."""
+    """0.15 Python backend: structured loops, dense AST emitters, super-regions, and functions."""
 
     def _emit_instruction(self, *args, **kwargs):
         """Route the two deliberately different region-emitter protocols.
