@@ -83,6 +83,21 @@ return value
     assert runtime.vm.run(proto) == 42
 
 
+def test_typed_keyword_type_atoms_are_available_without_changing_plain_parser():
+    output = []
+    runtime = LuaRuntime(output=output.append)
+    source = """-- luapyre: typed
+global print: function
+global nothing: nil
+print("typed")
+return nothing
+"""
+    proto = runtime.compile(source)
+    assert proto.jit_fully_typed is True
+    assert runtime.vm.run(proto) is None
+    assert output == [b"typed\n"]
+
+
 def test_typed_mode_rejects_untyped_implicit_globals():
     with pytest.raises(LuaSyntaxError, match="global 'missing' is not declared"):
         LuaRuntime().compile("-- luapyre: typed\nreturn missing")
