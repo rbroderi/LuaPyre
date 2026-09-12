@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
-
 from .binary_chunks import (
     BinaryChunkError,
     P_EXTRAARG,
@@ -28,7 +26,7 @@ def _normalise_compiler_pairs(proto) -> None:
     mandatory companion without changing observable table semantics.
 
     A source-level tail return is emitted as TAILCALL followed by an
-    unreachable RETURN B=0.  The LuaPyre TAILCALL already terminates the frame;
+    unreachable RETURN B=0. The LuaPyre TAILCALL already terminates the frame;
     rewrite only that immediately-following dead RETURN to a zero-result return
     so it remains a valid (but unreachable) translated instruction. Reachable
     open RETURN instructions keep their strict multi-result validation.
@@ -49,6 +47,7 @@ def _normalise_compiler_pairs(proto) -> None:
 
 
 def load_puc55_chunk(data: bytes):
+    """Validate, normalize, and translate a PUC-Lua 5.5 binary chunk."""
     proto = _decode_puc_chunk(data)
     _normalise_compiler_pairs(proto)
     return _Translator(proto).translate()
