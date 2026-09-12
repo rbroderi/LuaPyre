@@ -1,0 +1,29 @@
+name: 0.16 typed IR same-runner A/B
+
+on:
+  push:
+    branches:
+      - v0.16-typed-ir
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: _baseline
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compare merged main with typed IR branch
+        shell: bash
+        run: |
+          echo 'baseline (merged 0.15)'
+          PYTHONPATH="$GITHUB_WORKSPACE/_baseline/src" python benchmarks/typed_ir_ab.py --label main
+          echo 'typed IR branch'
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python benchmarks/typed_ir_ab.py --label typed-ir
