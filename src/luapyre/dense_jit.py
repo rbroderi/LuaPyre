@@ -14,6 +14,10 @@ from .table import LuaTable
 from .values import i64, lua_equal, type_matches
 
 
+_INT_MIN = -(1 << 63)
+_INT_MAX = (1 << 63) - 1
+
+
 class DenseEmitterJITMixin:
     """Dense compiler-side dispatch plus AST helper inlining.
 
@@ -47,7 +51,6 @@ class DenseEmitterJITMixin:
             "    regs = frame.regs",
             "    consts = frame.proto.constants",
             "    cells = frame.cells",
-            "    _forloop = vm._forloop",
             "    used = 0",
             f"    while budget - used >= {cost}:",
         ]
@@ -57,11 +60,28 @@ class DenseEmitterJITMixin:
             if emitter is None or not emitter(lines, item, offset, trusted):
                 return super()._compile_loop(frame, start_pc, backedge_pc)
 
+        # FORPREP has already normalized numeric loop registers before this hot
+        # loop can be compiled. Emit VM._forloop's exact mechanics directly so
+        # the backedge no longer pays a Python bound-method call every iteration.
+        loop_ins = ir.loop_ins
+        idx, limit, step = loop_ins.a, loop_ins.b, loop_ins.c
         lines.extend(
             [
-                "        if _forloop(regs, _loop_ins):",
-                f"            used += {cost}",
-                "            continue",
+                f"        _idx = regs[{idx}]",
+                f"        _limit = regs[{limit}]",
+                f"        _step = regs[{step}]",
+                "        if type(_idx) is int and type(_limit) is int and type(_step) is int:",
+                "            _next = _idx + _step",
+                "            if _next >= _INT_MIN and _next <= _INT_MAX and not ((_step > 0 and _next > _limit) or (_step < 0 and _next < _limit)):",
+                f"                regs[{idx}] = _next",
+                f"                used += {cost}",
+                "                continue",
+                "        else:",
+                "            _next = float(_idx) + float(_step)",
+                "            if not ((_step > 0 and _next > _limit) or (_step < 0 and _next < _limit)):",
+                f"                regs[{idx}] = _next",
+                f"                used += {cost}",
+                "                continue",
                 f"        used += {cost}",
                 f"        frame.pc = {ir.exit_pc}",
                 "        return used, True",
@@ -74,12 +94,13 @@ class DenseEmitterJITMixin:
                 "_Cell": Cell,
                 "_LuaTable": LuaTable,
                 "_NUM_TYPES": (int, float),
+                "_INT_MIN": _INT_MIN,
+                "_INT_MAX": _INT_MAX,
                 # Kept as a safety fallback for helper forms the optimizer does
                 # not yet recognize. Direct assignment calls are AST-inlined.
                 "_i64": i64,
                 "_lua_equal": lua_equal,
                 "_isnan": __import__("math").isnan,
-                "_loop_ins": ir.loop_ins,
             }
         )
         tree = optimize_generated_ast(ast.parse("\n".join(lines)))
