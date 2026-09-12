@@ -45,7 +45,22 @@ def _replacement_bytes(value):
     return None
 
 
+def _quote_float(value: float) -> bytes:
+    if math.isnan(value):
+        return b"(0/0)"
+    if math.isinf(value):
+        return b"1e9999" if value > 0 else b"-1e9999"
+    if value == 0.0:
+        return b"-0x0p+0" if math.copysign(1.0, value) < 0 else b"0x0p+0"
+    text = value.hex()
+    mantissa, exponent = text.split("p", 1)
+    if "." in mantissa:
+        mantissa = mantissa.rstrip("0").rstrip(".")
+    return f"{mantissa}p{exponent}".encode("ascii")
+
+
 def _quote_lua(value) -> bytes:
+    """Serialize one value using Lua 5.5's exact ``%q`` literal rules."""
     if value is None:
         return b"nil"
     if value is True:
@@ -53,29 +68,28 @@ def _quote_lua(value) -> bytes:
     if value is False:
         return b"false"
     if type(value) is int:
+        if value == INT_MIN:
+            return f"0x{value & UINT_MASK:x}".encode("ascii")
         return str(value).encode("ascii")
     if type(value) is float:
-        if math.isnan(value):
-            return b"(0/0)"
-        if math.isinf(value):
-            return b"(1/0)" if value > 0 else b"(-1/0)"
-        return value.hex().encode("ascii")
+        return _quote_float(value)
     if not isinstance(value, bytes):
         raise LuaRuntimeError("bad argument to 'format' for %q")
+
     out = bytearray(b'"')
-    escapes = {
-        7: b"\\a", 8: b"\\b", 9: b"\\t", 10: b"\\n", 11: b"\\v",
-        12: b"\\f", 13: b"\\r", 34: b'\\"', 92: b"\\\\",
-    }
-    for byte in value:
-        escaped = escapes.get(byte)
-        if escaped is not None:
-            out.extend(escaped)
-        elif 32 <= byte <= 126:
+    for index, byte in enumerate(value):
+        if byte in (ord('"'), ord('\\'), ord('\n')):
+            out.append(ord('\\'))
             out.append(byte)
+        elif byte < 32 or byte == 127:
+            next_byte = value[index + 1] if index + 1 < len(value) else None
+            if next_byte is not None and ord('0') <= next_byte <= ord('9'):
+                out.extend(f"\\{byte:03d}".encode("ascii"))
+            else:
+                out.extend(f"\\{byte}".encode("ascii"))
         else:
-            out.extend(f"\\x{byte:02X}".encode("ascii"))
-    out.append(34)
+            out.append(byte)
+    out.append(ord('"'))
     return bytes(out)
 
 
