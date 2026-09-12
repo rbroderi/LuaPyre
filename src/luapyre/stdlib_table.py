@@ -5,7 +5,8 @@ from functools import cmp_to_key
 from .errors import LuaRuntimeError
 from .table import LuaTable
 from .values import MultiValue
-from .stdlib_support import need_bytes, need_integer, need_table, number_to_bytes, put
+from .vm import HostFunction
+from .stdlib_support import need_bytes, need_integer, need_table, number_to_bytes
 
 
 def install_table_library(globals_table: LuaTable, vm) -> LuaTable:
@@ -126,8 +127,6 @@ def install_table_library(globals_table: LuaTable, vm) -> LuaTable:
             raise LuaRuntimeError("too many results to unpack")
         return MultiValue(tuple(tab.rawget(index) for index in range(i, j + 1)))
 
-    put(tablelib, "table.concat", concat)
-    # Fields use their Lua-visible short names; HostFunction.name remains fully qualified.
     for short, fn in (
         ("concat", concat),
         ("create", create),
@@ -142,7 +141,3 @@ def install_table_library(globals_table: LuaTable, vm) -> LuaTable:
 
     globals_table.rawset(b"table", tablelib)
     return tablelib
-
-
-# Kept local to avoid exposing the registration helper as part of the Lua library.
-from .vm import HostFunction
