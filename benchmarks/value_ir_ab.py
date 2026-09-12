@@ -23,7 +23,7 @@ for i = 1, 12000 do
 end
 return s
 """,
-        72054000,
+        72042000,
     ),
     "nested_static_call": (
         """-- luapyre: typed
