@@ -37,14 +37,6 @@ jobs:
             --classify \
             --baseline \
             --report-json .official-lua-551/report.json
-      - name: Probe 0.12 compatibility targets
-        if: ${{ github.ref_name == 'v0.12-official-suite-expansion' }}
-        run: |
-          python tools/official_551.py \
-            --work-dir .official-lua-551 \
-            --no-download \
-            --echo \
-            --files pm.lua tpack.lua vararg.lua bitwise.lua math.lua utf8.lua
       - name: Run explicitly selected upstream files
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.files != '' }}
         env:
