@@ -46,14 +46,15 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
                 level = int(level)
             else:
                 raise LuaRuntimeError("bad argument #2 to 'error' (number has no integer representation)")
-        if value is None:
-            value = b"<no error object>"
+        original_is_string = isinstance(value, bytes)
         located = False
-        if isinstance(value, bytes) and level > 0:
+        if original_is_string and level > 0:
             prefix = where_from_frames(vm._active_frames or (), level)
             if prefix:
                 value = prefix + value
                 located = True
+        if value is None:
+            value = b"<no error object>"
         raise LuaRaisedError(value, located=located)
 
     put("error", lua_error)
