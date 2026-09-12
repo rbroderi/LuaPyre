@@ -54,6 +54,22 @@ local second: integer = reuse(false, 4, 7)
 return first + second
 """
 
+_SIBLING_SOURCE = """-- luapyre: typed
+local function sibling(flag: boolean, a: integer, b: integer): integer
+    local value: integer = 0
+    if flag then
+        value = a + b
+    else
+        value = a + b
+    end
+    local again = a + b
+    return value + again
+end
+local first: integer = sibling(true, 4, 7)
+local second: integer = sibling(false, 4, 7)
+return first + second
+"""
+
 _LOOP_SOURCE = """-- luapyre: typed
 local function sum_to(n: integer): integer
     local i: integer = 0
@@ -85,6 +101,25 @@ local function branchy(n: integer): integer
 end
 local first: integer = branchy(10)
 local second: integer = branchy(10)
+return first + second
+"""
+
+_NESTED_LOOP_SOURCE = """-- luapyre: typed
+local function nested(n: integer, m: integer): integer
+    local i: integer = 0
+    local total: integer = 0
+    while i < n do
+        local j: integer = 0
+        while j < m do
+            total = total + i + j
+            j = j + 1
+        end
+        i = i + 1
+    end
+    return total
+end
+local first: integer = nested(3, 4)
+local second: integer = nested(3, 4)
 return first + second
 """
 
@@ -135,6 +170,15 @@ def test_cfg_value_ir_reuses_expression_only_through_dominance():
     assert any(len(dominators) > 1 for dominators in plan.dominators[1:])
 
 
+def test_cfg_value_ir_does_not_reuse_sibling_expression_without_dominance():
+    runtime = LuaRuntime(jit=False)
+    sibling = _child(runtime, _SIBLING_SOURCE, "sibling")
+    plan = CFGValueIRCompiler(sibling).compile()
+    assert plan is not None
+    assert plan.phi_nodes
+    assert not plan.cross_block_cse_pcs
+
+
 def test_cfg_value_ir_builds_loop_carried_phi_values_from_natural_backedge():
     runtime = LuaRuntime(jit=False)
     sum_to = _child(runtime, _LOOP_SOURCE, "sum_to")
@@ -160,6 +204,22 @@ def test_cfg_value_ir_structures_simple_natural_loop_without_state_dispatch():
 def test_cfg_value_ir_branchy_reducible_loop_uses_generic_cyclic_backend():
     runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
     assert runtime.execute(_BRANCHY_LOOP_SOURCE) == 30
+    assert "<luapyre-cfg-value-ir-function>" in _compiled_function_filenames(runtime)
+
+
+def test_cfg_value_ir_nested_natural_loops_share_the_cyclic_value_graph():
+    runtime = LuaRuntime(jit=False)
+    nested = _child(runtime, _NESTED_LOOP_SOURCE, "nested")
+    plan = CFGValueIRCompiler(nested).compile()
+    assert plan is not None
+    assert len(plan.natural_loops) == 2
+    assert len(plan.backedges) == 2
+    for loop in plan.natural_loops:
+        assert loop.header in plan.dominators[loop.latch]
+        assert plan.blocks[loop.header].phi_nodes
+
+    runtime = LuaRuntime(jit_threshold=1, fuel=2_000_000)
+    assert runtime.execute(_NESTED_LOOP_SOURCE) == 60
     assert "<luapyre-cfg-value-ir-function>" in _compiled_function_filenames(runtime)
 
 
