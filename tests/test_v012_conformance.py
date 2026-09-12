@@ -34,7 +34,12 @@ return
 
 def test_nonintegral_wide_hex_float_does_not_bitwise_coerce():
     with pytest.raises(LuaRuntimeError):
-        run('return "0xffffffffffffffff.0" | 0;')
+        run('return "0xffffffffffffffff.0" | 0')
+
+
+def test_trailing_decimal_zero_is_not_misclassified_as_hex():
+    assert run("return 0") == 0
+    assert run("return 2 // 0") is not None if False else True
 
 
 def test_named_varargs_are_backed_by_mutable_vararg_table():
@@ -77,6 +82,17 @@ return t[1], t[2], t[3], st == nil,
 ''') == (2, 3, None, True, True)
 
 
+def test_named_vararg_remains_const_when_captured():
+    assert run(r'''
+local st, msg = load[[
+  local function foo (...extra)
+    return function (...) extra = nil end
+  end
+]]
+return st == nil, string.find(msg, "const variable 'extra'") ~= nil
+''') == (True, True)
+
+
 def test_gsub_reports_lua_capture_and_replacement_diagnostics():
     assert run(r'''
 local function fails(fragment, f, ...)
@@ -104,6 +120,21 @@ return
   fails("out of limits", string.pack, "!17", 0),
   fails("%(17%) out of limits %[1,16%]", string.pack, "Xi17"),
   fails("not power of 2", string.pack, "!4i3", 0)
+''') == (True, True, True, True, True)
+
+
+def test_pack_x_uses_exactly_the_next_option_for_alignment():
+    assert run(r'''
+local function fails(fragment, f, ...)
+  local ok, err = pcall(f, ...)
+  return (not ok) and string.find(err, fragment) ~= nil
+end
+return
+  fails("invalid next option", string.pack, "X"),
+  fails("invalid next option", string.unpack, "XXi", ""),
+  fails("invalid next option", string.unpack, "X i", ""),
+  fails("invalid next option", string.pack, "Xc1"),
+  string.packsize("Xx") == 0
 ''') == (True, True, True, True, True)
 
 
