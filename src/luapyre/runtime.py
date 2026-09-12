@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import OrderedDict
+
 from .binary_chunks import fresh_loaded_closure
 from .bytecode import Closure
 from .capabilities import RuntimeCapabilities
@@ -47,7 +49,14 @@ class LuaRuntime:
         file_loader=None,
         jit=True,
         jit_threshold=32,
+        source_cache_size=128,
     ):
+        if type(source_cache_size) is not int or source_cache_size < 0:
+            raise ValueError("source_cache_size must be a non-negative integer")
+        self.source_cache_size = source_cache_size
+        self._source_cache = OrderedDict()
+        self._source_cache_hits = 0
+        self._source_cache_misses = 0
         self.globals = LuaTable()
         if jit:
             self.vm = OptimizingJITVM(
@@ -176,13 +185,42 @@ class LuaRuntime:
         return MultiValue(tuple(values))
 
     def compile(self, source: str, *, chunkname: str | bytes = "=(luapyre)"):
+        key = (source, type(chunkname), chunkname)
+        if self.source_cache_size:
+            cached = self._source_cache.get(key)
+            if cached is not None:
+                self._source_cache.move_to_end(key)
+                self._source_cache_hits += 1
+                return cached
+        self._source_cache_misses += 1
         mode = detect_source_mode(source)
         fully_typed = mode == FULLY_TYPED_MODE
         parser = TypedParser(source) if fully_typed else Parser(source)
-        return SourceCompiler(
+        proto = SourceCompiler(
             chunkname,
             fully_typed=fully_typed,
         ).compile(parser.parse())
+        if self.source_cache_size:
+            self._source_cache[key] = proto
+            self._source_cache.move_to_end(key)
+            while len(self._source_cache) > self.source_cache_size:
+                self._source_cache.popitem(last=False)
+        return proto
+
+    @property
+    def source_cache_info(self):
+        """Return bounded source-cache counters and current occupancy."""
+        return {
+            "hits": self._source_cache_hits,
+            "misses": self._source_cache_misses,
+            "size": len(self._source_cache),
+            "maxsize": self.source_cache_size,
+        }
+
+    def clear_source_cache(self) -> None:
+        self._source_cache.clear()
+        self._source_cache_hits = 0
+        self._source_cache_misses = 0
 
     def execute(self, source: str, *, fuel=None, chunkname: str | bytes = "=(luapyre)"):
         return self.vm.run(self.compile(source, chunkname=chunkname), fuel=fuel)

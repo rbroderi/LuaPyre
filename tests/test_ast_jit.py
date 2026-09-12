@@ -4,7 +4,7 @@ import ast
 
 import pytest
 
-from luapyre import LuaQuotaError, LuaRuntime, LuaTable
+from luapyre import LuaQuotaError, LuaRuntime, LuaRuntimeError, LuaTable
 from luapyre.ast_backend import (
     JumpListLayout,
     inline_local_jump_list,
@@ -160,6 +160,22 @@ return fib(12)
     assert runtime.execute(source) == 144
     assert runtime.vm.jit.function_compiles >= 1
     assert runtime.vm.jit.function_executions >= 1
+    assert runtime.jit_stats.compiled_frame_allocations <= 12
+
+
+def test_compiled_recursive_frame_pool_preserves_stack_limit():
+    runtime = LuaRuntime(jit_threshold=1, max_frames=8, fuel=3_000_000)
+    source = """-- luapyre: typed
+local function fib(n: integer): integer
+    if n < 2 then
+        return n
+    end
+    return fib(n - 1) + fib(n - 2)
+end
+return fib(20)
+"""
+    with pytest.raises(LuaRuntimeError, match="stack overflow"):
+        runtime.execute(source)
 
 
 def test_fully_typed_nested_numeric_loops_compile():

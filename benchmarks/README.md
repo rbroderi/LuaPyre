@@ -62,3 +62,6 @@ For performance comparisons, compare runs on the same runner class and Python ve
   and range-proven integer shapes affected by 0.25 code generation. Run the
   same command from each revision with a different `--label`; warmed bytecode
   specialization itself is asserted in `tests/test_cpython_specialization.py`.
+- `runtime_overheads_ab.py` compares 0.26 trace code generation, recursive
+  compiled-call Frame recycling, and repeated-source execution. Run the same
+  script from each revision with distinct `--label` values.

@@ -5,6 +5,7 @@ from .errors import LuaRuntimeError
 from .function_jit import _FUNC_RETURN
 from .jitvm import TieredJITVM
 from .super_jit import SuperPythonJIT
+from .values import static_value_type, type_matches
 
 
 class OptimizingJITVM(TieredJITVM):
@@ -36,6 +37,52 @@ class OptimizingJITVM(TieredJITVM):
             enabled=jit_enabled,
         )
 
+    def _acquire_compiled_frame(
+        self, compiled, closure, args, return_reg, return_want
+    ):
+        """Reuse an inactive exact Frame for a compiled call when available."""
+        proto = closure.proto
+        pool = compiled.frame_pool
+        if pool:
+            frame = pool.pop()
+            regs = frame.regs
+            for index in range(proto.param_count):
+                arg = args[index] if index < len(args) else None
+                expected = proto.param_types[index].name
+                if not type_matches(expected, arg):
+                    raise LuaRuntimeError(
+                        f"argument {index + 1}: expected {expected}, "
+                        f"got {static_value_type(arg).name}"
+                    )
+                regs[index] = arg
+            if proto.env_reg >= 0:
+                regs[proto.env_reg] = closure.env
+            frame.closure = closure
+            frame.pc = 0
+            frame.return_reg = return_reg
+            frame.return_want = return_want
+            frame.varargs = ()
+            frame.cells.clear()
+            frame.close_stack.clear()
+            frame.pending_close_target = None
+            frame.pending_error = None
+            frame.puc_close_stack.clear()
+            frame.pending_puc_close_reg = None
+            return frame
+
+        self.jit.stats.compiled_frame_allocations += 1
+        return self._new_frame(closure, list(args), return_reg, return_want)
+
+    def _release_compiled_frame(self, compiled, frame) -> None:
+        pool = compiled.frame_pool
+        if len(pool) >= min(128, self.max_frames):
+            return
+        frame.cells.clear()
+        frame.close_stack.clear()
+        frame.puc_close_stack.clear()
+        frame.pending_error = None
+        pool.append(frame)
+
     def _invoke(self, frames, parent, fn, args, dest, want, tail=False):
         # The base TieredJITVM exposes a synchronized main-thread budget only
         # while executing a direct CALL/CALLV handler. Coroutines already keep
@@ -58,7 +105,7 @@ class OptimizingJITVM(TieredJITVM):
             if compiled is not None:
                 if len(frames) >= self.max_frames:
                     raise LuaRuntimeError("stack overflow")
-                child = self._new_frame(fn, list(args), dest, want)
+                child = self._acquire_compiled_frame(compiled, fn, args, dest, want)
                 frames.append(child)
                 meter = [0]
                 try:
@@ -83,6 +130,7 @@ class OptimizingJITVM(TieredJITVM):
                     frames.pop()
                     self._write_results(parent.regs, dest, want, values)
                     self.jit.function_executions += 1
+                    self._release_compiled_frame(compiled, child)
                 else:
                     # Guard/budget suspension deliberately leaves the compiled
                     # frame (and possibly a nested child) on the real VM stack.

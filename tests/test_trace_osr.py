@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dis
+
 from luapyre import LuaQuotaError, LuaRuntime
 from luapyre.trace_jit import TraceJIT
 
@@ -31,6 +33,24 @@ def test_hot_cfg_edge_compiles_trace_and_enters_with_live_frame_state():
     assert compiled
     assert compiled[0].runner.__code__.co_filename == "<luapyre-cfg-trace>"
     assert compiled[0].plan.loop
+
+
+def test_trace_codegen_promotes_registers_and_elides_proven_safe_wraps():
+    runtime = LuaRuntime(jit_threshold=2, fuel=2_000_000)
+    assert runtime.execute(_TRACE_SOURCE) == 3160
+    compiled = next(
+        trace
+        for _proto, trace in runtime.vm.trace_jit.cache.values()
+        if trace is not None and trace.plan.loop
+    )
+    code = compiled.runner.__code__
+    promoted = {name for name in code.co_varnames if name.startswith("_r")}
+    instructions = tuple(dis.get_instructions(compiled.runner, adaptive=True))
+    assert promoted
+    assert "_i64" not in code.co_names
+    # The trace touches registers repeatedly, but promotion leaves only entry
+    # loads and exit spills instead of indexing the register array per opcode.
+    assert sum(ins.opname.startswith("BINARY_SUBSCR") for ins in instructions) <= 10
 
 
 def test_trace_side_exit_records_exact_exit_pc():

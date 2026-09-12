@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from types import FunctionType
 
 from .bytecode import Op, Proto
 from .cfg_value_ir import CFGValueIRCompiler
+from .jit_codegen import (
+    generated_namespace,
+    optimize_generated_ast,
+    promote_constant_registers,
+)
+from .range_analysis import analyze_integer_ranges
 from .values import i64
 
 
@@ -161,6 +168,7 @@ class TraceJIT:
 
     def _compile(self, plan: TracePlan) -> CompiledTrace:
         expected = dict(plan.expected_edges)
+        ranges = analyze_integer_ranges(plan.proto)
         lines = [
             "def _jit_cfg_trace(vm, frame, budget):",
             "    regs = frame.regs",
@@ -181,7 +189,10 @@ class TraceJIT:
                 lines.append(f"{indent}{a} = {b}")
             elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
-                lines.append(f"{indent}{a} = _i64({b} {symbol} {c})")
+                expression = f"{b} {symbol} {c}"
+                lines.append(
+                    f"{indent}{a} = {expression if ranges.overflow_free(pc) else f'_i64({expression})'}"
+                )
             elif ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[ins.op]
                 lines.append(f"{indent}{a} = float({b} {symbol} {c})")
@@ -225,13 +236,15 @@ class TraceJIT:
                     f"{indent}return used, _TRACE_CONTINUE, None",
                 ]
             )
-        namespace = {
+        namespace = generated_namespace({
             "_i64": i64,
             "_TRACE_CONTINUE": TRACE_CONTINUE,
             "_TRACE_SIDE_EXIT": TRACE_SIDE_EXIT,
             "_TRACE_RETURN": TRACE_RETURN,
-        }
-        exec(compile("\n".join(lines), "<luapyre-cfg-trace>", "exec"), namespace)
+        })
+        tree = optimize_generated_ast(ast.parse("\n".join(lines)))
+        tree = promote_constant_registers(tree, spill_returns=True)
+        exec(compile(tree, "<luapyre-cfg-trace>", "exec"), namespace)
         return CompiledTrace(plan, namespace["_jit_cfg_trace"])
 
     def maybe_trace(self, proto: Proto, start_pc: int) -> CompiledTrace | None:
