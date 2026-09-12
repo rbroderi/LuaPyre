@@ -4,8 +4,12 @@ import ast
 
 import pytest
 
-from luapyre import LuaQuotaError, LuaRuntime
-from luapyre.ast_backend import JumpListLayout, inline_local_jump_list
+from luapyre import LuaQuotaError, LuaRuntime, LuaTable
+from luapyre.ast_backend import (
+    JumpListLayout,
+    inline_local_jump_list,
+    optimize_semantic_helpers,
+)
 from luapyre.bytecode import Op
 
 
@@ -37,6 +41,72 @@ def run(x):
     ns = {}
     exec(compile(tree, "<jump-list-test>", "exec"), ns)
     assert ns["run"](3) == 8
+
+
+def test_semantic_ast_fast_paths_preserve_dense_table_behavior():
+    tree = ast.parse(
+        """
+def run(t, key, value):
+    t.rawset(key, value)
+    result = t.rawget(key)
+    return result, t.rawlen(), t.version
+"""
+    )
+    tree = optimize_semantic_helpers(tree)
+    text = ast.unparse(tree)
+    assert "t.array[key - 1]" in text
+    assert "t.version += 1" in text
+    assert "len(t.array)" in text
+
+    ns = {"_LuaTable": LuaTable, "_NUM_TYPES": (int, float)}
+    exec(compile(tree, "<semantic-table-fastpath-test>", "exec"), ns)
+    run = ns["run"]
+
+    table = LuaTable()
+    assert run(table, 1, 42) == (42, 1, 1)
+    assert run(table, 1, 43) == (43, 1, 2)
+
+    # A gap takes the exact rawset/rawget fallback and therefore lives in the
+    # hash part until the dense array catches up.
+    assert run(table, 3, 99) == (99, 1, 3)
+    assert table.rawget(3) == 99
+
+    # Nil deletion also remains on rawset so trailing-array shrink semantics are
+    # not approximated by the fast path.
+    assert run(table, 2, 7) == (7, 3, 4)
+    assert run(table, 3, None) == (None, 2, 5)
+
+
+def test_semantic_ast_fast_paths_preserve_lua_equality_and_type_guards():
+    tree = ast.parse(
+        """
+def equal(a, b):
+    return _lua_equal(a, b)
+
+def integer_value(value):
+    return _type_matches("integer", value)
+"""
+    )
+    tree = optimize_semantic_helpers(tree)
+    text = ast.unparse(tree)
+    assert "_lua_equal" not in text
+    assert "_type_matches" not in text
+
+    ns = {"_LuaTable": LuaTable, "_NUM_TYPES": (int, float)}
+    exec(compile(tree, "<semantic-helper-fastpath-test>", "exec"), ns)
+    equal = ns["equal"]
+    integer_value = ns["integer_value"]
+
+    assert equal(1, 1.0) is True
+    assert equal(True, 1) is False
+    assert equal(b"x", b"x") is True
+    assert equal(None, None) is True
+    assert equal(LuaTable(), LuaTable()) is False
+    same = LuaTable()
+    assert equal(same, same) is True
+    assert integer_value(4) is True
+    assert integer_value(4.0) is False
+    assert integer_value(True) is False
 
 
 def test_fully_typed_nested_while_stays_in_super_region():
@@ -104,6 +174,28 @@ end
 return total
 """
     assert runtime.execute(source) == 6438750
+    assert runtime.jit_stats.loop_compiles >= 1
+
+
+def test_fully_typed_dense_tables_compile_and_preserve_results():
+    runtime = LuaRuntime(jit_threshold=1, fuel=4_000_000)
+    source = """-- luapyre: typed
+local t = {}
+for i = 1, 100 do
+    t[i] = i * 2
+end
+local total = 0
+for round = 1, 4 do
+    for i = 1, 100 do
+        local value: integer = t[i]
+        value = value + 1
+        t[i] = value
+        total = total + value
+    end
+end
+return total
+"""
+    assert runtime.execute(source) == 41400
     assert runtime.jit_stats.loop_compiles >= 1
 
 
