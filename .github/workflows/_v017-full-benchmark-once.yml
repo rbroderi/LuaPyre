@@ -1,0 +1,16 @@
+name: 0.17 full runtime benchmark once
+
+on:
+  push:
+    branches:
+      - v0.17-value-ir
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    uses: ./.github/workflows/benchmark-runtimes.yml
+    with:
+      repeats: '7'
+      warmups: '3'
