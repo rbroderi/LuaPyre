@@ -10,13 +10,6 @@ from .threadvm import _CloseSelfSignal, _YieldSignal
 from .vm import Frame
 
 
-# Main-thread interpretation keeps fuel in a local variable, exactly like the
-# Tier-0 VM. Synchronize the JIT-visible budget only at opcodes that can consume
-# compiled instructions. This avoids a method/attribute tax on every cold op.
-_MAIN_JIT_SYNC_OPS = frozenset((Op.CALL, Op.CALLV, Op.JFORLOOP))
-_MAIN_LEAF_CALL_OPS = frozenset((Op.CALL, Op.CALLV))
-
-
 def _jit_forloop(vm, frames, frame, ins, regs, constants):
     """JFORLOOP handler with a low-overhead per-backedge JIT state cache."""
     if not vm._forloop(regs, ins):
@@ -113,7 +106,7 @@ class TieredJITVM(GarbageCollectedVM):
         # Synchronous stdlib callbacks intentionally stay on the interpreter:
         # their local fuel accounting and visible-frame prefix are specialized
         # for callback semantics. On the main thread leaf compilation is entered
-        # only from a direct CALL/CALLV whose local fuel has just been synced.
+        # only from a direct CALL/CALLV wrapper whose local fuel was just synced.
         thread = self.current_thread
         leaf_budget_is_current = (
             thread is not None and not thread.is_main
@@ -152,9 +145,30 @@ class TieredJITVM(GarbageCollectedVM):
                 root_regs[proto.env_reg] = self.globals
             frames = [Frame(root, root_regs)]
             final_values = ()
-            handlers = _JIT_OPCODE_HANDLERS
-            sync_ops = _MAIN_JIT_SYNC_OPS
-            leaf_ops = _MAIN_LEAF_CALL_OPS
+
+            # Only these three handlers need to see/mutate the JIT-visible main
+            # budget. Wrapping them once keeps the hot dispatch loop identical
+            # to Tier 0: one opcode lookup and one handler call, with no per-op
+            # membership test or fuel helper call.
+            handlers = dict(_JIT_OPCODE_HANDLERS)
+
+            def synced(handler, *, leaf_allowed=False):
+                def wrapped(vm, active_frames, frame, ins, regs, constants):
+                    nonlocal remaining
+                    self._jit_main_fuel = remaining
+                    self._jit_main_leaf_allowed = leaf_allowed
+                    try:
+                        return handler(
+                            vm, active_frames, frame, ins, regs, constants
+                        )
+                    finally:
+                        remaining = self._jit_main_fuel
+                        self._jit_main_leaf_allowed = False
+                return wrapped
+
+            handlers[Op.CALL] = synced(OPCODE_HANDLERS[Op.CALL], leaf_allowed=True)
+            handlers[Op.CALLV] = synced(OPCODE_HANDLERS[Op.CALLV], leaf_allowed=True)
+            handlers[Op.JFORLOOP] = synced(_jit_forloop)
 
             while frames:
                 try:
@@ -171,31 +185,14 @@ class TieredJITVM(GarbageCollectedVM):
 
                     ins = frame.proto.code[frame.pc]
                     frame.pc += 1
-                    handler = handlers[ins.op]
-                    if ins.op in sync_ops:
-                        self._jit_main_fuel = remaining
-                        self._jit_main_leaf_allowed = ins.op in leaf_ops
-                        try:
-                            result = handler(
-                                self,
-                                frames,
-                                frame,
-                                ins,
-                                frame.regs,
-                                frame.proto.constants,
-                            )
-                        finally:
-                            remaining = self._jit_main_fuel
-                            self._jit_main_leaf_allowed = False
-                    else:
-                        result = handler(
-                            self,
-                            frames,
-                            frame,
-                            ins,
-                            frame.regs,
-                            frame.proto.constants,
-                        )
+                    result = handlers[ins.op](
+                        self,
+                        frames,
+                        frame,
+                        ins,
+                        frame.regs,
+                        frame.proto.constants,
+                    )
                     if result is not None:
                         final_values = result
 
