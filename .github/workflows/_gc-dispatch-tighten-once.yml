@@ -1,0 +1,32 @@
+name: one-shot GC dispatch tighten
+
+on:
+  push:
+    branches:
+      - v0.12-dispatch-cleanup
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.12-dispatch-cleanup
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Tighten GC dispatch completeness
+        run: |
+          python tools/_gc_dispatch_tighten_once.py
+          python -m compileall -q src tests/test_dispatch_architecture.py
+      - name: Commit cleanup
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Make GC opcode dispatch fail closed"
+          git push origin HEAD:v0.12-dispatch-cleanup
