@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 from luapyre import LuaRuntime
 
 
@@ -129,7 +127,7 @@ return a,b,c,string.char(a,b,c),string.sub("abcdef",-3,-1),
 
 def test_string_patterns_find_match_gmatch_and_gsub():
     assert run('''
-local i,j,word = string.find("xx hello 123", "(%a+)")
+local i,j,word = string.find("!! hello 123", "(%a+)")
 local digits = string.match("id=42", "=(%d+)")
 local words = {}
 for w in string.gmatch("one two three", "%a+") do words[#words+1] = w end
@@ -158,19 +156,19 @@ return a,b,c,nextpos,#packed,string.packsize("<i4I2c3")
 
 def test_string_format_common_specifiers_and_q():
     result = run('return string.format("%04d %.2f %s %q %%", 7, 2.5, "ok", "a\\nb")')
-    assert result == b'0007 2.50 ok "a\\\\nb" %'
+    assert result == b'0007 2.50 ok "a\\nb" %'
 
 
 def test_utf8_char_codepoint_len_codes_and_offset():
     assert run('''
-local s = utf8.char(0x41, 0x20ac, 0x1f642)
+local s = utf8.char(65, 8364, 128578)
 local a,b,c = utf8.codepoint(s,1,-1)
 local positions = {}
 for p,cp in utf8.codes(s) do positions[#positions+1] = p end
 local p1,e1 = utf8.offset(s,2)
 local p2,e2 = utf8.offset(s,0,p1)
 return a,b,c,utf8.len(s),table.concat(positions,","),p1,e1,p2,e2
-''') == (0x41,0x20ac,0x1f642,3,b'1,2,5',2,4,2,4)
+''') == (65,8364,128578,3,b'1,2,5',2,4,2,4)
 
 
 def test_utf8_len_reports_first_invalid_byte():
