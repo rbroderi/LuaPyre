@@ -4,7 +4,8 @@ from .parser import Parser
 from .compiler import Compiler
 from .table import LuaTable
 from .values import MultiValue, i64
-from .vm import VM, HostFunction
+from .threadvm import CoroutineVM, LuaThread
+from .vm import HostFunction
 from .stdlib import install_safe_stdlib
 
 
@@ -18,9 +19,9 @@ class LuaRuntime:
 
     def __init__(self, *, fuel=1_000_000, max_frames=1000, safe_stdlib=True):
         self.globals = LuaTable()
+        self.vm = CoroutineVM(self.globals, fuel=fuel, max_frames=max_frames)
         if safe_stdlib:
-            install_safe_stdlib(self.globals)
-        self.vm = VM(self.globals, fuel=fuel, max_frames=max_frames)
+            install_safe_stdlib(self.globals, self.vm)
 
     def _to_lua(self, value):
         if value is None or type(value) in (bool, float) or isinstance(value, bytes):
@@ -29,7 +30,7 @@ class LuaRuntime:
             return i64(value)
         if isinstance(value, str):
             return value.encode("utf-8")
-        if isinstance(value, LuaTable):
+        if isinstance(value, (LuaTable, LuaThread)):
             return value
         if isinstance(value, (list, tuple)):
             t = LuaTable()
