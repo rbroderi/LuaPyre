@@ -121,7 +121,7 @@ This removes the synthetic `_state` dispatch from the common typed `while` loop 
 
 Branchy or nested reducible loops remain in the generic predecessor-tracked state machine. They still use the same loop phi nodes and exact fuel/side-exit contract; only the final control-flow lowering differs.
 
-The older structured hot-loop compiler remains available for top-level/region compilation and for shapes that never enter whole-function CFG Value IR. 0.19 therefore begins the unification without deleting a proven fallback prematurely.
+The older structured hot-loop compiler remains available for top-level/region compilation and for shapes that never enter whole-function CFG Value IR. In particular, numeric `for` bytecode (`FORPREP`/`FORLOOP`/`JFORLOOP`) remains on the proven older loop tiers in 0.19; this tranche unifies typed `while`/conditional-loop CFGs first rather than changing numeric-loop semantics at the same time.
 
 ## Exact fuel and side exits
 
@@ -138,6 +138,22 @@ At a loop header, predecessor-specific phi assignments occur before that preflig
 
 Differential tests compare JIT and interpreter outcomes across every nearby fuel value for the structured natural-loop path.
 
+## Performance
+
+A focused same-runner comparison was run on CPython 3.13.15 / Ubuntu 24.04 with 3 warmups and 9 timed samples per probe, comparing merged 0.18 (`db613bf`) with the 0.19 branch.
+
+| probe | merged 0.18 | 0.19 | change |
+| --- | ---: | ---: | ---: |
+| `pure_leaf_cse` | 8.507 ms | 8.256 ms | -3.0% |
+| `nested_static_call` | 67.084 ms | 65.979 ms | -1.6% |
+| `direct_branch_call` | 118.169 ms | 111.393 ms | -5.7% |
+| `constant_fold_leaf` | 9.811 ms | 9.689 ms | -1.2% |
+| `cfg_phi_branch` | 157.460 ms | 156.183 ms | -0.8% |
+| `cfg_dominance_cse` | 146.247 ms | 140.215 ms | **-4.1%** |
+| `cfg_while_loop` | 45.120 ms | 27.660 ms | **-38.7%** |
+
+The two 0.19-specific signals are the important ones: dominance-qualified cross-block reuse provides a measurable improvement without widening CSE unsafely, and CFG-native structured `while` lowering is about **1.63× faster** than merged 0.18 on the focused loop probe. Existing 0.17/0.18 probes remain in the same performance band; the smaller changes there should not be over-interpreted from one hosted-runner comparison.
+
 ## Fail-closed boundary
 
 0.19 does not broaden trust for ordinary Lua or binary chunks. The tier is available only to the existing fully typed source contract.
@@ -152,6 +168,7 @@ The first cyclic Value IR still rejects or delegates:
 - closures/upvalues
 - varargs
 - generic/metamethod-sensitive arithmetic
+- numeric `for` control opcodes, which retain the existing exact loop-specialization path
 - unsupported scalar type joins
 
 Those cases continue through the older exact JIT tiers or Tier 0.
