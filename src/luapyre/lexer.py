@@ -102,8 +102,6 @@ class Lexer:
         return None
 
     def _consume_long(self, level: int, *, comment: bool, line: int, col: int) -> bytes | None:
-        # Opening delimiter: '[' '='* '['. The analogous closing delimiter is
-        # ']' '='* ']'. Lua drops one immediate initial newline.
         self._take()
         for _ in range(level):
             self._take()
@@ -142,7 +140,7 @@ class Lexer:
                     chars.extend(ch.encode("utf-8"))
 
     def _read_short_string(self, quote: str, line: int, col: int) -> bytes:
-        self._take()  # opening quote
+        self._take()
         chars = bytearray()
         while True:
             ch = self._peek()
@@ -157,7 +155,7 @@ class Lexer:
                 chars.extend(self._take().encode("utf-8"))
                 continue
 
-            self._take()  # backslash
+            self._take()
             escape_line, escape_col = self.line, self.col
             esc = self._peek()
             if not esc:
@@ -263,11 +261,10 @@ class Lexer:
                 if floating:
                     value = float.fromhex(text)
                 else:
-                    integer = int(body, 16)
-                    if integer <= _UINT_MASK:
-                        value = integer if integer <= _INT_MAX else integer - (1 << 64)
-                    else:
-                        value = float.fromhex(text)
+                    # Lua accumulates hexadecimal integers in lua_Unsigned;
+                    # overflow is modular before the final signed cast.
+                    integer = int(body, 16) & _UINT_MASK
+                    value = integer if integer <= _INT_MAX else integer - (1 << 64)
             else:
                 floating = "." in text or "e" in text.lower()
                 if floating:
