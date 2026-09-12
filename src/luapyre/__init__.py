@@ -1,5 +1,6 @@
 from .runtime import LuaRuntime
 from .table import LuaTable
+from .threadvm import LuaThread
 from .values import MultiValue
 from .errors import (
     LuaPyreError,
@@ -12,6 +13,7 @@ from .errors import (
 __all__ = [
     "LuaRuntime",
     "LuaTable",
+    "LuaThread",
     "MultiValue",
     "LuaPyreError",
     "LuaSyntaxError",
@@ -20,4 +22,4 @@ __all__ = [
     "LuaQuotaError",
 ]
 
-__version__ = "0.4.0a1"
+__version__ = "0.5.0a1"
