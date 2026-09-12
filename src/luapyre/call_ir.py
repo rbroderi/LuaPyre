@@ -117,7 +117,7 @@ def analyze_direct_calls(proto: Proto) -> CallIRPlan:
 
     This is deliberately a small data-flow analysis. Closure identities may flow
     through MOVE/LOCAL. Any unsupported use simply drops the identity; it never
-    guesses. A direct site is recorded only for a fixed-result CALL to a fully
+    guesses. A direct site is recorded only for a CALL to a fully
     typed, non-vararg child with no captured upvalues or nested children. Those
     restrictions let the first Python backend retain exact closure allocation
     while delegating the actual child execution to the proven real-frame call
@@ -146,7 +146,7 @@ def analyze_direct_calls(proto: Proto) -> CallIRPlan:
 
         if op is Op.CALL:
             ref = closures.get(ins.b)
-            if ref is not None and ins.e >= 0:
+            if ref is not None:
                 child = proto.children[ref.child_index]
                 if (
                     child.jit_fully_typed

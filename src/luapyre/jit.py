@@ -64,6 +64,16 @@ class JITStats:
     trace_executions: int = 0
     trace_side_exits: int = 0
     osr_entries: int = 0
+    escape_plans: int = 0
+    virtual_frame_elisions: int = 0
+    virtual_frame_materializations: int = 0
+    virtual_multivalue_elisions: int = 0
+    virtual_multivalue_materializations: int = 0
+    escape_plans: int = 0
+    virtual_frame_elisions: int = 0
+    virtual_frame_materializations: int = 0
+    virtual_multivalue_elisions: int = 0
+    virtual_multivalue_materializations: int = 0
 
 
 @dataclass(frozen=True, slots=True)

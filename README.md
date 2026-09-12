@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.22.0a1**
+**Python 3.13+** · **current pre-alpha: 0.23.0a1**
 
 LuaPyre is not yet a complete Lua 5.5.1 implementation. Correct semantics come first; the runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
@@ -91,7 +91,7 @@ lua = LuaRuntime()
 
 Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default hotness threshold is 32 loop entries/calls and can be changed with `jit_threshold=`. Live counters are available through `lua.jit_stats`; `lua.jit_feedback` snapshots adaptive call/table cache states and deoptimization reasons.
 
-0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback. **0.22 adds profile-guided trace-shaped CFG compilation, hot side exits, and exact on-stack replacement from live Frame/PC/register state.** Typed branch targets become OSR entries after their edge reaches the hot threshold; trace guards return to the exact alternate PC, and source-bytecode fuel remains authoritative. Python AST remains a backend rather than the optimizer's semantic representation. See [`docs/trace-osr-0.22.md`](docs/trace-osr-0.22.md) and the earlier design notes in [`docs/`](docs/).
+0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, and 0.22 added hot trace-shaped CFG compilation and exact OSR. **0.23 adds backend-neutral escape analysis, virtual child Frames, virtual open-result MultiValues, and allocation sinking at suspension/error boundaries.** Eligible branchy lexical calls now run from scalar locals; open results consumed by `UNPACK`/`RETURNV` avoid their wrapper allocation. Source-bytecode fuel, stack limits, diagnostics, and Tier-0 resumption remain authoritative. See [`docs/escape-analysis-0.23.md`](docs/escape-analysis-0.23.md), [`docs/trace-osr-0.22.md`](docs/trace-osr-0.22.md), and the earlier design notes in [`docs/`](docs/).
 
 ### Output and warnings
 

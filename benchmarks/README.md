@@ -54,3 +54,5 @@ For performance comparisons, compare runs on the same runner class and Python ve
 - `inline_cache_ab.py` isolates monomorphic calls, stable table reads, and
   version-invalidated table reads for same-runner release comparisons.
 - `trace_osr_ab.py` measures first-invocation OSR into a cyclic typed CFG trace.
+- `escape_analysis_ab.py` measures non-escaping branch-call Frame elimination
+  and open-result MultiValue scalar replacement against the previous release.
