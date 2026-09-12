@@ -28,6 +28,11 @@ class SuperPythonJIT(
 ):
     """Typed compiler pipeline ending in the optimized Python-AST backend.
 
+    0.21 layers adaptive call/table inline caches and deoptimization feedback
+    around the 0.20 backend-neutral loop optimizer. Stable bytecode sites grow
+    from monomorphic to bounded polymorphic caches; megamorphic sites and
+    repeatedly failing compiled regions fall back permanently to Tier 0.
+
     0.20 layers backend-neutral loop optimization on the 0.19 cyclic CFG/value
     graph. Dominance/natural-loop facts now prove loop-invariant scalar values
     and canonical integer induction variables. The Python backend materializes

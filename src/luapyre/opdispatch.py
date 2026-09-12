@@ -689,7 +689,7 @@ def _unpack(vm, frames, frame, ins, regs, constants):
 def _call(vm, frames, frame, ins, regs, constants):
     fn = regs[ins.b]
     args = [regs[ins.c + i] for i in range(ins.d)]
-    return vm._invoke(frames, frame, fn, args, ins.a, ins.e, tail=False)
+    return vm._invoke_site(frames, frame, fn, args, ins.a, ins.e, tail=False)
 
 
 def _callv(vm, frames, frame, ins, regs, constants):
@@ -697,13 +697,13 @@ def _callv(vm, frames, frame, ins, regs, constants):
     args = [regs[ins.c + i] for i in range(ins.d)]
     mv = regs[ins.e]
     args.extend(mv.values if isinstance(mv, MultiValue) else (mv,))
-    return vm._invoke(frames, frame, fn, args, ins.a, -1, tail=False)
+    return vm._invoke_site(frames, frame, fn, args, ins.a, -1, tail=False)
 
 
 def _tailcall(vm, frames, frame, ins, regs, constants):
     fn = regs[ins.b]
     args = [regs[ins.c + i] for i in range(ins.d)]
-    returned = vm._invoke(frames, frame, fn, args, ins.a, -1, tail=True)
+    returned = vm._invoke_site(frames, frame, fn, args, ins.a, -1, tail=True)
     return returned if returned is not None else None
 
 
@@ -712,7 +712,7 @@ def _tailcallv(vm, frames, frame, ins, regs, constants):
     args = [regs[ins.c + i] for i in range(ins.d)]
     mv = regs[ins.e]
     args.extend(mv.values if isinstance(mv, MultiValue) else (mv,))
-    returned = vm._invoke(frames, frame, fn, args, ins.a, -1, tail=True)
+    returned = vm._invoke_site(frames, frame, fn, args, ins.a, -1, tail=True)
     return returned if returned is not None else None
 
 

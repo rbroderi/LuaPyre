@@ -51,3 +51,5 @@ For performance comparisons, compare runs on the same runner class and Python ve
 
 - `vm_programs.py` contains the shared workload definitions used by the four-way benchmark.
 - `vm_dispatch.py` measures Python opcode-dispatch strategies in isolation.
+- `inline_cache_ab.py` isolates monomorphic calls, stable table reads, and
+  version-invalidated table reads for same-runner release comparisons.

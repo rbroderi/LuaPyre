@@ -53,6 +53,13 @@ class JITStats:
     leaf_executions: int = 0
     deopts: int = 0
     compile_failures: int = 0
+    call_ic_hits: int = 0
+    call_ic_misses: int = 0
+    table_ic_hits: int = 0
+    table_ic_misses: int = 0
+    cache_invalidations: int = 0
+    megamorphic_sites: int = 0
+    retired_regions: int = 0
 
 
 @dataclass(frozen=True, slots=True)
