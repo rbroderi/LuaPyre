@@ -29,6 +29,12 @@ DEFAULT_FILE_FUEL = 20_000_000
 # remaining semantic gaps are being fixed; they do not weaken this baseline.
 BASELINE_FILES = (
     "bwcoercion.lua",
+    "pm.lua",
+    "tpack.lua",
+    "vararg.lua",
+    "bitwise.lua",
+    "math.lua",
+    "utf8.lua",
 )
 
 _STRESS_FILES = {
@@ -94,7 +100,7 @@ def verify_archive(path: Path, *, expected: str = SUITE_SHA256) -> None:
 
 def download_archive(destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = Request(SUITE_URL, headers={"User-Agent": "LuaPyre-conformance/0.11"})
+    request = Request(SUITE_URL, headers={"User-Agent": "LuaPyre-conformance/0.12"})
     tmp = destination.with_name(destination.name + ".tmp")
     try:
         with urlopen(request, timeout=30) as response, tmp.open("wb") as out:
