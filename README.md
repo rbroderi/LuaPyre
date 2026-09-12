@@ -31,7 +31,7 @@ answer = 42
 
 ### Fully typed optimization mode
 
-LuaPyre 0.14 introduced an explicit source contract for code that wants maximum optimization. Put this cookie on the first or second physical line:
+LuaPyre 0.14 added an explicit source contract for code that wants maximum optimization. Put this cookie on the first or second physical line:
 
 ```lua
 -- luapyre: typed
@@ -51,7 +51,7 @@ end
 return total
 ```
 
-Accepted chunks carry a stronger `jit_fully_typed` optimization contract. **Fully typed LuaPyre source is the primary performance target going forward.** Ordinary Lua remains the Lua 5.5 semantic/compatibility target and can opportunistically use the same optimized paths when runtime guards prove equivalent facts. See [`docs/typed-jit-0.14.md`](docs/typed-jit-0.14.md) and [`docs/typed-jit-0.15.md`](docs/typed-jit-0.15.md).
+Accepted chunks carry a stronger `jit_fully_typed` optimization contract. **Fully typed LuaPyre source is the primary performance target going forward.** Ordinary Lua remains the Lua 5.5 semantic/compatibility target and can opportunistically use the same optimized paths when runtime guards prove equivalent facts. See [`docs/typed-jit-0.14.md`](docs/typed-jit-0.14.md).
 
 ### Typing and JIT specialization
 
@@ -91,7 +91,7 @@ lua = LuaRuntime()
 
 Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default hotness threshold is 32 loop entries/calls and can be changed with `jit_threshold=`. Live counters are available through `lua.jit_stats`.
 
-0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14 extended numeric loops across acyclic internal `if`/`else` control flow. 0.15 adds structured typed-loop compilation, register promotion, nested/wider super-regions lowered through local jump lists and AST block inlining, static typed-call inlining, direct whole-function/recursive compilation, dense `Op.value` emitter tables, and AST helper inlining. Unsupported or dynamic cases continue to fail closed to the exact interpreter or earlier guarded tiers. See [`docs/jit-0.13.md`](docs/jit-0.13.md), [`docs/typed-jit-0.14.md`](docs/typed-jit-0.14.md), and [`docs/typed-jit-0.15.md`](docs/typed-jit-0.15.md).
+0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14 added fully typed branch regions. 0.15 adds promoted-local structured loops, nested AST super-regions, static typed-call inlining, direct compiled recursion, dense compiler-side opcode emitters, and semantic AST lowering. The AST backend now removes selected `_i64`, equality, literal type-guard, raw-length, dense-table, and numeric-loop helper/method calls when it can reproduce Lua semantics exactly; sparse/dynamic/metatable-sensitive shapes stay on the proven runtime helpers or deopt path. See [`docs/jit-0.13.md`](docs/jit-0.13.md), [`docs/typed-jit-0.14.md`](docs/typed-jit-0.14.md), and [`docs/typed-jit-0.15.md`](docs/typed-jit-0.15.md).
 
 ### Output and warnings
 
@@ -139,14 +139,14 @@ files = {
 
 lua = LuaRuntime(file_loader=files.get)
 assert lua.execute("return dofile('answer.lua')") == 42
-assert lua.execute("return require('game.vector').x") == 1
+assert lua.execute("return require('game.vector').x == 1") is True
 ```
 
 The loader receives a logical UTF-8 name and may return `bytes`, `str`, or `None`. LuaPyre never turns that name into a Python filesystem operation itself. Applications can back the capability with a real filesystem, virtual filesystem, zip/archive, database, package resources, or anything else they choose.
 
 The capability can be changed dynamically with `set_file_loader()`. Removing it removes `loadfile`, `dofile`, and the file searcher again while leaving preload-only `require` available.
 
-See [`docs/embedding-0.11.md`](docs/embedding-0.11.md) for the embedding contract introduced in 0.11; the typed/JIT work does not broaden the default host-capability boundary.
+See [`docs/embedding-0.11.md`](docs/embedding-0.11.md) for the embedding contract introduced in 0.11; 0.15 does not broaden the default host-capability boundary.
 
 ## Implemented runtime semantics
 
@@ -168,7 +168,7 @@ LuaPyre currently includes substantial Lua 5.5 behavior, including:
 - validated PUC-Lua 5.5 binary chunk input translated into LuaPyre bytecode
 - source/chunk names, line information, structured host tracebacks, and PUC debug-line reconstruction
 - selected Lua-style field/global/upvalue attribution in runtime errors
-- guarded generated-Python JIT execution for supported hot loops, internal branch regions, nested typed regions, and typed functions
+- guarded generated-Python JIT execution for supported hot loops, nested/branch regions, typed calls, and recursive functions
 - opt-in fully typed source certification for aggressive optimization
 
 The VM uses explicit Lua frames rather than Python recursion for ordinary Lua calls. ASTs are compile-time only and are never interpreted directly.
@@ -221,7 +221,7 @@ The harness bounds archive/download/extraction sizes, rejects traversal paths an
 
 The committed release gate contains seven unchanged upstream files: `bwcoercion.lua`, `pm.lua`, `tpack.lua`, `vararg.lua`, `bitwise.lua`, `math.lua`, and `utf8.lua`. Additional official files remain explicit probes until their semantic gaps are fixed; the baseline is never weakened by copying or patching upstream tests, skipping assertions, or marking failures as expected passes.
 
-See [`docs/conformance-0.12.md`](docs/conformance-0.12.md) for the exact 0.12 conformance tranche. The 0.15 typed/JIT work preserves that same exact gate for ordinary Lua.
+See [`docs/conformance-0.12.md`](docs/conformance-0.12.md) for the exact conformance tranche. The 0.15 JIT work must preserve that same exact gate for ordinary Lua.
 
 The complete official suite does **not** pass yet. Some upstream tests depend on Lua's internal C test API, debug/io/os/native-module facilities, allocator details, or stress behavior that is outside the default sandbox. Other failures identify genuine remaining Lua semantics and are tracked through explicit suite runs.
 
@@ -240,7 +240,7 @@ It compares:
 - PUC Lua 5.5 through `lupa.lua55`
 - LuaJIT through `lupa.luajit21` (falling back to `lupa.luajit20` when appropriate)
 
-0.14 expanded the corpus into `micro`, `typed`, and `algorithm` groups. Algorithm workloads include recursive Fibonacci, Sieve, binary trees, table mixing, string construction, and spectral norm. 0.15 also includes a typed-call workload so call inlining is measured directly. Where LuaPyre uses typed annotations, the native engines receive an equivalent standard-Lua spelling and all backends must produce the same result.
+The corpus contains `micro`, `typed`, and `algorithm` groups. Algorithm workloads include recursive Fibonacci, Sieve, binary trees, table mixing, string construction, and spectral norm. Where LuaPyre uses typed annotations, the native engines receive an equivalent standard-Lua spelling and all backends must produce the same result.
 
 ```bash
 python benchmarks/compare_runtimes.py --group typed --require-all
@@ -265,17 +265,17 @@ Unsafe host-facing libraries are not treated as default-sandbox requirements.
 
 ## Performance roadmap
 
-0.15 makes the typed optimizer much closer to a small compiler targeting Python rather than an interpreter fast path:
+0.15 makes the Python backend a compiler-style typed optimizer while retaining Tier 0 as the semantic oracle:
 
-1. exact table-dispatched interpreter remains Tier 0 and the universal deoptimization target
+1. exact table-dispatched interpreter as Tier 0 and universal deoptimization target
 2. source certification and type inference for `-- luapyre: typed`
 3. hotness counters and quickening for loops/functions
-4. backend-neutral IR with structured/nested region analysis
-5. promoted Python locals for hot Lua registers
-6. static typed-call inlining plus direct compiled calls/recursion
-7. local jump-list CFG lowering with AST block-function elimination
-8. dense `Op.value` codegen tables and AST inlining of safe tiny runtime helpers
-9. next: broader typed table/global specialization, inline caches, more helper elimination, dead-store/value propagation, and wider coroutine-safe regions
+4. backend-neutral IR plus promoted-local structured and nested AST regions
+5. static typed call inlining and direct compiled recursive/large calls
+6. dense compiler-side opcode emitters and semantic AST helper elimination
+7. dense-array table fast paths with sparse/hash failover and exact versioning
+8. exact fuel/quota accounting and precise deoptimization throughout
+9. next: broader table/global specialization, stronger value propagation/dead-store elimination, and further generated-Python overhead removal
 10. later: native x86-64/AArch64 or LLVM backend once the typed IR/deoptimization contract is stable
 
 CPython's own optimizer/JIT can accelerate generated Python when available, but it is never a LuaPyre correctness dependency.
