@@ -1,5 +1,5 @@
 from .runtime import LuaRuntime
-from .interop import LuaFunction
+from .interop import LuaFunction, LuaInt
 from .table import LuaTable
 from .threadvm import LuaThread
 from .values import MultiValue
@@ -15,6 +15,7 @@ from .errors import (
 __all__ = [
     "LuaRuntime",
     "LuaFunction",
+    "LuaInt",
     "LuaTable",
     "LuaThread",
     "MultiValue",
@@ -26,4 +27,4 @@ __all__ = [
     "LuaTraceFrame",
 ]
 
-__version__ = "0.28.0a1"
+__version__ = "0.29.0a1"

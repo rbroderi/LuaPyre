@@ -21,6 +21,7 @@ class IRInstruction:
     ins: Ins
     specialization: str | None = None
     overflow_free: bool = False
+    types_proven: bool = False
 
 
 @dataclass(frozen=True, slots=True)

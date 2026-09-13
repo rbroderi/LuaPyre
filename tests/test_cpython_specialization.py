@@ -13,11 +13,11 @@ from luapyre.threadvm import LuaThread
 from luapyre.vm import Frame, HostFunction
 
 
-def _typed_child(expression: str):
+def _typed_child(expression: str, parameter_type: str = "integer_lua"):
     runtime = LuaRuntime(jit_threshold=1)
     proto = runtime.compile(
         "-- luapyre: typed\n"
-        "local function f(x: integer): integer\n"
+        f"local function f(x: {parameter_type}): {parameter_type}\n"
         f"  return {expression}\n"
         "end\n"
         "return f(1)\n"

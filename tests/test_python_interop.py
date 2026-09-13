@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from luapyre import LuaFunction, LuaRuntime
+from luapyre import LuaFunction, LuaInt, LuaRuntime, LuaRuntimeError
 
 
 Scalar = int | float | str
@@ -108,6 +108,23 @@ def test_lua_functions_are_callable_from_python(jit):
     assert lua.call("join", "Finn", "Bell", return_type=str) == "Finn:Bell"
 
 
+def test_repeated_python_calls_warm_typed_function_compilation():
+    lua = LuaRuntime(jit_threshold=3)
+    add = lua.execute_python(
+        "-- luapyre: typed\n"
+        "local function add(a: integer, b: integer): integer\n"
+        "  return a + b\n"
+        "end\n"
+        "return add\n"
+    )
+
+    assert [add(value, 2, return_type=int) for value in range(10)] == [
+        value + 2 for value in range(10)
+    ]
+    assert lua.vm.jit.function_compiles == 1
+    assert lua.vm.jit.function_executions >= 7
+
+
 def test_explicit_python_functions_receive_converted_values():
     lua = LuaRuntime()
 
@@ -125,6 +142,22 @@ def test_explicit_python_functions_receive_converted_values():
     )
 
     assert result == Point(21, 22, "office")
+
+
+def test_python_lua_int_annotation_validates_host_result_before_conversion():
+    lua = LuaRuntime()
+
+    def valid(value: LuaInt) -> LuaInt:
+        return LuaInt(value + 1)
+
+    def overflowing() -> LuaInt:
+        return LuaInt(1 << 63)
+
+    lua.set("valid", valid)
+    lua.set("overflowing", overflowing)
+    assert lua.execute("return valid(41)") == 42
+    with pytest.raises(LuaRuntimeError, match="signed 64-bit"):
+        lua.execute("return overflowing()")
 
 
 def test_multiple_returns_convert_independently():

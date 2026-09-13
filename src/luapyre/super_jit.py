@@ -66,6 +66,12 @@ class SuperPythonJIT(
     _IR_PRIMARY_OPS = frozenset({Op.GETUPVAL, Op.GETTABLE, Op.SETTABLE})
 
     def _compile_loop(self, frame, start_pc: int, backedge_pc: int):
+        if frame.proto.jit_fully_typed:
+            compiled = self._compile_structured_typed_loop(
+                frame, start_pc, backedge_pc
+            )
+            if compiled is not None:
+                return compiled
         # Table/environment operations are precisely where TypedIR carries alias,
         # constant-key, cache and guard-hoisting facts, so give that optimizer
         # first refusal. Unsupported IR shapes return None and immediately fall

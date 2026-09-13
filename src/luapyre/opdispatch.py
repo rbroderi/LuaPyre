@@ -182,17 +182,35 @@ def _setlistv(vm, frames, frame, ins, regs, constants):
 
 def _int_add(vm, frames, frame, ins, regs, constants):
     a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
-    regs[ins.a] = i64(a + b)
+    value = a + b
+    regs[ins.a] = (
+        value
+        if frame.proto.jit_no_overflow_pcs
+        and frame.pc - 1 in frame.proto.jit_no_overflow_pcs
+        else i64(value)
+    )
 
 
 def _int_sub(vm, frames, frame, ins, regs, constants):
     a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
-    regs[ins.a] = i64(a - b)
+    value = a - b
+    regs[ins.a] = (
+        value
+        if frame.proto.jit_no_overflow_pcs
+        and frame.pc - 1 in frame.proto.jit_no_overflow_pcs
+        else i64(value)
+    )
 
 
 def _int_mul(vm, frames, frame, ins, regs, constants):
     a, b = _need_number(regs[ins.b]), _need_number(regs[ins.c])
-    regs[ins.a] = i64(a * b)
+    value = a * b
+    regs[ins.a] = (
+        value
+        if frame.proto.jit_no_overflow_pcs
+        and frame.pc - 1 in frame.proto.jit_no_overflow_pcs
+        else i64(value)
+    )
 
 
 def _float_add(vm, frames, frame, ins, regs, constants):

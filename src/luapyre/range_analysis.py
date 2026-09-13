@@ -136,7 +136,7 @@ def analyze_integer_ranges(proto: Proto) -> IntegerRangePlan:
     ranges: dict[int, IntRange] = {
         reg: full
         for reg, typ in enumerate(proto.param_types[:proto.param_count])
-        if typ.name == "integer"
+        if typ.name in ("integer", "integer_lua")
     }
     seeds = _loop_seeds(proto)
     merge_points: set[int] = set()
@@ -152,7 +152,7 @@ def analyze_integer_ranges(proto: Proto) -> IntegerRangePlan:
         elif ins.op in (Op.RETURN, Op.RETURNV, Op.HALT):
             merge_points.add(pc + 1)
     snapshots: list[tuple[int, tuple[tuple[int, IntRange], ...]]] = []
-    safe: set[int] = set()
+    safe: set[int] = set(proto.jit_no_overflow_pcs)
 
     for pc, ins in enumerate(proto.code):
         # Facts from one linear predecessor cannot be carried through a CFG

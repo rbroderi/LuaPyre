@@ -9,7 +9,7 @@ from .errors import LuaTypeError
 from .jit_policy import can_jit_natural_loop, can_jit_typed_loop
 from .semantics import analyze_control_flow
 from .source_mode import validate_fully_typed_ast
-from .typesys import ANY, FLOAT, INTEGER, TABLE, accepts
+from .typesys import ANY, FLOAT, INTEGER, INTEGER_LUA, TABLE, accepts
 
 
 def _last_body_line(body, default: int) -> int:
@@ -263,14 +263,14 @@ class _SourceFunctionCompiler(_FunctionCompiler):
         if stmt.step is None:
             tr = self.alloc()
             self.emit(Op.LOADK, tr, self.proto.add_const(1))
-            step_type = INTEGER
+            step_type = INTEGER_LUA
         else:
             tr, step_type = self.expr(stmt.step)
 
         numeric_types = (start_type, limit_type, step_type)
-        if all(typ is INTEGER for typ in numeric_types):
-            loop_type = INTEGER
-        elif all(typ in (INTEGER, FLOAT) for typ in numeric_types):
+        if all(typ in (INTEGER, INTEGER_LUA) for typ in numeric_types):
+            loop_type = INTEGER_LUA
+        elif all(typ in (INTEGER, INTEGER_LUA, FLOAT) for typ in numeric_types):
             loop_type = FLOAT
         else:
             loop_type = ANY
@@ -293,6 +293,11 @@ class _SourceFunctionCompiler(_FunctionCompiler):
         try:
             visible = self.alloc()
             self.define_local(stmt.name, Symbol(visible, loop_type, readonly=True))
+            if loop_type is INTEGER_LUA:
+                # An induction value is representable, but its derived
+                # arithmetic is not a no-overflow contract by itself. It may
+                # participate in a contract supplied by an explicit operand.
+                self.integer_induction_regs.add(visible)
             body_start = len(self.proto.code)
             body_line = (
                 stmt.body[0].line if stmt.body else stmt.end_line or stmt.line

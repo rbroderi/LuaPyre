@@ -147,14 +147,25 @@ def static_value_type(value) -> LuaType:
 
 
 def type_matches(type_name: str, value) -> bool:
-    actual = static_value_type(value).name
     if type_name == "Any":
         return True
+    if type_name in ("integer", "integer_lua"):
+        return type(value) is int
+    if type_name == "float":
+        return type(value) is float
     if type_name == "number":
-        return actual in ("integer", "float")
+        return type(value) in (int, float)
+    if type_name == "boolean":
+        return type(value) is bool
+    if type_name == "nil":
+        return value is None
+    if type_name == "string":
+        return isinstance(value, bytes)
+    if type_name == "table":
+        return isinstance(value, LuaTable)
     if " | " in type_name:
         return any(type_matches(part, value) for part in type_name.split(" | "))
-    return actual == type_name
+    return static_value_type(value).name == type_name
 
 
 @dataclass(frozen=True, slots=True)

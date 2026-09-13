@@ -214,7 +214,7 @@ class TypedFunctionJITMixin:
             return virtual(vm, frames, closure, args, dest, want, budget, meter)
         acquire = getattr(vm, "_acquire_compiled_frame", None)
         child = (
-            acquire(compiled, closure, args, dest, want, validate_args=False)
+            acquire(compiled, closure, args, dest, want)
             if acquire is not None
             else vm._new_frame(closure, list(args), dest, want)
         )

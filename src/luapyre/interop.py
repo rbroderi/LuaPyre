@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NewType
 
 if TYPE_CHECKING:
     from .runtime import LuaRuntime
+
+
+LuaInt = NewType("LuaInt", int)
+"""A Python type-hint marker for LuaPyre's non-overflowing typed integer."""
 
 
 @dataclass(frozen=True, slots=True)

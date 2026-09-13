@@ -7,7 +7,7 @@ from .bytecode import Op, Ins, Proto, UpvalueDesc
 from .errors import LuaSyntaxError, LuaTypeError
 from .jit_policy import can_jit_natural_loop
 from .semantics import analyze_control_flow
-from .typesys import ANY, BOOLEAN, FLOAT, FUNCTION, INTEGER, NUMBER, STRING, TABLE, LuaType, accepts
+from .typesys import ANY, BOOLEAN, FLOAT, FUNCTION, INTEGER, INTEGER_LUA, NUMBER, STRING, TABLE, LuaType, accepts
 
 
 # Stable compile-time dispatch tables. These are deliberately exact-type maps:
@@ -36,7 +36,7 @@ _COMPARISON_OPS = frozenset(("==", "~=", "<", ">", "<=", ">="))
 _REVERSED_COMPARISON_OPS = frozenset((">", ">="))
 _LOGICAL_JUMPS = {"and": Op.JMPIFNOT, "or": Op.JMPIF}
 _UNARY_OPS = {"-": Op.NEG, "not": Op.NOT, "#": Op.LEN, "~": Op.BNOT}
-_UNARY_RESULT_TYPES = {"not": BOOLEAN, "#": INTEGER, "~": INTEGER}
+_UNARY_RESULT_TYPES = {"not": BOOLEAN, "#": INTEGER_LUA, "~": INTEGER_LUA}
 
 
 @dataclass(slots=True)
@@ -113,6 +113,7 @@ class _FunctionCompiler:
         self.label_pcs: dict[int, int] = {}
         self.pending_gotos: list[tuple[int, int]] = []
         self.reg_origins: dict[int, tuple[str, str]] = {}
+        self.integer_induction_regs: set[int] = set()
         for name, typ in params or []:
             r = self.alloc()
             self.define_local(name, Symbol(r, typ))
@@ -865,7 +866,10 @@ class _FunctionCompiler:
     def _expr_literal(self, expr):
         r = self.alloc()
         self.emit(Op.LOADK, r, self.proto.add_const(expr.value))
-        return r, expr.inferred_type
+        inferred = expr.inferred_type
+        if getattr(self, "fully_typed", False) and inferred is INTEGER:
+            inferred = INTEGER_LUA
+        return r, inferred
 
     def _expr_name(self, expr):
         ref = self.resolve(expr.value, line=expr.line)
@@ -956,13 +960,32 @@ class _FunctionCompiler:
         right, right_type = self.expr(expr.right)
         out = self.alloc()
 
+        # Integer literals are intrinsically in range.  In a fully typed
+        # expression they may participate in an explicit ``integer`` contract
+        # without turning that expression back into wrapping ``integer_lua``.
+        if self.proto.jit_fully_typed and INTEGER in (left_type, right_type):
+            if (
+                left_type is INTEGER_LUA
+                and (left in self.integer_induction_regs
+                     or isinstance(expr.left, A.Literal) and type(expr.left.value) is int)
+            ):
+                left_type = INTEGER
+            if (
+                right_type is INTEGER_LUA
+                and (right in self.integer_induction_regs
+                     or isinstance(expr.right, A.Literal) and type(expr.right.value) is int)
+            ):
+                right_type = INTEGER
+
+        no_overflow = False
         if expr.op in _GENERIC_ARITH_OPS:
-            if left_type is INTEGER and right_type is INTEGER:
+            if left_type in (INTEGER, INTEGER_LUA) and right_type in (INTEGER, INTEGER_LUA):
                 op = _INTEGER_ARITH_OPS[expr.op]
-                result_type = INTEGER
+                no_overflow = left_type is INTEGER and right_type is INTEGER
+                result_type = INTEGER if no_overflow else INTEGER_LUA
             elif (
-                left_type in (INTEGER, FLOAT)
-                and right_type in (INTEGER, FLOAT)
+                left_type in (INTEGER, INTEGER_LUA, FLOAT)
+                and right_type in (INTEGER, INTEGER_LUA, FLOAT)
                 and (left_type is FLOAT or right_type is FLOAT)
             ):
                 op = _FLOAT_ARITH_OPS[expr.op]
@@ -972,10 +995,15 @@ class _FunctionCompiler:
                 result_type = ANY if ANY in (left_type, right_type) else NUMBER
         elif expr.op in _INTEGER_SENSITIVE_OPS:
             op = _INTEGER_SENSITIVE_OPS[expr.op]
-            result_type = INTEGER if left_type is INTEGER and right_type is INTEGER else NUMBER
+            result_type = (
+                INTEGER if left_type is INTEGER and right_type is INTEGER
+                else INTEGER_LUA
+                if left_type in (INTEGER, INTEGER_LUA) and right_type in (INTEGER, INTEGER_LUA)
+                else NUMBER
+            )
         elif expr.op in _BITWISE_OPS:
             op = _BITWISE_OPS[expr.op]
-            result_type = INTEGER
+            result_type = INTEGER_LUA
         else:
             fixed = _FIXED_BINARY_OPS.get(expr.op)
             if fixed is None:
@@ -983,7 +1011,13 @@ class _FunctionCompiler:
             op, result_type = fixed
 
         emit_left, emit_right = (right, left) if expr.op in _REVERSED_COMPARISON_OPS else (left, right)
-        self.emit(op, out, emit_left, emit_right)
+        pc = self.emit(op, out, emit_left, emit_right)
+        if (
+            self.proto.jit_fully_typed
+            and expr.op in _GENERIC_ARITH_OPS
+            and no_overflow
+        ):
+            self.proto.jit_no_overflow_pcs.add(pc)
 
         if expr.op in _COMPARISON_OPS:
             self.emit(Op.TOBOOL, out, out)

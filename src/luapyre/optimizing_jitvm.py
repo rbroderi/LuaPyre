@@ -69,7 +69,16 @@ class OptimizingJITVM(TieredJITVM):
             return frame
 
         self.jit.stats.compiled_frame_allocations += 1
-        return self._new_frame(closure, list(args), return_reg, return_want)
+        if validate_args:
+            return self._new_frame(closure, list(args), return_reg, return_want)
+        regs = [None] * max(1, proto.register_count)
+        for index in range(proto.param_count):
+            regs[index] = args[index] if index < len(args) else None
+        if proto.env_reg >= 0:
+            regs[proto.env_reg] = closure.env
+        from .vm import Frame
+
+        return Frame(closure, regs, 0, return_reg, return_want)
 
     def _release_compiled_frame(self, compiled, frame) -> None:
         pool = compiled.frame_pool
