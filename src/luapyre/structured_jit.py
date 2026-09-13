@@ -141,6 +141,7 @@ class StructuredTypedLoopJITMixin:
         ]
         for reg in registers:
             lines.append(f"    _r{reg} = regs[{reg}]")
+        lines.append(f"    _integer_loop = type(_r{loop_ins.a}) is int and type(_r{loop_ins.c}) is int")
 
         def spill(indent: str):
             lines.extend(self._spill_lines(registers, indent))
@@ -207,7 +208,7 @@ class StructuredTypedLoopJITMixin:
         idx, limit, step = f"_r{loop_ins.a}", f"_r{loop_ins.b}", f"_r{loop_ins.c}"
         lines.extend([
             f"        _next = {idx} + {step}",
-            f"        if _next < _INT_MIN or _next > _INT_MAX or ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",
+            f"        if (_integer_loop and (_next < _INT_MIN or _next > _INT_MAX)) or ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",
         ])
         spill("            ")
         lines.extend([
@@ -471,6 +472,8 @@ class StructuredTypedLoopJITMixin:
             elif ins.op is Op.GETTABLE:
                 array_name = table_arrays[ins.b]
                 key = known_constants.get(ins.c, _ABSENT)
+                if type(key) is float and key.is_integer():
+                    key = int(key)
                 if key is not _ABSENT:
                     token_name = f"_key_token_{pc}"
                     namespace[token_name] = _hash_key(key)

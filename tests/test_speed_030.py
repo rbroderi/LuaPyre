@@ -109,6 +109,60 @@ return fib(12)
     assert runtime.jit_stats.compiled_frame_allocations < 20
 
 
+@pytest.mark.parametrize("key", ["1.0", "2.0", "100.0", "-1.0"])
+@pytest.mark.parametrize("function", [False, True])
+def test_constant_integral_float_keys_match_array_and_hash_storage(key, function):
+    body = f"""
+local values = {{7, 8, [100] = 9, [-1] = 10}}
+local total: integer = 0
+for i = 1, 10 do
+    local value: integer = values[{key}]
+    total = total + value
+end
+return total
+"""
+    if function:
+        body = "local function run(): integer\n" + body + "end\nreturn run()"
+    source = "-- luapyre: typed\n" + body
+    assert LuaRuntime(jit_threshold=1).execute(source) == LuaRuntime(jit=False).execute(source)
+
+
+def test_float_diamond_loop_outside_integer_range():
+    source = """-- luapyre: typed
+local total: integer = 0
+for i = 1e20, 5e20, 1e20 do
+    if i < 3e20 then total = total + 1 else total = total + 2 end
+end
+return total
+"""
+    assert LuaRuntime(jit_threshold=1).execute(source) == LuaRuntime(jit=False).execute(source) == 8
+
+
+@pytest.mark.parametrize("extra_args", [(), (99, 100)])
+def test_direct_python_entry_exact_fuel_boundary(extra_args):
+    functions = [LuaRuntime(jit=jit, jit_threshold=1).execute_python(
+        "-- luapyre: typed\nreturn function(x: integer): integer return x + 1 end"
+    ) for jit in (False, True)]
+    for fuel in range(20):
+        outcomes = []
+        for fn in functions:
+            try:
+                outcomes.append(fn(1, *extra_args, fuel=fuel))
+            except LuaQuotaError:
+                outcomes.append("quota")
+        assert outcomes[0] == outcomes[1], fuel
+
+
+def test_direct_python_entry_obeys_stack_limit():
+    runtime = LuaRuntime(jit_threshold=1)
+    fn = runtime.execute_python(
+        "-- luapyre: typed\nreturn function(x: integer): integer return x + 1 end"
+    )
+    runtime.vm.max_frames = 1
+    with pytest.raises(LuaRuntimeError, match="stack overflow"):
+        fn(1)
+
+
 def test_diamond_table_equality_deopts_to_exact_metamethod_semantics():
     runtime = LuaRuntime(jit_threshold=1)
     assert runtime.execute("""-- luapyre: typed

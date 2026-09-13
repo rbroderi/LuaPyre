@@ -389,6 +389,8 @@ class TypedFunctionJITMixin:
                 elif op is Op.GETTABLE:
                     deopt(lines, f"not isinstance({b}, _LuaTable) or {b}.metatable is not None", pc, indent)
                     key = known_constants.get(ins.c, _ABSENT)
+                    if type(key) is float and key.is_integer():
+                        key = int(key)
                     if key is _ABSENT:
                         lines.extend([f"{indent}used += 1", f"{indent}{a} = {b}.rawget({c})"])
                     else:

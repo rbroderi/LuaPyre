@@ -48,6 +48,7 @@ class OptimizingJITVM(TieredJITVM):
             or proto.is_vararg
             or self._active_frames is not None
             or self.hooks_active()
+            or self.max_frames < 2
         ):
             return False, None
         for index in range(proto.param_count):
@@ -58,8 +59,10 @@ class OptimizingJITVM(TieredJITVM):
         if compiled is None:
             return False, None
         budget = self.default_fuel if fuel is None else fuel
-        if budget < compiled.instruction_cost:
-            raise LuaQuotaError("execution quota exceeded")
+        # The elided bridge still consumes LOADKs, CALL and RETURNV. On a
+        # short budget let Tier 0 preserve error ordering and the exact PC.
+        if budget < compiled.instruction_cost + len(args) + 3:
+            return False, None
         values = compiled.direct_runner(self, closure, args)
         if values is DEOPT:
             return False, None
