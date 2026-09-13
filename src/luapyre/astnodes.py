@@ -170,6 +170,12 @@ class Binary(Expr):
 
 
 @dataclass(slots=True)
+class Paren(Expr):
+    value: Expr
+    inferred_type: LuaType = field(default=ANY)
+
+
+@dataclass(slots=True)
 class Call(Expr):
     func: Expr
     args: list[Expr]

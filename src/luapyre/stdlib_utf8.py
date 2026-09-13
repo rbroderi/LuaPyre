@@ -4,7 +4,7 @@ from .errors import LuaRuntimeError
 from .table import LuaTable
 from .values import MultiValue
 from .vm import HostFunction
-from .stdlib_support import need_bytes, need_integer
+from .stdlib_support import lua_c_function, need_bytes, need_integer
 
 
 CHARPATTERN = b"[\x00-\x7f\xc2-\xfd][\x80-\xbf]*"
@@ -91,7 +91,7 @@ def install_utf8_library(globals_table: LuaTable, vm) -> LuaTable:
     lib = LuaTable()
 
     def register(name, fn):
-        lib.rawset(name.encode("ascii"), HostFunction(fn, f"utf8.{name}"))
+        lib.rawset(name.encode("ascii"), lua_c_function(fn, f"utf8.{name}"))
 
     def char(*values):
         return b"".join(_encode(need_integer(v, i + 1, "char")) for i, v in enumerate(values))

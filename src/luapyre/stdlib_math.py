@@ -6,8 +6,15 @@ import time
 from .errors import LuaRuntimeError
 from .table import LuaTable
 from .values import MultiValue, i64
-from .vm import HostFunction
-from .stdlib_support import INT_MAX, INT_MIN, UINT_MASK, need_integer, need_number, to_integer
+from .stdlib_support import (
+    INT_MAX,
+    INT_MIN,
+    UINT_MASK,
+    lua_c_function,
+    need_integer,
+    need_number,
+    to_integer,
+)
 
 
 _MASK = (1 << 64) - 1
@@ -83,7 +90,7 @@ def install_math_library(globals_table: LuaTable, vm) -> LuaTable:
     rng = _LuaRandom()
 
     def register(name, fn):
-        lib.rawset(name.encode("ascii"), HostFunction(fn, f"math.{name}"))
+        lib.rawset(name.encode("ascii"), lua_c_function(fn, f"math.{name}"))
 
     def abs_fn(x):
         x = need_number(x, 1, "abs")

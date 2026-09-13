@@ -17,8 +17,8 @@ _VALID_ATTRIBUTES = {"const", "close"}
 
 
 class Parser:
-    def __init__(self, source: str):
-        self.ts = Lexer(source).tokens()
+    def __init__(self, source: str, *, typed: bool = False):
+        self.ts = Lexer(source, typed=typed).tokens()
         self.i = 0
 
     @property
@@ -51,7 +51,11 @@ class Parser:
         kind = self.t.kind
         if kind == "local":
             return self.local_stmt()
-        if kind == "global":
+        if kind == "global" or (
+            kind == "NAME"
+            and self.t.value == "global"
+            and self.ts[self.i + 1].kind in ("NAME", "function", "<", "*")
+        ):
             return self.global_stmt()
         if kind == "function":
             return self.function_stmt(False)
@@ -189,7 +193,14 @@ class Parser:
         return A.LocalDecl(line, names, values)
 
     def global_stmt(self):
-        line = self.take("global").line
+        token = self.t
+        if token.kind == "global":
+            self.take("global")
+        elif token.kind == "NAME" and token.value == "global":
+            self.take("NAME")
+        else:
+            raise LuaSyntaxError(f"expected 'global', got {token.kind!r} at line {token.line}")
+        line = token.line
         if self.t.kind == "function":
             self.take("function")
             name = self.take("NAME").value
@@ -373,7 +384,7 @@ class Parser:
         if self.accept("("):
             e = self.expr()
             self.take(")")
-            return e
+            return A.Paren(e.line, e, e.inferred_type)
         raise LuaSyntaxError(f"expected expression at line {t.line}, got {t.kind!r}")
 
     def table_ctor(self):

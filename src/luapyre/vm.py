@@ -13,6 +13,7 @@ from .values import MultiValue, i64, static_value_type, truthy, type_matches
 class HostFunction:
     fn: object
     name: str = "?"
+    max_args: int | None = None
 
 
 @dataclass(slots=True)
@@ -85,6 +86,8 @@ class VM:
 
     def _host_values(self, fn, args):
         try:
+            if fn.max_args is not None and len(args) > fn.max_args:
+                args = args[: fn.max_args]
             result = fn.fn(*args)
         except LuaRuntimeError:
             raise
@@ -134,7 +137,7 @@ class VM:
                 tm = self._tm(obj, b"__index")
                 if tm is None:
                     raise LuaRuntimeError(f"attempt to index a {static_value_type(obj).name} value")
-            if isinstance(tm, (Closure, HostFunction)) or self._tm(tm, b"__call") is not None:
+            if isinstance(tm, (Closure, HostFunction)):
                 self._invoke(frames, frame, tm, [obj, key], dest, 1)
                 return
             obj = tm
@@ -154,7 +157,7 @@ class VM:
                 tm = self._tm(obj, b"__newindex")
                 if tm is None:
                     raise LuaRuntimeError(f"attempt to index a {static_value_type(obj).name} value")
-            if isinstance(tm, (Closure, HostFunction)) or self._tm(tm, b"__call") is not None:
+            if isinstance(tm, (Closure, HostFunction)):
                 self._invoke(frames, frame, tm, [obj, key, value], 0, 0)
                 return
             obj = tm

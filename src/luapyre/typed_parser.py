@@ -17,6 +17,9 @@ class TypedParser(Parser):
     this as a small parser specialization leaves plain Lua parsing untouched.
     """
 
+    def __init__(self, source: str):
+        super().__init__(source, typed=True)
+
     def _type_atom(self) -> LuaType:
         token = self.t
         if token.kind == "NAME" or token.kind in _TYPE_KEYWORDS:

@@ -93,6 +93,11 @@ Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default ho
 
 0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, 0.23 added escape analysis and virtual Frames/MultiValues, and 0.24 added automatic generational GC pacing. 0.25 shaped generated code for CPython's adaptive interpreter with fast locals and range-proven arithmetic. **0.26 applies those transformations to CFG traces, recycles exact compiled-call Frames, and adds a bounded LRU source cache so repeated execution retains its warmed Proto and JIT state.** See [`docs/runtime-overheads-0.26.md`](docs/runtime-overheads-0.26.md) and the earlier design notes in [`docs/`](docs/).
 
+Pinned tests from real packages provide an additional compatibility gate.
+Penlight's portable upstream suite is 23/23 green; lua-cjson is explicitly
+unsupported because it requires Lua's native C ABI. See
+[`docs/upstream-package-compatibility.md`](docs/upstream-package-compatibility.md).
+
 ### Output and warnings
 
 Lua `print` is safe and available by default. It applies Lua `tostring` semantics, including `__tostring`, uses tab separators, appends a newline, and sends the already-formatted bytes to an output sink. The default sink delegates to Python `print`.

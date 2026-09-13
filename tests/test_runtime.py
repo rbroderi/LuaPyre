@@ -8,6 +8,20 @@ def test_plain_lua_defaults_to_any_and_runs():
     assert lua.execute("local x = 20; local y = 22; return x + y") == 42
 
 
+def test_script_shebang_is_ignored():
+    assert LuaRuntime().execute("#!/usr/bin/env lua\nreturn 42") == 42
+
+
+def test_plain_lua_can_use_global_as_an_identifier():
+    source = "local global = 40; global = global + 2; return global"
+    assert LuaRuntime().execute(source) == 42
+
+
+def test_multiple_assignment_snapshots_aliased_locals():
+    source = "local a, b = 20, 22; a, b = b, a; return a, b"
+    assert LuaRuntime().execute(source) == (22, 20)
+
+
 def test_typed_arithmetic_specializes():
     lua = LuaRuntime()
     src = "local x: integer = 20; local y: integer = 22; return x + y"

@@ -7,7 +7,7 @@ from .errors import LuaSyntaxError
 
 KEYWORDS = {
     "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
-    "global", "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return",
+    "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return",
     "then", "true", "until", "while",
 }
 
@@ -37,12 +37,19 @@ class Token:
 
 
 class Lexer:
-    def __init__(self, source: str):
+    def __init__(self, source: str, *, typed: bool = False):
         self.source = source
+        self.keywords = KEYWORDS | {"global"} if typed else KEYWORDS
         self.i = 0
         self.line = 1
         self.col = 1
         self.n = len(source)
+        # Lua's standalone loader treats a Unix shebang as a skipped first
+        # line. Preserve its line number while allowing real package scripts
+        # to be executed directly by the embedding API.
+        if source.startswith("#!"):
+            while self._peek() and self._peek() not in "\r\n":
+                self._take()
 
     def _peek(self, offset=0):
         j = self.i + offset
@@ -300,7 +307,7 @@ class Lexer:
                 s = self._take()
                 while self._peek().isalnum() or self._peek() == "_":
                     s += self._take()
-                out.append(Token(s if s in KEYWORDS else "NAME", s, line, col))
+                out.append(Token(s if s in self.keywords else "NAME", s, line, col))
                 continue
             if ch.isdigit() or (ch == "." and self._peek(1).isdigit()):
                 out.append(self._read_number(line, col))

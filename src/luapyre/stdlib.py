@@ -20,14 +20,20 @@ from .values import MultiValue, i64, lua_equal, lua_type_name, parse_lua_number,
 from .vm import HostFunction
 from .stdlib_math import install_math_library
 from .stdlib_string import install_string_library
-from .stdlib_support import INT_MAX, INT_MIN, need_integer, tostring_value
+from .stdlib_support import (
+    INT_MAX,
+    INT_MIN,
+    lua_c_function,
+    need_integer,
+    tostring_value,
+)
 from .stdlib_table import install_table_library
 from .stdlib_utf8 import install_utf8_library
 
 
 def install_safe_stdlib(globals_table: LuaTable, vm=None):
     def put(name, fn):
-        host = HostFunction(fn, name)
+        host = lua_c_function(fn, name)
         globals_table.rawset(name.encode("ascii"), host)
         return host
 
@@ -107,7 +113,7 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
 
     put("getmetatable", getmetatable)
 
-    def setmetatable(table, mt):
+    def setmetatable(table, mt, *_ignored):
         if not isinstance(table, LuaTable):
             raise LuaRuntimeError("bad argument #1 to 'setmetatable' (table expected)")
         if mt is not None and not isinstance(mt, LuaTable):

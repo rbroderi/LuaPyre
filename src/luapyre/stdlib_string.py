@@ -16,6 +16,7 @@ from .stdlib_support import (
     UINT_MASK,
     need_bytes,
     need_integer,
+    lua_c_function,
     normalize_index,
     number_to_bytes,
     slice_bounds,
@@ -370,7 +371,7 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
     lib = LuaTable()
 
     def register(name, fn):
-        lib.rawset(name.encode("ascii"), HostFunction(fn, f"string.{name}"))
+        lib.rawset(name.encode("ascii"), lua_c_function(fn, f"string.{name}"))
 
     def byte_fn(s, i=1, j=None):
         s = need_bytes(s, 1, "byte")
@@ -625,6 +626,7 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
     def sub(s, i, j=-1):
         s = need_bytes(s, 1, "sub")
         i = need_integer(i, 2, "sub")
+        j = -1 if j is None else j
         j = need_integer(j, 3, "sub")
         i, j = slice_bounds(i, j, len(s))
         return b"" if i > j else s[i - 1:j]
