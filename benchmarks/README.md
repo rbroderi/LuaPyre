@@ -65,3 +65,6 @@ For performance comparisons, compare runs on the same runner class and Python ve
 - `runtime_overheads_ab.py` compares 0.26 trace code generation, recursive
   compiled-call Frame recycling, and repeated-source execution. Run the same
   script from each revision with distinct `--label` values.
+- `speed_030_ab.py` measures the 0.30 inline-guard, diamond-CFG, recursive-frame,
+  constant-key table, and direct Python-entry paths. Run it from each revision
+  with distinct `--label` values.

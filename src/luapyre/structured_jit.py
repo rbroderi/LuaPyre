@@ -3,13 +3,14 @@ from __future__ import annotations
 import ast
 from types import FunctionType
 
+from .ast_backend import inline_type_guards, optimize_semantic_helpers
 from .bytecode import Closure, Op
 from .jit import CompiledLoop, IRBlock, IRInstruction, IRLoop
 from .opdispatch import _float_divide
 from .range_analysis import analyze_integer_ranges
-from .table import LuaTable
+from .table import LuaTable, _ABSENT, _hash_key
 from .typed_ir import TypedIRCompiler
-from .values import type_matches
+from .values import lua_equal, type_matches
 
 
 _MASK64 = (1 << 64) - 1
@@ -79,6 +80,154 @@ class StructuredTypedLoopJITMixin:
                 return compiled
         return super()._compile_loop(frame, start_pc, backedge_pc)
 
+    def _compile_structured_typed_diamond_loop(
+        self, frame, start_pc: int, backedge_pc: int
+    ):
+        """Lower one forward diamond inside a numeric loop to a Python ``if``.
+
+        The general CFG backend uses a state/match dispatcher. A very common
+        typed shape is a single if/else whose arms immediately rejoin at the
+        numeric backedge. Keeping that shape as Python control flow removes two
+        state dispatches per Lua iteration while retaining exact path fuel.
+        """
+        proto = frame.proto
+        loop_ins = proto.code[backedge_pc]
+        if loop_ins.op not in (Op.FORLOOP, Op.JFORLOOP) or loop_ins.d != start_pc:
+            return None
+        body = proto.code[start_pc:backedge_pc]
+        branches = [
+            (start_pc + offset, ins)
+            for offset, ins in enumerate(body)
+            if ins.op in (Op.JMPIF, Op.JMPIFNOT)
+        ]
+        if len(branches) != 1:
+            return None
+        branch_pc, branch = branches[0]
+        if not (branch_pc + 1 < branch.a < backedge_pc):
+            return None
+        first = list(enumerate(proto.code[branch_pc + 1:branch.a], branch_pc + 1))
+        second = list(enumerate(proto.code[branch.a:backedge_pc], branch.a))
+        if not first or first[-1][1].op is not Op.JMP or first[-1][1].a != backedge_pc:
+            return None
+        first_body = first[:-1]
+        if any(ins.op in (Op.JMP, Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL, Op.CALL) for _, ins in (*first_body, *second)):
+            return None
+        prefix = list(enumerate(proto.code[start_pc:branch_pc], start_pc))
+        allowed = {
+            Op.LOADK, Op.MOVE, Op.LOCAL, Op.ADD_I, Op.SUB_I, Op.MUL_I,
+            Op.ADD_F, Op.SUB_F, Op.MUL_F, Op.MOD, Op.EQ, Op.LT, Op.LE,
+            Op.NOT, Op.TOBOOL, Op.GUARD,
+        }
+        if any(ins.op not in allowed for _, ins in (*prefix, *first_body, *second)):
+            return None
+
+        ranges = analyze_integer_ranges(proto)
+        lowered = tuple(
+            IRInstruction(pc, ins, overflow_free=ranges.overflow_free(pc))
+            for pc, ins in enumerate(proto.code[start_pc:backedge_pc], start_pc)
+        )
+        ir = IRLoop(
+            start_pc, backedge_pc, backedge_pc + 1,
+            IRBlock(start_pc, backedge_pc, lowered), loop_ins,
+        )
+        registers = self._used_registers(ir)
+        if self._captured_registers(proto).intersection(registers):
+            return None
+        lines = [
+            "def _jit_structured_cfg_loop(vm, frame, budget):",
+            "    regs = frame.regs",
+            "    consts = frame.proto.constants",
+            "    used = 0",
+        ]
+        for reg in registers:
+            lines.append(f"    _r{reg} = regs[{reg}]")
+
+        def spill(indent: str):
+            lines.extend(self._spill_lines(registers, indent))
+
+        max_cost = len(prefix) + 1 + max(len(first), len(second)) + 1
+        lines.append(f"    while budget - used >= {max_cost}:")
+
+        def emit(sequence, indent: str):
+            for pc, ins in sequence:
+                a, b, c = f"_r{ins.a}", f"_r{ins.b}", f"_r{ins.c}"
+                lines.append(f"{indent}used += 1")
+                if ins.op is Op.LOADK:
+                    lines.append(f"{indent}{a} = consts[{ins.b}]")
+                elif ins.op in (Op.MOVE, Op.LOCAL):
+                    lines.append(f"{indent}{a} = {b}")
+                elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
+                    symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
+                    expression = f"{b} {symbol} {c}"
+                    if ranges.overflow_free(pc):
+                        lines.append(f"{indent}{a} = {expression}")
+                    else:
+                        lines.extend(self._i64_lines(a, expression, f"cfg_{pc}", indent))
+                elif ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
+                    symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[ins.op]
+                    lines.append(f"{indent}{a} = float({b} {symbol} {c})")
+                elif ins.op is Op.MOD:
+                    lines.append(f"{indent}if type({b}) is not int or type({c}) is not int or {c} == 0:")
+                    spill(indent + "    ")
+                    lines.extend([f"{indent}    frame.pc = {pc}", f"{indent}    return used - 1, used > 1"])
+                    lines.append(f"{indent}{a} = {b} % {c}")
+                elif ins.op is Op.EQ:
+                    lines.append(f"{indent}if isinstance({b}, _LuaTable) and isinstance({c}, _LuaTable) and not _lua_equal({b}, {c}) and ({b}.metatable is not None or {c}.metatable is not None):")
+                    spill(indent + "    ")
+                    lines.extend([f"{indent}    frame.pc = {pc}", f"{indent}    return used - 1, used > 1"])
+                    lines.append(f"{indent}{a} = _lua_equal({b}, {c})")
+                elif ins.op in (Op.LT, Op.LE):
+                    lines.append(f"{indent}if not ((type({b}) in _NUM_TYPES and type({c}) in _NUM_TYPES) or (isinstance({b}, bytes) and isinstance({c}, bytes))):")
+                    spill(indent + "    ")
+                    lines.extend([f"{indent}    frame.pc = {pc}", f"{indent}    return used - 1, used > 1"])
+                    symbol = "<" if ins.op is Op.LT else "<="
+                    lines.append(f"{indent}{a} = {b} {symbol} {c}")
+                elif ins.op is Op.NOT:
+                    lines.append(f"{indent}{a} = ({b} is None or {b} is False)")
+                elif ins.op is Op.TOBOOL:
+                    lines.append(f"{indent}{a} = not ({b} is None or {b} is False)")
+                elif ins.op is Op.GUARD:
+                    lines.append(f"{indent}if not _type_matches(consts[{ins.b}], {a}):")
+                    spill(indent + "    ")
+                    lines.extend([f"{indent}    frame.pc = {pc}", f"{indent}    return used - 1, used > 1"])
+                else:
+                    raise AssertionError(ins.op)
+
+        emit(prefix, "        ")
+        lines.append("        used += 1")
+        condition = f"not (_r{branch.b} is None or _r{branch.b} is False)"
+        if branch.op is Op.JMPIFNOT:
+            condition = f"not ({condition})"
+        lines.append(f"        if {condition}:")
+        emit(second, "            ")
+        lines.append("        else:")
+        emit(first_body, "            ")
+        lines.append("            used += 1")  # the first arm's JMP
+        lines.append("        used += 1")  # numeric loop backedge
+        idx, limit, step = f"_r{loop_ins.a}", f"_r{loop_ins.b}", f"_r{loop_ins.c}"
+        lines.extend([
+            f"        _next = {idx} + {step}",
+            f"        if _next < _INT_MIN or _next > _INT_MAX or ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",
+        ])
+        spill("            ")
+        lines.extend([
+            f"            frame.pc = {backedge_pc + 1}",
+            "            return used, True",
+            f"        {idx} = _next",
+        ])
+        spill("    ")
+        lines.extend([f"    frame.pc = {start_pc}", "    return used, used > 0"])
+        tree = optimize_semantic_helpers(ast.parse("\n".join(lines)))
+        ast.fix_missing_locations(tree)
+        namespace = {
+            "_INT_MIN": _INT_MIN, "_INT_MAX": _INT_MAX,
+            "_MASK64": _MASK64, "_SIGN64": _SIGN64, "_TWO64": _TWO64,
+            "_NUM_TYPES": (int, float), "_LuaTable": LuaTable,
+            "_type_matches": type_matches, "_lua_equal": lua_equal,
+        }
+        exec(compile(tree, "<luapyre-structured-cfg-loop>", "exec"), namespace)
+        return CompiledLoop(ir, max_cost, namespace["_jit_structured_cfg_loop"])
+
     @staticmethod
     def _i64_lines(dest: str, expression: str, tag: str, indent: str) -> list[str]:
         tmp = f"_i64_{tag}"
@@ -145,7 +294,9 @@ class StructuredTypedLoopJITMixin:
         proto = frame.proto
         body = proto.code[start_pc:backedge_pc]
         if not body or any(ins.op not in self._STRUCTURED_OPS for ins in body):
-            return None
+            return self._compile_structured_typed_diamond_loop(
+                frame, start_pc, backedge_pc
+            )
         loop_ins = proto.code[backedge_pc]
         if loop_ins.op not in (Op.FORLOOP, Op.JFORLOOP) or loop_ins.d != start_pc:
             return None
@@ -211,6 +362,7 @@ class StructuredTypedLoopJITMixin:
             "_INT_MIN": _INT_MIN,
             "_INT_MAX": _INT_MAX,
             "_type_matches": type_matches,
+            "_ABSENT": _ABSENT,
         }
         table_arrays: dict[int, str] = {}
         for pc, ins in zip(range(start_pc, backedge_pc), body):
@@ -298,28 +450,53 @@ class StructuredTypedLoopJITMixin:
                 f"{indent}    return {completed_cost} + {cost}, False",
             ])
 
+        known_constants: dict[int, object] = {}
         for offset, ins in enumerate(body):
             pc = start_pc + offset
             cost = offset + prior_child_cost
             a, b, c = f"_r{ins.a}", f"_r{ins.b}", f"_r{ins.c}"
+            if self._writes_register(ins, ins.a) and ins.op not in (
+                Op.LOADK, Op.MOVE, Op.LOCAL, Op.CALL
+            ):
+                known_constants.pop(ins.a, None)
             if ins.op is Op.LOADK:
                 lines.append(f"{indent}{a} = consts[{ins.b}]")
+                known_constants[ins.a] = proto.constants[ins.b]
             elif ins.op in (Op.MOVE, Op.LOCAL):
                 lines.append(f"{indent}{a} = {b}")
+                if ins.b in known_constants:
+                    known_constants[ins.a] = known_constants[ins.b]
+                else:
+                    known_constants.pop(ins.a, None)
             elif ins.op is Op.GETTABLE:
                 array_name = table_arrays[ins.b]
-                lines.append(f"{indent}_key_{pc} = {c}")
-                lines.append(
-                    f"{indent}if type(_key_{pc}) is int and 1 <= _key_{pc} <= len({array_name}):"
-                )
-                lines.append(f"{indent}    {a} = {array_name}[_key_{pc} - 1]")
-                lines.append(f"{indent}else:")
-                lines.append(f"{indent}    {a} = {b}.rawget(_key_{pc})")
+                key = known_constants.get(ins.c, _ABSENT)
+                if key is not _ABSENT:
+                    token_name = f"_key_token_{pc}"
+                    namespace[token_name] = _hash_key(key)
+                    if type(key) is int and key >= 1:
+                        lines.append(f"{indent}if {key} <= len({array_name}):")
+                        lines.append(f"{indent}    {a} = {array_name}[{key - 1}]")
+                        lines.append(f"{indent}else:")
+                        lines.append(f"{indent}    _item_{pc} = {b}.hash.get({token_name}, _ABSENT)")
+                        lines.append(f"{indent}    {a} = None if _item_{pc} is _ABSENT else _item_{pc}[1]")
+                    else:
+                        lines.append(f"{indent}_item_{pc} = {b}.hash.get({token_name}, _ABSENT)")
+                        lines.append(f"{indent}{a} = None if _item_{pc} is _ABSENT else _item_{pc}[1]")
+                else:
+                    lines.append(f"{indent}_key_{pc} = {c}")
+                    lines.append(
+                        f"{indent}if type(_key_{pc}) is int and 1 <= _key_{pc} <= len({array_name}):"
+                    )
+                    lines.append(f"{indent}    {a} = {array_name}[_key_{pc} - 1]")
+                    lines.append(f"{indent}else:")
+                    lines.append(f"{indent}    {a} = {b}.rawget(_key_{pc})")
+                known_constants.pop(ins.a, None)
             elif ins.op is Op.SETTABLE:
                 guard(f"{b} is None or (type({b}) is float and {b} != {b})", pc, cost)
                 lines.append(f"{indent}{a}.rawset({b}, {c})")
             elif ins.op is Op.GUARD:
-                guard(f"not _type_matches(consts[{ins.b}], {a})", pc, cost)
+                guard(f"not _type_matches({proto.constants[ins.b]!r}, {a})", pc, cost)
             elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
                 expression = f"{b} {symbol} {c}"
@@ -410,6 +587,7 @@ class StructuredTypedLoopJITMixin:
                             else "None"
                         )
                         lines.append(f"{indent}_r{ins.a + result_index} = {value}")
+                        known_constants.pop(ins.a + result_index, None)
                 prior_child_cost += len(sequence)
             else:
                 return None
@@ -468,6 +646,7 @@ class StructuredTypedLoopJITMixin:
         )
 
         tree = ast.parse("\n".join(lines))
+        tree = inline_type_guards(tree)
         ast.fix_missing_locations(tree)
         exec(compile(tree, "<luapyre-structured-loop>", "exec"), namespace)
         runner: FunctionType = namespace["_jit_structured_loop"]

@@ -478,6 +478,11 @@ class LuaRuntime:
                 if typ.name == "integer" and type(arg) is int:
                     self._from_lua(arg, LuaInt)
         lua_args = [self._to_lua(arg) for arg in args]
+        direct_call = getattr(self.vm, "call_compiled_leaf", None)
+        if direct_call is not None and isinstance(function, Closure):
+            entered, result = direct_call(function, tuple(lua_args), fuel)
+            if entered:
+                return self._from_lua(result, return_type)
         cache_key = (id(function), len(lua_args))
         # Borrow an inactive trampoline. A recursive host callback or debug
         # hook must not overwrite constants the outer call is still loading.

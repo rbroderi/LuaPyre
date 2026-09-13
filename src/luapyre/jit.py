@@ -74,6 +74,7 @@ class JITStats:
     virtual_multivalue_materializations: int = 0
     compiled_frame_allocations: int = 0
     leaf_frame_elisions: int = 0
+    python_direct_entries: int = 0
     compile_failure_reasons: dict[str, int] = field(default_factory=dict)
     coroutine_compiles: int = 0
     coroutine_executions: int = 0
@@ -609,6 +610,22 @@ class PythonJIT:
         self._leaf_hot[ident] = hot
         if hot < self.threshold:
             return None
+        compiled = self._compile_leaf(proto)
+        self._leaf_cache[ident] = (proto, compiled)
+        if compiled is None:
+            self.record_compile_failure("leaf_unsupported")
+            return None
+        self.stats.leaf_compiles += 1
+        return compiled
+
+    def get_leaf(self, proto: Proto) -> CompiledLeaf | None:
+        """Compile/cache a leaf requested by an explicit host-call boundary."""
+        if not self.enabled:
+            return None
+        ident = id(proto)
+        cached = self._leaf_cache.get(ident)
+        if cached is not None and cached[0] is proto:
+            return cached[1]
         compiled = self._compile_leaf(proto)
         self._leaf_cache[ident] = (proto, compiled)
         if compiled is None:
