@@ -79,10 +79,26 @@ return add(x, 22)
 assert result == 42
 ```
 
-Python-facing APIs recursively convert scalar containers, sets, dictionaries,
-and dataclasses. Lua functions returned by `execute_python()` are ordinary
-callable `LuaFunction` objects, and explicitly supplied Python callables can be
-called from Lua:
+### Python/Lua value and function interop
+
+`set()` accepts Python `int`, `float`, `str`, `list`, `set`, `dict`, and
+dataclass values and recursively turns them into Lua values and tables. Sets
+use Lua membership tables (`element -> true`):
+
+```python
+lua.set("numbers", [10, 20, 12])
+lua.set("allowed", {"fox", "rabbit"})
+lua.set("weights", {"nick": 20, "judy": 22})
+
+assert lua.execute(
+    "return numbers[1] + numbers[2] + numbers[3], "
+    "allowed.fox, weights.nick + weights.judy"
+) == (42, True, 42)
+```
+
+Use `execute_python()` or `get_python()` when results should be converted back
+to ordinary Python values. Pass `return_type=` to select an exact container or
+dataclass shape:
 
 ```python
 from dataclasses import dataclass
@@ -93,16 +109,40 @@ class Point:
     y: int
 
 lua.set("point", Point(20, 22))
-lua.expose("scale", lambda value, factor: value * factor)
-
 point = lua.execute_python(
-    "return {x = scale(point.x, 2), y = scale(point.y, 2)}",
+    "return {x = point.x * 2, y = point.y * 2}",
     return_type=Point,
 )
-add = lua.execute_python("return function(a, b) return a + b end")
-
 assert point == Point(40, 44)
+```
+
+Lua functions returned to Python become callable `LuaFunction` objects. Named
+Lua globals can also be retrieved with `function()` or invoked directly with
+`call()`:
+
+```python
+add = lua.execute_python("return function(a, b) return a + b end")
 assert add(20, 22, return_type=int) == 42
+
+lua.execute("function join(a, b) return a .. ':' .. b end")
+assert lua.function("join")("Nick", "Judy", return_type=str) == "Nick:Judy"
+assert lua.call("join", "Finn", "Bell", return_type=str) == "Finn:Bell"
+```
+
+Python functions cross the boundary only when explicitly supplied through
+`set()` or `expose()`. Python annotations select exact argument conversion, so
+Lua tables can arrive as typed containers or dataclasses:
+
+```python
+def move(point: Point, delta: list[int]) -> Point:
+    return Point(point.x + delta[0], point.y + delta[1])
+
+lua.expose("move", move)
+result = lua.execute_python(
+    "return move({x = 20, y = 20}, {1, 2})",
+    return_type=Point,
+)
+assert result == Point(21, 22)
 ```
 
 The original `execute()` and `get()` methods remain raw APIs for callers that
