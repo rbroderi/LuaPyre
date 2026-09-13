@@ -93,9 +93,12 @@ Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default ho
 
 0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, 0.23 added escape analysis and virtual Frames/MultiValues, and 0.24 added automatic generational GC pacing. 0.25 shaped generated code for CPython's adaptive interpreter with fast locals and range-proven arithmetic. **0.26 applies those transformations to CFG traces, recycles exact compiled-call Frames, and adds a bounded LRU source cache so repeated execution retains its warmed Proto and JIT state.** See [`docs/runtime-overheads-0.26.md`](docs/runtime-overheads-0.26.md) and the earlier design notes in [`docs/`](docs/).
 
-Pinned tests from real packages provide an additional compatibility gate.
-Penlight's portable upstream suite is 23/23 green; lua-cjson is explicitly
-unsupported because it requires Lua's native C ABI. See
+Pinned tests and workloads from real packages provide an additional
+compatibility gate. Penlight's portable upstream suite is 23/23 green,
+luatest's selected core tests are 5/5 green, LuaCov's line-scanner specs are
+24/24 green, and 11 Are We Fast Yet Lua benchmarks pass their upstream result
+checks. LuaCov collection and lua-cjson remain explicitly reported at their
+unsupported host/API boundaries. See
 [`docs/upstream-package-compatibility.md`](docs/upstream-package-compatibility.md).
 
 ### Output and warnings
