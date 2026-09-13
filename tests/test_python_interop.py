@@ -108,7 +108,7 @@ def test_lua_functions_are_callable_from_python(jit):
     assert lua.call("join", "Finn", "Bell", return_type=str) == "Finn:Bell"
 
 
-def test_repeated_python_calls_warm_typed_function_compilation():
+def test_repeated_python_calls_use_direct_typed_leaf_entry():
     lua = LuaRuntime(jit_threshold=3)
     add = lua.execute_python(
         "-- luapyre: typed\n"
@@ -121,8 +121,8 @@ def test_repeated_python_calls_warm_typed_function_compilation():
     assert [add(value, 2, return_type=int) for value in range(10)] == [
         value + 2 for value in range(10)
     ]
-    assert lua.vm.jit.function_compiles == 1
-    assert lua.vm.jit.function_executions >= 7
+    assert lua.vm.jit.stats.leaf_compiles == 1
+    assert lua.vm.jit.stats.python_direct_entries == 10
 
 
 def test_explicit_python_functions_receive_converted_values():

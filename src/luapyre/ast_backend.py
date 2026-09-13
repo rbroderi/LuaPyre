@@ -152,7 +152,7 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
                 [ast.In()],
                 [ast.Name("_NUM_TYPES", ast.Load())],
             )
-        if type_name == "integer":
+        if type_name in ("integer", "integer_lua"):
             return cls._type_is(value, "int")
         if type_name == "float":
             return cls._type_is(value, "float")
@@ -342,6 +342,28 @@ class SemanticFastPathOptimizer(ast.NodeTransformer):
         )
 
 
+class TypeGuardInliner(ast.NodeTransformer):
+    """Replace generated constant type predicates without changing table code."""
+
+    def visit_Call(self, node: ast.Call):
+        node = self.generic_visit(node)
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "_type_matches"
+            and not node.keywords
+            and len(node.args) == 2
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and SemanticFastPathOptimizer._cheap(node.args[1])
+        ):
+            replacement = SemanticFastPathOptimizer._type_matches_expr(
+                node.args[0].value, node.args[1]
+            )
+            if replacement is not None:
+                return ast.copy_location(replacement, node)
+        return node
+
+
 class _ReturnToJump(ast.NodeTransformer):
     def __init__(self, state_name: str):
         self.state_name = state_name
@@ -467,6 +489,12 @@ def inline_expression_helper(tree: ast.AST, source: str) -> ast.AST:
 
 def optimize_semantic_helpers(tree: ast.AST) -> ast.AST:
     tree = SemanticFastPathOptimizer().visit(tree)
+    ast.fix_missing_locations(tree)
+    return tree
+
+
+def inline_type_guards(tree: ast.AST) -> ast.AST:
+    tree = TypeGuardInliner().visit(tree)
     ast.fix_missing_locations(tree)
     return tree
 

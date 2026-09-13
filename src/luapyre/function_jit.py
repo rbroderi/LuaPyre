@@ -9,7 +9,7 @@ from .bytecode import Closure, Ins, Op, Proto
 from .errors import LuaRuntimeError
 from .opdispatch import _float_divide, _float_modulo
 from .range_analysis import analyze_integer_ranges
-from .table import LuaTable
+from .table import LuaTable, _ABSENT, _hash_key
 from .values import lua_equal, static_value_type, type_matches
 
 
@@ -113,6 +113,16 @@ class TypedFunctionJITMixin:
         if ins.op in (Op.FORLOOP, Op.JFORLOOP):
             return (ins.d, fallthrough)
         return (fallthrough,)
+
+    @staticmethod
+    def _function_writes_register(ins: Ins, reg: int) -> bool:
+        if ins.op is Op.CALL:
+            return ins.e > 0 and ins.a <= reg < ins.a + ins.e
+        if ins.op in (Op.SETUPVAL, Op.SETTABLE):
+            return False
+        return ins.op not in _FUNCTION_CONTROL and ins.op not in (
+            Op.RETURN, Op.HALT
+        ) and ins.a == reg
 
     def _function_blocks(self, proto: Proto) -> tuple[_FunctionBlock, ...] | None:
         if not proto.code or any(ins.op not in _FUNCTION_OPS for ins in proto.code):
@@ -335,9 +345,12 @@ class TypedFunctionJITMixin:
                 ]
             )
 
+        constant_tokens: dict[str, object] = {}
+        call_target_caches: dict[str, list[object | None]] = {}
         for block_no, block in enumerate(blocks):
             lines.append(f"    def {block_names[block_no]}():")
             indent = "        "
+            known_constants: dict[int, object] = {}
             cost = len(block.instructions)
             lines.append(f"{indent}if budget - meter[0] - used < {cost}:")
             lines.extend(f"{indent}    {line.strip()}" for line in suspend(block.start, ""))
@@ -354,8 +367,13 @@ class TypedFunctionJITMixin:
                 a, b, c = f"_r{ins.a}", f"_r{ins.b}", f"_r{ins.c}"
                 if op is Op.LOADK:
                     lines.extend([f"{indent}used += 1", f"{indent}{a} = consts[{ins.b}]"])
+                    known_constants[ins.a] = proto.constants[ins.b]
                 elif op in (Op.MOVE, Op.LOCAL):
                     lines.extend([f"{indent}used += 1", f"{indent}{a} = {b}"])
+                    if ins.b in known_constants:
+                        known_constants[ins.a] = known_constants[ins.b]
+                    else:
+                        known_constants.pop(ins.a, None)
                 elif op is Op.GETUPVAL:
                     lines.extend([f"{indent}used += 1", f"{indent}{a} = upvalues[{ins.b}].value"])
                 elif op is Op.SETUPVAL:
@@ -370,7 +388,29 @@ class TypedFunctionJITMixin:
                     lines.append(f"{indent}{a} = vm._new_table()")
                 elif op is Op.GETTABLE:
                     deopt(lines, f"not isinstance({b}, _LuaTable) or {b}.metatable is not None", pc, indent)
-                    lines.extend([f"{indent}used += 1", f"{indent}{a} = {b}.rawget({c})"])
+                    key = known_constants.get(ins.c, _ABSENT)
+                    if type(key) is float and key.is_integer():
+                        key = int(key)
+                    if key is _ABSENT:
+                        lines.extend([f"{indent}used += 1", f"{indent}{a} = {b}.rawget({c})"])
+                    else:
+                        token_name = f"_key_token_{pc}"
+                        constant_tokens[token_name] = _hash_key(key)
+                        lines.append(f"{indent}used += 1")
+                        if type(key) is int and key >= 1:
+                            lines.extend([
+                                f"{indent}if {key} <= len({b}.array):",
+                                f"{indent}    {a} = {b}.array[{key - 1}]",
+                                f"{indent}else:",
+                                f"{indent}    _item_{pc} = {b}.hash.get({token_name}, _ABSENT)",
+                                f"{indent}    {a} = None if _item_{pc} is _ABSENT else _item_{pc}[1]",
+                            ])
+                        else:
+                            lines.extend([
+                                f"{indent}_item_{pc} = {b}.hash.get({token_name}, _ABSENT)",
+                                f"{indent}{a} = None if _item_{pc} is _ABSENT else _item_{pc}[1]",
+                            ])
+                    known_constants.pop(ins.a, None)
                 elif op is Op.SETTABLE:
                     deopt(lines, f"not isinstance({a}, _LuaTable) or {a}.metatable is not None", pc, indent)
                     deopt(lines, f"{b} is None or (type({b}) is float and _isnan({b}))", pc, indent)
@@ -431,7 +471,7 @@ class TypedFunctionJITMixin:
                     lines.extend([f"{indent}used += 1", f"{indent}{a} = {b} {symbol} {c}"])
                 elif op is Op.GUARD:
                     lines.append(f"{indent}used += 1")
-                    lines.append(f"{indent}if not _type_matches(consts[{ins.b}], {a}):")
+                    lines.append(f"{indent}if not _type_matches({proto.constants[ins.b]!r}, {a}):")
                     lines.append(
                         f"{indent}    raise _LuaRuntimeError(f\"expected {{consts[{ins.b}]!s}}, got {{_static_value_type({a}).name}}\")"
                     )
@@ -440,9 +480,17 @@ class TypedFunctionJITMixin:
                     # compiled function. Suspend before the CALL so Tier 0 can
                     # perform every Lua metamethod/callability check exactly.
                     lines.append(f"{indent}_fn_{pc} = {b}")
-                    lines.append(
-                        f"{indent}_compiled_{pc} = vm.jit.get_compiled_function(_fn_{pc}) if isinstance(_fn_{pc}, _Closure) else None"
-                    )
+                    cache_name = f"_call_target_{pc}"
+                    call_target_caches.setdefault(cache_name, [None, None])
+                    lines.extend([
+                        f"{indent}_target_cache_{pc} = {cache_name}",
+                        f"{indent}if _fn_{pc} is _target_cache_{pc}[0]:",
+                        f"{indent}    _compiled_{pc} = _target_cache_{pc}[1]",
+                        f"{indent}else:",
+                        f"{indent}    _compiled_{pc} = vm.jit.get_compiled_function(_fn_{pc}) if isinstance(_fn_{pc}, _Closure) else None",
+                        f"{indent}    _target_cache_{pc}[0] = _fn_{pc}",
+                        f"{indent}    _target_cache_{pc}[1] = _compiled_{pc}",
+                    ])
                     lines.append(f"{indent}if _compiled_{pc} is None:")
                     lines.extend(f"{indent}    {line.strip()}" for line in suspend(pc, ""))
                     lines.append(f"{indent}used += 1")
@@ -469,6 +517,12 @@ class TypedFunctionJITMixin:
                             )
                 else:
                     return None
+
+                if op is Op.CALL and ins.e > 0:
+                    for result_reg in range(ins.a, ins.a + ins.e):
+                        known_constants.pop(result_reg, None)
+                elif op not in (Op.LOADK, Op.MOVE, Op.LOCAL, Op.GETTABLE) and self._function_writes_register(ins, ins.a):
+                    known_constants.pop(ins.a, None)
 
             if terminal_control:
                 ins = terminal_ins
@@ -548,6 +602,9 @@ class TypedFunctionJITMixin:
             "_lua_equal": lua_equal,
             "_static_value_type": static_value_type,
             "_type_matches": type_matches,
+            "_ABSENT": _ABSENT,
+            **constant_tokens,
+            **call_target_caches,
         }
         exec(compile(tree, "<luapyre-ast-function>", "exec"), namespace)
         return CompiledAstFunction(proto, namespace["_jit_ast_function"])
