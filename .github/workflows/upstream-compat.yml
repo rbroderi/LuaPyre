@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  penlight:
+  packages:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -18,5 +18,5 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e .
-      - name: Run pinned Penlight portable tests unchanged
+      - name: Run pinned upstream package tests and workloads
         run: python tools/upstream_compat.py

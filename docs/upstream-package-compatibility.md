@@ -55,3 +55,52 @@ substituting a Python JSON implementation and calling the result compatible.
 Supporting lua-cjson would require a defined native-extension bridge or a
 separate API-compatible Lua/Python module. Only the first option would make the
 real lua-cjson package and its own tests a valid compatibility result.
+
+## luatest
+
+- Repository: `mblayman/luatest`
+- Revision: `d063c547b31d4df1dce1b0679ccf964d53ff5c1e`
+- Result: **5/5 selected core module tests pass unchanged**
+
+The gate runs the three upstream `main.update_package_path` tests and both
+upstream executor tests, including the passing and failing-test paths. Small
+in-memory adapters implement the narrow contracts used from `luassert`, its
+stub helper, and `pl.tablex`; they do not replace any luatest source under
+test.
+
+This proves that luatest's core executor can load and run tests on LuaPyre and
+that its package-path helper behaves correctly. The complete command-line
+runner is not yet a compatibility claim: discovery, configuration, output
+capture, and coverage require its full LuaRocks dependency set plus filesystem
+and temporary-file capabilities that the default sandbox does not expose.
+
+## LuaCov
+
+- Repository: `lunarmodules/luacov`
+- Revision: `645a98468aad737de035a49a578c245bb3e555fb`
+- Result: **24/24 line-scanner specs pass unchanged; collection is unsupported**
+
+The entire upstream `spec/linescanner_spec.lua` file runs through a minimal
+Busted-style `describe`/`it` adapter. This exercises LuaCov's real pure-Lua
+source scanner, including long strings, comments, functions, labels, and
+inline enable/disable directives.
+
+Loading LuaCov's collector reaches `require("debug")`. Actual coverage
+collection needs `debug.sethook` line events, `debug.getinfo`, exit/finalizer
+behavior, and report-file I/O. LuaPyre does not currently expose those hooks,
+so the runner records this as partial compatibility instead of treating a
+no-op debug shim as coverage support.
+
+## Are We Fast Yet
+
+- Repository: `smarr/are-we-fast-yet`
+- Revision: `74306fec151070fd07157cefeacf19e7e0bcdc89`
+- Result: **11/11 selected Lua benchmarks pass their upstream result checks**
+
+The unchanged upstream `harness.lua` runs Bounce, DeltaBlue, Json, List,
+Mandelbrot, NBody, Permute, Queens, Sieve, Storage, and Towers with one measured
+iteration and the upstream validation for each result. The host supplies only
+the monotonic clock used by the harness. This is an application-style semantic
+gate across object protocols, deep table graphs, recursion, parsing, numeric
+loops, and allocation-heavy workloads; its timings are not used as CI
+performance thresholds.
