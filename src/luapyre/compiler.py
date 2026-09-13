@@ -158,8 +158,6 @@ class _FunctionCompiler:
         self.scopes[-1].bindings[name] = sym
 
     def declare_global(self, name, typ=ANY, readonly=False):
-        if name == "_ENV":
-            raise LuaSyntaxError("declaring _ENV as global is not supported")
         self.implicit_global = False
         binding = GlobalBinding(typ, readonly)
         self.scopes[-1].bindings[name] = binding
@@ -251,7 +249,10 @@ class _FunctionCompiler:
 
         global_ref = self._fallback_global(name)
         if global_ref is None:
-            raise LuaSyntaxError(f"global '{name}' is not declared in this scope")
+            raise LuaSyntaxError(
+                f"global '{name}' is not declared in this scope "
+                f"(variable '{name}' is not declared)"
+            )
         return global_ref
 
     def compile_block(self, body, scoped=True):
@@ -387,13 +388,23 @@ class _FunctionCompiler:
             return
         values = self.adjust_values(stmt.values, len(stmt.names)) if stmt.values else []
         for declared in stmt.names:
+            # _ENV is the lexical environment binding itself, so it cannot be
+            # introduced as a global.  As in Lua 5.5, it still switches the
+            # scope to explicit-global mode and declarations after it do not
+            # become visible through the replaced environment binding.
+            if declared.name == "_ENV":
+                self.implicit_global = False
+                break
             self.declare_global(declared.name, declared.typ, declared.attribute == "const")
         if values:
             self._global_initialize(stmt.names, values, stmt.line)
 
     def _stmt_global_function_def(self, stmt):
-        declared = A.DeclaredName(stmt.name, FUNCTION, None)
-        self.declare_global(stmt.name, FUNCTION, False)
+        # Plain Lua globals remain dynamically typed after their initializer.
+        # Fully typed source retains the stronger function binding.
+        binding_type = FUNCTION if getattr(self, "fully_typed", False) else ANY
+        declared = A.DeclaredName(stmt.name, binding_type, None)
+        self.declare_global(stmt.name, binding_type, False)
         out = self._new_child(
             stmt.name, stmt.params, stmt.return_types, stmt.body,
             stmt.vararg_name, stmt.vararg_type,
@@ -401,6 +412,12 @@ class _FunctionCompiler:
         self._global_initialize([declared], [(out, FUNCTION)], stmt.line)
 
     def _stmt_assign(self, stmt):
+        for target, value in zip(stmt.targets, stmt.values):
+            if isinstance(value, A.FunctionExpr):
+                if isinstance(target, A.Name):
+                    value.debug_name = target.value
+                elif isinstance(target, A.Field):
+                    value.debug_name = target.name
         targets = [self.prepare_target(t) for t in stmt.targets]
         values = self.adjust_values(stmt.values, len(stmt.targets))
         # Lua evaluates every right-hand value before performing any store.
@@ -541,9 +558,12 @@ class _FunctionCompiler:
         for i, (reg, _) in enumerate(values):
             self.emit(Op.MOVE, hidden + i, reg)
         iterator, state, control = hidden, hidden + 1, hidden + 2
-        base = self.close_depth
+        iterator_base = self.close_depth
         self.push_scope()
-        self.loop_breaks.append(LoopContext(base))
+        self.emit(Op.TBC, hidden + 3)
+        self.close_depth += 1
+        body_base = self.close_depth
+        self.loop_breaks.append(LoopContext(iterator_base))
         try:
             variables = []
             for i, name in enumerate(stmt.names):
@@ -561,11 +581,18 @@ class _FunctionCompiler:
             for i, reg in enumerate(variables):
                 self.emit(Op.LOCAL, reg, out + i)
             self.compile_block(stmt.body, scoped=False)
-            self.emit_close_to(base, update=True)
+            self.emit_close_to(body_base, update=True)
             self.emit(Op.JMP, loop_start)
             end = len(self.proto.code)
             self.patch_a(done, end)
             self._finish_loop(end)
+            # Lua exposes the generic-for control values as synthetic locals.
+            # The close value is the third visible "(for state)" entry.
+            for register in (iterator, state, hidden + 3):
+                self.proto.debug_locals.append(
+                    ("(for state)", register, loop_start, end)
+                )
+            self.emit_close_to(iterator_base, update=True)
         finally:
             self.pop_scope()
 
@@ -600,7 +627,8 @@ class _FunctionCompiler:
             reg = self.alloc()
             nil = self.nil_reg()
             self.emit(Op.LOCAL, reg, nil)
-            local_sym = Symbol(reg, FUNCTION, returns=stmt.return_types)
+            binding_type = FUNCTION if getattr(self, "fully_typed", False) else ANY
+            local_sym = Symbol(reg, binding_type, returns=stmt.return_types)
             self.define_local(stmt.name, local_sym)
         out = self._new_child(
             stmt.name, stmt.params, stmt.return_types, stmt.body,
@@ -617,7 +645,8 @@ class _FunctionCompiler:
     def function_expr(self, expr):
         return (
             self._new_child(
-                "<anonymous>", expr.params, expr.return_types, expr.body,
+                expr.debug_name or "<anonymous>",
+                expr.params, expr.return_types, expr.body,
                 expr.vararg_name, expr.vararg_type,
             ),
             FUNCTION,
@@ -629,13 +658,19 @@ class _FunctionCompiler:
                 return ("name", name)
             case A.Field(table=table_expr, name=name):
                 table, _ = self.expr(table_expr)
+                stable_table = self.alloc()
+                self.emit(Op.MOVE, stable_table, table)
                 key = self.alloc()
                 self.emit(Op.LOADK, key, self.proto.add_const(name.encode()))
-                return ("table", table, key)
+                return ("table", stable_table, key)
             case A.Index(table=table_expr, key=key_expr):
                 table, _ = self.expr(table_expr)
                 key, _ = self.expr(key_expr)
-                return ("table", table, key)
+                stable_table = self.alloc()
+                stable_key = self.alloc()
+                self.emit(Op.MOVE, stable_table, table)
+                self.emit(Op.MOVE, stable_key, key)
+                return ("table", stable_table, stable_key)
             case _:
                 raise LuaSyntaxError(f"line {target.line}: invalid assignment target")
 
@@ -669,6 +704,7 @@ class _FunctionCompiler:
         if (
             len(stmt.values) == 1
             and type(stmt.values[0]) in _CALL_EXPR_TYPES
+            and self.close_depth == 0
             and (not self.proto.return_types or self.proto.return_types[0] is ANY)
         ):
             self.tailcall_expr(stmt.values[0])

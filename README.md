@@ -228,11 +228,13 @@ da07b543872dc0bb2ff12aabd0c248578d78df3eb6b67efdc537a46d455c7f31
 
 The harness bounds archive/download/extraction sizes, rejects traversal paths and links/devices, classifies the upstream suite by dependency type, and runs selected files in fresh LuaPyre runtimes. Its read-only suite access is supplied through the same production `file_loader` capability used by embedders; it no longer replaces `package`, `require`, `loadfile`, `dofile`, or `print` with test-only Lua implementations.
 
-The committed release gate contains seven unchanged upstream files: `bwcoercion.lua`, `pm.lua`, `tpack.lua`, `vararg.lua`, `bitwise.lua`, `math.lua`, and `utf8.lua`. Additional official files remain explicit probes until their semantic gaps are fixed; the baseline is never weakened by copying or patching upstream tests, skipping assertions, or marking failures as expected passes.
+The committed release gate contains eighteen unchanged upstream files: `attrib.lua`, `bitwise.lua`, `bwcoercion.lua`, `closure.lua`, `constructs.lua`, `events.lua`, `files.lua`, `goto.lua`, `literals.lua`, `math.lua`, `nextvar.lua`, `pm.lua`, `sort.lua`, `strings.lua`, `tpack.lua`, `utf8.lua`, `vararg.lua`, and the semantic soft-profile portion of `verybig.lua`. Additional official files remain explicit probes until their semantic gaps are fixed; the baseline is never weakened by copying or patching upstream tests, skipping assertions, or marking failures as expected passes.
 
 See [`docs/conformance-0.12.md`](docs/conformance-0.12.md) for the exact conformance tranche. The 0.17 value/CALL-IR work must preserve that same exact gate for ordinary Lua.
 
-The complete official suite does **not** pass yet. Some upstream tests depend on Lua's internal C test API, debug/io/os/native-module facilities, allocator details, or stress behavior that is outside the default sandbox. Other failures identify genuine remaining Lua semantics and are tracked through explicit suite runs.
+The default runtime now includes sandboxed `debug`, `io`, and `os` subsets. Introspection is limited to Lua state, streams write only to per-runtime memory and read host files only through an explicit `file_loader`, and OS mutation is limited to those virtual files. Process execution, environment disclosure, unrestricted host filesystem access, native modules, and Python introspection remain unavailable.
+
+Every top-level suite file has an explicit disposition in `tools/official_551.py`. The tracked semantic gaps are `calls.lua` (nested stack-overflow recovery), `coroutine.lua` (yieldable protected calls and close/error interactions), `db.lua` (debug hooks and complete metadata), `errors.lua` (exact diagnostics), and `locals.lua` (close traceback metadata). Intentional exclusions are limited to the suite orchestrator and tests whose substance requires Lua's internal C API, allocator-failure injection, host processes, or destructive resource stress.
 
 ## Benchmarking
 

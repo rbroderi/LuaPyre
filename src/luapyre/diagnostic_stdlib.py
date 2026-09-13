@@ -31,6 +31,13 @@ def _syntax_message(error: Exception, source_name) -> bytes:
     if line is None:
         match = _LINE_RE.search(message)
         line = int(match.group(1)) if match else 1
+    message = re.sub(r"^(?:at )?line\s+\d+:\s*", "", message)
+    message = re.sub(
+        r"cannot assign to read-only (?:local|global) '([^']+)' "
+        r"\(const variable '[^']+'\)",
+        r"attempt to assign to const variable '\1'",
+        message,
+    )
     return chunk_id(source_name) + b":" + str(line).encode("ascii") + b": " + message.encode("utf-8", "replace")
 
 
@@ -98,7 +105,7 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
 
     put("xpcall", xpcall)
 
-    def load(chunk, chunkname=None, mode=b"bt", env=None):
+    def load(chunk, chunkname=None, mode=b"bt", *env_args):
         if mode is None:
             mode = b"bt"
         if not isinstance(mode, bytes):
@@ -136,7 +143,7 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
         if not binary and b"t" not in mode:
             return MultiValue((None, b"attempt to load a text chunk (mode is 'b')"))
 
-        environment = globals_table if env is None else env
+        environment = globals_table if not env_args else env_args[0]
         try:
             if source.startswith(DEBUG_NATIVE_MAGIC):
                 proto = load_debug_chunk(source)
@@ -149,7 +156,7 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
             elif source.startswith(PUC_MAGIC) or binary:
                 proto = load_puc55_chunk(source)
             else:
-                text = source.decode("utf-8")
+                text = source.decode("utf-8", "surrogateescape")
                 proto = SourceCompiler(source_name).compile(Parser(text).parse())
         except UnicodeDecodeError as error:
             return MultiValue((None, _syntax_message(error, source_name)))

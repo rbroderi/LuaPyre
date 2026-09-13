@@ -233,11 +233,15 @@ class CoroutineVM(BaseVM):
             if thread.error is None:
                 thread.status = "dead"
                 return True
-            return MultiValue((False, self._error_value(thread.error)))
+            error = self._error_value(thread.error)
+            thread.error = None
+            return MultiValue((False, error))
 
         error = self._force_close(thread, thread.error)
         thread.status = "dead"
-        thread.error = error
+        # Closing consumes the coroutine's stored failure. Report it once;
+        # subsequent close calls on the dead thread succeed idempotently.
+        thread.error = None
         if error is None:
             return True
         return MultiValue((False, self._error_value(error)))

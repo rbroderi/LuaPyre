@@ -79,14 +79,29 @@ class ControlFlowAnalyzer:
             child_active.add(self._new_local(name))
         self._walk_block(body, block, frozenset(child_active), close_depth)
 
-    def _walk_block(self, body, block_id, initial_active, initial_close_depth):
+    def _walk_block(
+        self, body, block_id, initial_active, initial_close_depth,
+        *, trailing_labels_outside=True,
+    ):
         active = set(initial_active)
         close_depth = initial_close_depth
 
-        for stmt in body:
+        # A trailing label is outside the scope of locals declared in this
+        # block, so a goto may skip those declarations and land at block end.
+        trailing_labels = len(body)
+        if trailing_labels_outside:
+            while trailing_labels and isinstance(body[trailing_labels - 1], A.LabelStmt):
+                trailing_labels -= 1
+
+        for index, stmt in enumerate(body):
             handler = _WALK_HANDLERS.get(type(stmt))
             if handler is not None:
-                close_depth = handler(self, stmt, block_id, active, close_depth)
+                if index >= trailing_labels and isinstance(stmt, A.LabelStmt):
+                    handler(
+                        self, stmt, block_id, set(initial_active), initial_close_depth
+                    )
+                else:
+                    close_depth = handler(self, stmt, block_id, active, close_depth)
 
     def _walk_label(self, stmt, block_id, active, close_depth):
         for existing in self._labels:
@@ -111,6 +126,12 @@ class ControlFlowAnalyzer:
                 close_depth += 1
         return close_depth
 
+    def _walk_global(self, stmt, block_id, active, close_depth):
+        names = ("*",) if stmt.wildcard else (item.name for item in stmt.names)
+        for name in names:
+            active.add(self._new_local(name))
+        return close_depth
+
     def _walk_function(self, stmt, block_id, active, close_depth):
         if stmt.local:
             active.add(self._new_local(stmt.name))
@@ -118,6 +139,14 @@ class ControlFlowAnalyzer:
 
     def _walk_simple_child(self, stmt, block_id, active, close_depth):
         self._walk_child(stmt.body, block_id, active, close_depth)
+        return close_depth
+
+    def _walk_repeat(self, stmt, block_id, active, close_depth):
+        block = self._new_block(block_id)
+        self._walk_block(
+            stmt.body, block, frozenset(active), close_depth,
+            trailing_labels_outside=False,
+        )
         return close_depth
 
     def _walk_numeric_for(self, stmt, block_id, active, close_depth):
@@ -155,7 +184,7 @@ class ControlFlowAnalyzer:
                 local_id = min(entered)
                 name = self._local_names.get(local_id, "?")
                 raise LuaSyntaxError(
-                    f"line {goto.stmt.line}: goto '{goto.stmt.name}' jumps into the scope of local '{name}'"
+                    f"line {goto.stmt.line}: goto '{goto.stmt.name}' jumps into the scope of '{name}'"
                 )
             goto.stmt.target_id = target.stmt.label_id
             goto.stmt.close_depth = target.close_depth
@@ -165,10 +194,11 @@ _WALK_HANDLERS = {
     A.LabelStmt: ControlFlowAnalyzer._walk_label,
     A.GotoStmt: ControlFlowAnalyzer._walk_goto,
     A.LocalDecl: ControlFlowAnalyzer._walk_local,
+    A.GlobalDecl: ControlFlowAnalyzer._walk_global,
     A.FunctionDef: ControlFlowAnalyzer._walk_function,
     A.DoStmt: ControlFlowAnalyzer._walk_simple_child,
     A.WhileStmt: ControlFlowAnalyzer._walk_simple_child,
-    A.RepeatStmt: ControlFlowAnalyzer._walk_simple_child,
+    A.RepeatStmt: ControlFlowAnalyzer._walk_repeat,
     A.NumericForStmt: ControlFlowAnalyzer._walk_numeric_for,
     A.GenericForStmt: ControlFlowAnalyzer._walk_generic_for,
     A.IfStmt: ControlFlowAnalyzer._walk_if,

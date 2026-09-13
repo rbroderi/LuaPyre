@@ -423,14 +423,15 @@ def run_luacov(root: Path) -> None:
 
     audit = LuaRuntime(file_loader=_read_only_loader(root), fuel=10_000_000)
     audit.get("package").rawset(b"path", b"src/?.lua;src/?/init.lua")
+    assert audit.execute("return debug.sethook, io.popen") == (None, None)
     try:
         audit.execute('require "luacov"')
     except LuaRuntimeError as error:
-        if "module 'debug' not found" not in str(error):
+        if "runner.lua:310: attempt to call a nil value" not in str(error):
             raise
     else:
-        raise RuntimeError("LuaCov collector unexpectedly loaded without debug hooks")
-    print("PARTIAL  LuaCov collection requires debug.sethook and report-file I/O")
+        raise RuntimeError("LuaCov collector unexpectedly loaded without process access")
+    print("PARTIAL  LuaCov collection requires debug.sethook and unsafe io.popen")
 
 
 def run_awfy(root: Path) -> None:

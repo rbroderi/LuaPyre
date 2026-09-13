@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import fields, is_dataclass
+
 from . import astnodes as A
 from .bytecode import Ins, Op, Proto
 from .compiler import Compiler, LoopContext, Symbol, _FunctionCompiler
@@ -12,6 +14,26 @@ from .typesys import ANY, FLOAT, INTEGER, TABLE, accepts
 
 def _last_body_line(body, default: int) -> int:
     return max((stmt.line for stmt in body), default=default)
+
+
+def _intern_source_strings(root) -> None:
+    """Share equal source literals across all nested protos in one chunk."""
+    pool: dict[bytes, bytes] = {}
+
+    def visit(value):
+        if isinstance(value, A.Literal) and isinstance(value.value, bytes):
+            value.value = pool.setdefault(value.value, value.value)
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+        elif isinstance(value, tuple):
+            for item in value:
+                visit(item)
+        elif is_dataclass(value):
+            for descriptor in fields(value):
+                visit(getattr(value, descriptor.name))
+
+    visit(root)
 
 
 class SourceCompiler(Compiler):
@@ -27,6 +49,7 @@ class SourceCompiler(Compiler):
         self.fully_typed = fully_typed
 
     def compile(self, chunk: A.Chunk) -> Proto:
+        _intern_source_strings(chunk)
         analyze_control_flow(chunk.body)
         if self.fully_typed:
             validate_fully_typed_ast(chunk)

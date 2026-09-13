@@ -140,22 +140,45 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
         for index, (current, value) in enumerate(items):
             if lua_equal(current, key):
                 return MultiValue(items[index + 1]) if index + 1 < len(items) else None
+        known_deleted, successor = table.successor_after_deleted(key)
+        if known_deleted:
+            return None if successor is None else MultiValue((successor, table.rawget(successor)))
         raise LuaRuntimeError("invalid key to 'next'")
 
     next_host = put("next", next_fn)
 
-    def pairs(value):
-        if vm is not None:
-            metamethod = vm._tm(value, b"__pairs")
-            if metamethod is not None:
-                results = vm.call_sync(metamethod, (value,))
-                padded = (*results, None, None, None, None)
-                return MultiValue(tuple(padded[:4]))
+    def pairs_fallback(value=None):
+        if value is None:
+            raise LuaRuntimeError("bad argument #1 to 'pairs' (table expected)")
         if not isinstance(value, LuaTable):
             raise LuaRuntimeError("bad argument #1 to 'pairs' (table expected)")
         return MultiValue((next_host, value, None, None))
 
-    put("pairs", pairs)
+    pairs_fallback_host = lua_c_function(pairs_fallback, "pairs")
+
+    def pairs_metamethod(value=None):
+        return vm._tm(value, b"__pairs") if vm is not None else None
+
+    pairs_metamethod_host = lua_c_function(pairs_metamethod, "pairs")
+    if vm is None:
+        globals_table.rawset(b"pairs", pairs_fallback_host)
+    else:
+        # Keep the metamethod call in Lua so __pairs can yield.  A synchronous
+        # host callback cannot preserve the suspended Lua continuation.
+        factory = Compiler().compile(Parser("""
+            local getmetamethod, fallback = ...
+            return function (value)
+              local metamethod = getmetamethod(value)
+              if metamethod ~= nil then return metamethod(value) end
+              return fallback(value)
+            end
+        """).parse())
+        wrapper = vm.call_sync(
+            Closure(factory, [], globals_table),
+            (pairs_metamethod_host, pairs_fallback_host),
+            fuel=1_000,
+        )[0]
+        globals_table.rawset(b"pairs", wrapper)
 
     def ipairs_iter(value, index):
         index = i64(need_integer(index, 2, "ipairsaux") + 1)
@@ -164,7 +187,9 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
 
     ipairs_host = HostFunction(ipairs_iter, "ipairsaux")
 
-    def ipairs(value):
+    def ipairs(value=None):
+        if value is None:
+            raise LuaRuntimeError("bad argument #1 to 'ipairs' (table expected)")
         return MultiValue((ipairs_host, value, 0))
 
     put("ipairs", ipairs)
@@ -220,7 +245,7 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
 
         put("xpcall", xpcall)
 
-        def load(chunk, chunkname=None, mode=b"bt", env=None):
+        def load(chunk, chunkname=None, mode=b"bt", *env_args):
             if mode is None:
                 mode = b"bt"
             if not isinstance(mode, bytes):
@@ -252,7 +277,7 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
             if not binary and b"t" not in mode:
                 return MultiValue((None, b"attempt to load a text chunk (mode is 'b')"))
 
-            environment = globals_table if env is None else env
+            environment = globals_table if not env_args else env_args[0]
             try:
                 if source.startswith(NATIVE_MAGIC):
                     proto = load_native_chunk(source)

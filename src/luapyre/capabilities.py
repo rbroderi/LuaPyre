@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 import warnings
 
@@ -32,6 +32,8 @@ class RuntimeCapabilities:
     output_sink: OutputSink = default_output_sink
     warning_sink: WarningSink = default_warning_sink
     file_loader: FileLoader | None = None
+    virtual_files: dict[str, bytes] = field(default_factory=dict)
+    environment: dict[bytes, bytes] = field(default_factory=dict)
 
     def set_output_sink(self, sink: OutputSink | None) -> None:
         if sink is not None and not callable(sink):
@@ -49,9 +51,6 @@ class RuntimeCapabilities:
         self.file_loader = loader
 
     def read_file(self, name: bytes | str) -> tuple[bytes | None, bytes | None]:
-        loader = self.file_loader
-        if loader is None:
-            return None, b"file loading is disabled"
         if isinstance(name, bytes):
             try:
                 text = name.decode("utf-8")
@@ -61,6 +60,11 @@ class RuntimeCapabilities:
             text = name
         else:
             return None, b"filename must be a string"
+        if text in self.virtual_files:
+            return self.virtual_files[text], None
+        loader = self.file_loader
+        if loader is None:
+            return None, b"file loading is disabled"
         try:
             result = loader(text)
         except OSError as error:
@@ -72,3 +76,16 @@ class RuntimeCapabilities:
         if not isinstance(result, bytes):
             raise TypeError("file loader must return bytes, str, or None")
         return result, None
+
+    def write_virtual_file(self, name: str, data: bytes) -> None:
+        self.virtual_files[name] = data
+
+    def set_environment(self, values: dict[str | bytes, str | bytes] | None) -> None:
+        environment: dict[bytes, bytes] = {}
+        for key, value in (values or {}).items():
+            key_b = key.encode("utf-8") if isinstance(key, str) else key
+            value_b = value.encode("utf-8") if isinstance(value, str) else value
+            if not isinstance(key_b, bytes) or not isinstance(value_b, bytes):
+                raise TypeError("environment names and values must be str or bytes")
+            environment[key_b] = value_b
+        self.environment = environment

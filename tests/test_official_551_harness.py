@@ -131,7 +131,7 @@ def test_suite_capabilities_are_read_only_and_not_default_runtime_globals(tmp_pa
     ordinary = LuaRuntime()
     assert ordinary.get("print") is not None
     assert ordinary.get("require") is not None and ordinary.get("package") is not None
-    assert ordinary.get("loadfile") is None and ordinary.get("dofile") is None
+    assert ordinary.get("loadfile") is not None and ordinary.get("dofile") is not None
 
     lua = suite.make_suite_runtime(root)
     result = lua.execute(
@@ -197,6 +197,16 @@ def test_static_classification_and_report(tmp_path):
         "sandbox-safe": 1,
         "stress": 1,
     }
+
+
+def test_official_manifest_has_no_silent_or_overlapping_files():
+    dispositions = [
+        set(suite.BASELINE_FILES),
+        set(suite.TRACKED_GAPS),
+        set(suite.INTENTIONAL_EXCLUSIONS),
+    ]
+    assert set.union(*dispositions) == set(suite.OFFICIAL_FILES)
+    assert sum(map(len, dispositions)) == len(suite.OFFICIAL_FILES) == 34
 
 
 def test_run_files_uses_fresh_runtime_per_file(tmp_path):

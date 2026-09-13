@@ -43,7 +43,15 @@ class Parser:
         while self.t.kind not in stops:
             if self.accept(";"):
                 continue
-            out.append(self.statement())
+            statement = self.statement()
+            out.append(statement)
+            if isinstance(statement, A.Return):
+                self.accept(";")
+                if self.t.kind not in stops:
+                    raise LuaSyntaxError(
+                        f"line {self.t.line}: return must be the last statement in a block"
+                    )
+                continue
             self.accept(";")
         return out
 
@@ -119,7 +127,7 @@ class Parser:
         token = self.take("NAME")
         self.take(">")
         if token.value not in _VALID_ATTRIBUTES:
-            raise LuaSyntaxError(f"line {token.line}: unknown variable attribute '{token.value}'")
+            raise LuaSyntaxError(f"line {token.line}: unknown attribute '{token.value}'")
         return token.value
 
     def _declared_names(self, *, allow_close: bool):
@@ -143,7 +151,7 @@ class Parser:
             if not self.accept(","):
                 break
         if close_count > 1:
-            raise LuaSyntaxError("a declaration can contain at most one to-be-closed variable")
+            raise LuaSyntaxError("multiple to-be-closed variables in one declaration")
         return names
 
     def if_stmt(self):
@@ -319,6 +327,12 @@ class Parser:
             self.take()
             return A.Unary(t.line, t.kind, self.expr(11))
         node = self.primary()
+        # Lua's suffix chain starts from a prefix expression (a name or a
+        # parenthesized expression), not from every simple expression.  In
+        # particular, `local t = {}\n(function () end)()` is two statements;
+        # the constructor is not called with the following function.
+        if t.kind not in ("NAME", "("):
+            return node
         while True:
             if self.accept("["):
                 key = self.expr()
@@ -385,7 +399,10 @@ class Parser:
             e = self.expr()
             self.take(")")
             return A.Paren(e.line, e, e.inferred_type)
-        raise LuaSyntaxError(f"expected expression at line {t.line}, got {t.kind!r}")
+        suffix = " near <eof>" if t.kind == "EOF" else ""
+        raise LuaSyntaxError(
+            f"expected expression at line {t.line}, got {t.kind!r}{suffix}"
+        )
 
     def table_ctor(self):
         line = self.take("{").line

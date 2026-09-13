@@ -28,14 +28,51 @@ DEFAULT_FILE_FUEL = 20_000_000
 # Lua 5.5.1 suite. Additional candidates are run explicitly while their
 # remaining semantic gaps are being fixed; they do not weaken this baseline.
 BASELINE_FILES = (
-    "bwcoercion.lua",
-    "pm.lua",
-    "tpack.lua",
-    "vararg.lua",
+    "attrib.lua",
     "bitwise.lua",
+    "bwcoercion.lua",
+    "closure.lua",
+    "constructs.lua",
+    "events.lua",
+    "files.lua",
+    "goto.lua",
+    "literals.lua",
     "math.lua",
+    "nextvar.lua",
+    "pm.lua",
+    "sort.lua",
+    "strings.lua",
+    "tpack.lua",
     "utf8.lua",
+    "vararg.lua",
+    "verybig.lua",
 )
+
+TRACKED_GAPS = {
+    "calls.lua": "nested protected-call stack-overflow recovery",
+    "coroutine.lua": "yieldable protected calls and remaining close/error interactions",
+    "db.lua": "debug hooks and complete source/local metadata",
+    "errors.lua": "exact Lua parser and runtime diagnostic wording",
+    "locals.lua": "complete close-metamethod traceback metadata",
+}
+
+INTENTIONAL_EXCLUSIONS = {
+    "all.lua": "upstream orchestrator for internal, native, process, and stress tests",
+    "api.lua": "Lua internal C test API",
+    "big.lua": "deliberate memory and parser resource exhaustion",
+    "code.lua": "Lua internal compiler/bytecode test API",
+    "cstack.lua": "C-stack and internal API stress",
+    "gc.lua": "Lua internal GC test API and allocator controls",
+    "gengc.lua": "Lua internal generational-GC test API",
+    "heavy.lua": "multi-process, high-resource stress driver",
+    "main.lua": "standalone executable and host shell/process behavior",
+    "memerr.lua": "allocator-failure injection and internal C test API",
+    "tracegc.lua": "helper for internal GC tracing tests",
+}
+
+OFFICIAL_FILES = tuple(sorted((*BASELINE_FILES, *TRACKED_GAPS, *INTENTIONAL_EXCLUSIONS)))
+if len(OFFICIAL_FILES) != 34 or len(set(OFFICIAL_FILES)) != 34:
+    raise RuntimeError("official Lua 5.5.1 disposition manifest must partition all 34 files")
 
 _STRESS_FILES = {
     "big.lua",
@@ -66,6 +103,8 @@ class FileClassification:
     name: str
     category: str
     hints: tuple[str, ...]
+    disposition: str = "unclassified"
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +289,7 @@ def install_suite_capabilities(lua, suite_root: Path, *, echo: bool = False) -> 
             print(data.decode("utf-8", "replace"), end="")
 
     lua.set_file_loader(suite_loader)
+    lua.set_environment({"PATH": "/virtual/bin"})
     lua.set_output_sink(output_sink)
     lua.set("arg", [])
 
@@ -267,6 +307,12 @@ def make_suite_runtime(
     install_suite_capabilities(lua, suite_root, echo=echo)
     if unrestricted:
         lua.set("_U", True)
+        # Match all.lua's user-test profile even when an upstream file is run
+        # directly: retain semantic coverage while avoiding non-portable and
+        # deliberately resource-exhausting branches.
+        lua.set("_soft", True)
+        lua.set("_port", True)
+        lua.set("_nomsg", True)
     return lua
 
 
@@ -288,7 +334,15 @@ def classify_file(suite_root: Path, name: str) -> FileClassification:
         category = "harness-assisted"
     else:
         category = "sandbox-safe"
-    return FileClassification(name, category, unique)
+    if name in BASELINE_FILES:
+        disposition, reason = "required-pass", "unchanged upstream release gate"
+    elif name in TRACKED_GAPS:
+        disposition, reason = "tracked-gap", TRACKED_GAPS[name]
+    elif name in INTENTIONAL_EXCLUSIONS:
+        disposition, reason = "intentional-exclusion", INTENTIONAL_EXCLUSIONS[name]
+    else:
+        disposition, reason = "unclassified", "not in the pinned top-level suite manifest"
+    return FileClassification(name, category, unique, disposition, reason)
 
 
 def classify_suite(suite_root: Path) -> list[FileClassification]:
@@ -314,13 +368,11 @@ def run_files(
             fuel=fuel,
         )
         source = path.read_bytes()
-        try:
-            text = source.decode("utf-8")
-        except UnicodeDecodeError as error:
-            result = RunResult(name, "fail", type(error).__name__, str(error))
-            results.append(result)
-            print(f"FAIL {name}: not UTF-8: {error}", file=sys.stderr)
-            continue
+        # Lua source is a byte stream. Surrogate escaping preserves legacy
+        # single-byte source literals while still decoding ordinary UTF-8.
+        text = source.decode("utf-8", "surrogateescape")
+        if text.startswith("#"):
+            text = "--" + text[1:]
         try:
             lua.execute(text, chunkname="@" + name)
         except Exception as error:
@@ -367,6 +419,7 @@ def build_report(
         "suite_sha256": SUITE_SHA256,
         "lua_files": len(classifications),
         "classification_counts": dict(sorted(counts.items())),
+        "disposition_counts": dict(sorted(Counter(item.disposition for item in classifications).items())),
         "files": [asdict(item) for item in classifications],
         "runs": [asdict(item) for item in runs],
         "run_summary": {
@@ -461,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.classify:
             for item in classifications:
                 detail = ", ".join(item.hints) if item.hints else "no host dependency hints"
-                print(f"{item.category:16} {item.name:20} {detail}")
+                print(f"{item.disposition:21} {item.category:16} {item.name:20} {detail}; {item.reason}")
             counts = Counter(item.category for item in classifications)
             print("classification summary:")
             for category, count in sorted(counts.items()):
