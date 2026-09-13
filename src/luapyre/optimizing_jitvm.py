@@ -68,6 +68,14 @@ class OptimizingJITVM(TieredJITVM):
             frame.pending_error = None
             frame.puc_close_stack.clear()
             frame.pending_puc_close_reg = None
+            frame.return_prefix = ()
+            frame.return_limit = -1
+            frame.protected_handler = None
+            frame.protected_name = None
+            frame.protected_error = None
+            frame.trace_name = None
+            frame.call_name = None
+            frame.call_namewhat = ""
             return frame
 
         self.jit.stats.compiled_frame_allocations += 1
@@ -81,6 +89,14 @@ class OptimizingJITVM(TieredJITVM):
         frame.close_stack.clear()
         frame.puc_close_stack.clear()
         frame.pending_error = None
+        frame.return_prefix = ()
+        frame.return_limit = -1
+        frame.protected_handler = None
+        frame.protected_name = None
+        frame.protected_error = None
+        frame.trace_name = None
+        frame.call_name = None
+        frame.call_namewhat = ""
         pool.append(frame)
 
     def _invoke(self, frames, parent, fn, args, dest, want, tail=False):

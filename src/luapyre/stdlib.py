@@ -215,35 +215,12 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
         return str(error).encode("utf-8", "replace")
 
     if vm is not None:
-        def pcall(fn, *args):
-            try:
-                results = vm.call_sync(fn, args)
-                return MultiValue((True, *results))
-            except LuaQuotaError:
-                raise
-            except LuaRuntimeError as error:
-                return MultiValue((False, _error_value(error)))
-
-        put("pcall", pcall)
-
-        def xpcall(fn, handler, *args):
-            try:
-                results = vm.call_sync(fn, args)
-                return MultiValue((True, *results))
-            except LuaQuotaError:
-                raise
-            except LuaRuntimeError as error:
-                original = _error_value(error)
-                try:
-                    handled = vm.call_sync(handler, (original,))
-                    replacement = handled[0] if handled else None
-                except LuaQuotaError:
-                    raise
-                except LuaRuntimeError as handler_error:
-                    replacement = _error_value(handler_error)
-                return MultiValue((False, replacement))
-
-        put("xpcall", xpcall)
+        globals_table.rawset(
+            b"pcall", HostFunction(lambda *_args: None, "pcall", protected_mode="pcall")
+        )
+        globals_table.rawset(
+            b"xpcall", HostFunction(lambda *_args: None, "xpcall", protected_mode="xpcall")
+        )
 
         def load(chunk, chunkname=None, mode=b"bt", *env_args):
             if mode is None:

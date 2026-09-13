@@ -234,7 +234,7 @@ See [`docs/conformance-0.12.md`](docs/conformance-0.12.md) for the exact conform
 
 The default runtime now includes sandboxed `debug`, `io`, and `os` subsets. Introspection is limited to Lua state, streams write only to per-runtime memory and read host files only through an explicit `file_loader`, and OS mutation is limited to those virtual files. Process execution, environment disclosure, unrestricted host filesystem access, native modules, and Python introspection remain unavailable.
 
-Every top-level suite file has an explicit disposition in `tools/official_551.py`. The tracked semantic gaps are `calls.lua` (nested stack-overflow recovery), `coroutine.lua` (yieldable protected calls and close/error interactions), `db.lua` (debug hooks and complete metadata), `errors.lua` (exact diagnostics), and `locals.lua` (close traceback metadata). Intentional exclusions are limited to the suite orchestrator and tests whose substance requires Lua's internal C API, allocator-failure injection, host processes, or destructive resource stress.
+Every top-level suite file has an explicit disposition in `tools/official_551.py`. Protected-call stack-overflow recovery, yieldable `pcall`/`xpcall`, close-error propagation and traceback metadata, applicable debug metadata, and parser-token diagnostics are covered. The remaining tracked portions are exact PUC-Lua binary dump headers, debug-hook execution/ordering, and host-userdata/I/O-specific diagnostics. Intentional exclusions are limited to the suite orchestrator and tests whose substance requires Lua's internal C API, allocator-failure injection, host processes, or destructive resource stress.
 
 ## Benchmarking
 

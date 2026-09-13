@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 
-from .bytecode import Op, Proto, Closure, Cell
+from .bytecode import Ins, Op, Proto, Closure, Cell
 from .errors import LuaRuntimeError, LuaRaisedError, LuaQuotaError
 from .opdispatch import OPCODE_HANDLERS
 from .table import LuaTable
@@ -15,6 +15,7 @@ class HostFunction:
     fn: object
     name: str = "?"
     max_args: int | None = None
+    protected_mode: str | None = None
 
 
 @dataclass(slots=True)
@@ -37,6 +38,14 @@ class Frame:
     # the array on the active frame removes dictionary/key construction from
     # the monomorphic CALL hot path. Tier 0 leaves it as None.
     jit_call_sites: list[object | None] | None = None
+    return_prefix: tuple[object, ...] = ()
+    return_limit: int = -1
+    protected_handler: object | None = None
+    protected_name: str | None = None
+    protected_error: LuaRuntimeError | None = None
+    trace_name: str | None = None
+    call_name: str | None = None
+    call_namewhat: str = ""
 
     @property
     def proto(self):
@@ -64,7 +73,9 @@ def _is_number(value):
 
 
 class VM:
-    MAXTAGLOOP = 2000
+    # Lua 5.5 accepts at most fifteen chained tag-method redirects.  The
+    # extra iteration observes the callable at the end of a valid chain.
+    MAXTAGLOOP = 16
     ARITH_TM = {
         Op.ADD: b"__add", Op.SUB: b"__sub", Op.MUL: b"__mul",
         Op.DIV: b"__div", Op.IDIV: b"__idiv", Op.MOD: b"__mod", Op.POW: b"__pow",
@@ -100,6 +111,10 @@ class VM:
         args = list(args)
         for _ in range(self.MAXTAGLOOP):
             if isinstance(fn, HostFunction):
+                if fn.protected_mode is not None:
+                    return self._invoke_protected(
+                        frames, parent, fn.protected_mode, args, dest, want, tail
+                    )
                 values = self._host_values(fn, args)
                 if tail:
                     return self._return(frames, parent, values)
@@ -107,7 +122,18 @@ class VM:
                 return None
             if isinstance(fn, Closure):
                 if tail:
-                    frames[-1] = self._new_frame(fn, args, parent.return_reg, parent.return_want)
+                    replacement = self._new_frame(
+                        fn, args, parent.return_reg, parent.return_want
+                    )
+                    replacement.return_prefix = parent.return_prefix
+                    replacement.return_limit = parent.return_limit
+                    replacement.protected_handler = parent.protected_handler
+                    replacement.protected_name = parent.protected_name
+                    replacement.protected_error = parent.protected_error
+                    replacement.trace_name = parent.trace_name
+                    replacement.call_name = parent.call_name
+                    replacement.call_namewhat = parent.call_namewhat
+                    frames[-1] = replacement
                     return None
                 if len(frames) >= self.max_frames:
                     raise LuaRuntimeError("stack overflow")
@@ -115,10 +141,171 @@ class VM:
                 return None
             tm = self._tm(fn, b"__call")
             if tm is None:
-                raise LuaRuntimeError(f"attempt to call a {static_value_type(fn).name} value")
+                raise LuaRuntimeError(f"attempt to call a {lua_type_name(fn)} value")
             args.insert(0, fn)
             fn = tm
         raise LuaRuntimeError("'__call' chain too long; possible loop")
+
+    def _callable_target(self, fn, args):
+        args = list(args)
+        for _ in range(self.MAXTAGLOOP):
+            if isinstance(fn, (Closure, HostFunction)):
+                return fn, args
+            tm = self._tm(fn, b"__call")
+            if tm is None:
+                raise LuaRuntimeError(f"attempt to call a {lua_type_name(fn)} value")
+            args.insert(0, fn)
+            fn = tm
+        raise LuaRuntimeError("'__call' chain too long; possible loop")
+
+    def _invoke_protected(self, frames, parent, mode, args, dest, want, tail=False):
+        if not args:
+            self._write_results(parent.regs, dest, want, (False, b"function expected"))
+            return None
+        target_args = args[2:] if mode == "xpcall" else args[1:]
+        handler = args[1] if mode == "xpcall" and len(args) > 1 else None
+        try:
+            target, target_args = self._callable_target(args[0], target_args)
+            if isinstance(target, HostFunction) and target.protected_mode is not None:
+                if tail:
+                    return_reg, return_want = parent.return_reg, parent.return_want
+                else:
+                    return_reg, return_want = dest, want
+                trampoline_proto = Proto(
+                    "<protected-call>",
+                    code=[Ins(Op.RETURNV, 0, 0, 0)],
+                    register_count=1,
+                    source=None,
+                )
+                trampoline = Frame(
+                    Closure(trampoline_proto, [], self.globals),
+                    [None],
+                    return_reg=return_reg,
+                    return_want=return_want,
+                )
+                trampoline.return_prefix = (True,)
+                trampoline.protected_handler = handler
+                trampoline.protected_name = mode
+                if tail:
+                    frames[-1] = trampoline
+                else:
+                    if len(frames) >= self.max_frames:
+                        raise LuaRuntimeError("stack overflow")
+                    frames.append(trampoline)
+                return self._invoke_protected(
+                    frames,
+                    trampoline,
+                    target.protected_mode,
+                    target_args,
+                    0,
+                    -1,
+                    False,
+                )
+            if isinstance(target, HostFunction) and target.protected_mode is None:
+                values = self._host_values(target, target_args)
+                values = (True, *values)
+                if tail:
+                    return self._return(frames, parent, values)
+                self._write_results(parent.regs, dest, want, values)
+                return None
+            if not isinstance(target, Closure):
+                raise LuaRuntimeError("cannot protect this call target")
+            if tail:
+                if len(frames) >= self.max_frames:
+                    raise LuaRuntimeError("stack overflow")
+                trampoline_proto = Proto(
+                    "<protected-call>",
+                    code=[Ins(Op.RETURNV, 0, 0, 0)],
+                    register_count=1,
+                    source=None,
+                )
+                trampoline = Frame(
+                    Closure(trampoline_proto, [], self.globals),
+                    [None],
+                    return_reg=parent.return_reg,
+                    return_want=parent.return_want,
+                )
+                trampoline.return_prefix = parent.return_prefix
+                trampoline.return_limit = parent.return_limit
+                trampoline.protected_handler = parent.protected_handler
+                trampoline.protected_name = parent.protected_name
+                trampoline.protected_error = parent.protected_error
+                trampoline.trace_name = parent.trace_name
+                frames[-1] = trampoline
+                frame = self._new_frame(target, target_args, 0, -1)
+                frames.append(frame)
+            else:
+                if len(frames) >= self.max_frames:
+                    raise LuaRuntimeError("stack overflow")
+                frame = self._new_frame(target, target_args, dest, want)
+                frames.append(frame)
+            frame.return_prefix = (True,)
+            frame.protected_handler = handler
+            frame.protected_name = mode
+            return None
+        except LuaQuotaError:
+            raise
+        except LuaRuntimeError as error:
+            values = (False, self._error_object(error))
+            if tail:
+                return self._return(frames, parent, values)
+            self._write_results(parent.regs, dest, want, values)
+            return None
+
+    def _finish_protected_error(self, frames, frame, error):
+        error_object = self._error_object(error)
+        if (
+            frame.protected_name == "xpcall handler"
+            and isinstance(error_object, bytes)
+            and b"stack overflow" in error_object
+        ):
+            error = LuaRaisedError(b"error in error handling")
+        handler = frame.protected_handler
+        return_reg, return_want = frame.return_reg, frame.return_want
+        frames.pop()
+        if not frames:
+            raise error
+        parent = frames[-1]
+        if handler is None:
+            self._write_results(
+                parent.regs, return_reg, return_want,
+                (False, self._error_object(error)),
+            )
+            return True
+        try:
+            handler, handler_args = self._callable_target(
+                handler, [self._error_object(error)]
+            )
+            if isinstance(handler, HostFunction) and handler.protected_mode is None:
+                previous_error = getattr(self, "_active_protected_error", None)
+                self._active_protected_error = error
+                try:
+                    try:
+                        values = self._host_values(handler, handler_args)
+                        replacement = values[0] if values else None
+                    except LuaRuntimeError as handler_error:
+                        replacement = self._error_object(handler_error)
+                finally:
+                    self._active_protected_error = previous_error
+                self._write_results(
+                    parent.regs, return_reg, return_want, (False, replacement)
+                )
+                return True
+            if not isinstance(handler, Closure):
+                raise LuaRuntimeError("error handler is not callable")
+            callback = self._new_frame(handler, handler_args, return_reg, return_want)
+            callback.return_prefix = (False,)
+            callback.return_limit = 1
+            callback.protected_name = "xpcall handler"
+            callback.protected_error = error
+            frames.append(callback)
+            return True
+        except LuaRuntimeError as handler_error:
+            self._write_results(
+                parent.regs, return_reg, return_want,
+                (False, self._error_object(handler_error)),
+            )
+            return True
 
     def _invoke_site(self, frames, parent, fn, args, dest, want, tail=False):
         """Call-site hook used by adaptive VMs; Tier 0 stays cache-free."""
@@ -173,7 +360,14 @@ class VM:
         for label, value in (("initial", idx), ("limit", limit), ("step", step)):
             number = value if _is_number(value) else parse_lua_number(value)
             if number is None:
-                raise LuaRuntimeError(f"'for' {label} value must be a number")
+                typename = lua_type_name(value)
+                custom = self._tm(value, b"__name")
+                if isinstance(custom, bytes):
+                    typename = custom.decode("utf-8", "replace")
+                raise LuaRuntimeError(
+                    f"'for' {label} value must be a number "
+                    f"(got {typename})"
+                )
             converted.append(number)
         idx, limit, step = converted
         regs[ins.a], regs[ins.b], regs[ins.c] = idx, limit, step
@@ -235,8 +429,9 @@ class VM:
                     return True
                 tm = self._tm(value, b"__close")
                 if tm is None:
-                    frame.pending_error = LuaRuntimeError("attempt to close a non-closable value")
+                    frame.pending_error = LuaRuntimeError("metamethod 'close' is not callable")
                     return True
+                depth = len(frames)
                 self._invoke(
                     frames,
                     frame,
@@ -245,6 +440,8 @@ class VM:
                     0,
                     0,
                 )
+                if len(frames) > depth:
+                    frames[-1].trace_name = "__close"
                 return True
             if frame.close_stack:
                 value = frame.close_stack.pop()
@@ -252,8 +449,9 @@ class VM:
                     return True
                 tm = self._tm(value, b"__close")
                 if tm is None:
-                    frame.pending_error = LuaRuntimeError("attempt to close a non-closable value")
+                    frame.pending_error = LuaRuntimeError("metamethod 'close' is not callable")
                     return True
+                depth = len(frames)
                 self._invoke(
                     frames,
                     frame,
@@ -262,8 +460,12 @@ class VM:
                     0,
                     0,
                 )
+                if len(frames) > depth:
+                    frames[-1].trace_name = "__close"
                 return True
             error = frame.pending_error
+            if frame.protected_name is not None:
+                return self._finish_protected_error(frames, frame, error)
             frames.pop()
             if frames:
                 frames[-1].pending_error = error
@@ -278,8 +480,11 @@ class VM:
                     return True
                 tm = self._tm(value, b"__close")
                 if tm is None:
-                    raise LuaRuntimeError("attempt to close a non-closable value")
+                    raise LuaRuntimeError("metamethod 'close' is not callable")
+                depth = len(frames)
                 self._invoke(frames, frame, tm, [value], 0, 0)
+                if len(frames) > depth:
+                    frames[-1].trace_name = "__close"
                 return True
             frame.pending_puc_close_reg = None
 
@@ -291,8 +496,11 @@ class VM:
                     return True
                 tm = self._tm(value, b"__close")
                 if tm is None:
-                    raise LuaRuntimeError("attempt to close a non-closable value")
+                    raise LuaRuntimeError("metamethod 'close' is not callable")
+                depth = len(frames)
                 self._invoke(frames, frame, tm, [value], 0, 0)
+                if len(frames) > depth:
+                    frames[-1].trace_name = "__close"
                 return True
             frame.pending_close_target = None
         return False
@@ -377,6 +585,11 @@ class VM:
             regs[dest + i] = values[i] if i < len(values) else None
 
     def _return(self, frames, frame, values):
+        values = tuple(values)
+        if frame.return_limit >= 0:
+            values = values[:frame.return_limit]
+        if frame.return_prefix:
+            values = (*frame.return_prefix, *values)
         frames.pop()
         if not frames:
             return tuple(values)

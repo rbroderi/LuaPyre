@@ -462,8 +462,10 @@ class TieredJITVM(GarbageCollectedVM):
                 raise
             except LuaRuntimeError as exc:
                 capture_error(exc, frames)
-                thread.error = exc
-                thread.status = "dead"
-                return "error", (self._error_value(exc),)
+                if not frames or not any(frame.protected_name for frame in frames):
+                    thread.error = exc
+                    thread.status = "dead"
+                    return "error", (self._error_value(exc),)
+                frames[-1].pending_error = exc
 
         return "return", tuple(final_values)

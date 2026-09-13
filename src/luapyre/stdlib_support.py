@@ -5,7 +5,7 @@ import math
 
 from .errors import LuaRuntimeError
 from .table import LuaTable
-from .values import i64, parse_lua_number
+from .values import i64, lua_type_name, parse_lua_number
 from .vm import HostFunction
 
 
@@ -48,7 +48,12 @@ def need_bytes(value, arg=1, name="function") -> bytes:
 
 def need_number(value, arg=1, name="function"):
     if type(value) not in (int, float):
-        raise LuaRuntimeError(f"bad argument #{arg} to '{name}' (number expected)")
+        metatable = getattr(value, "metatable", None)
+        custom = metatable.rawget(b"__name") if isinstance(metatable, LuaTable) else None
+        actual = custom.decode("utf-8", "replace") if isinstance(custom, bytes) else lua_type_name(value)
+        raise LuaRuntimeError(
+            f"bad argument #{arg} to '{name}' (number expected, got {actual})"
+        )
     return value
 
 
@@ -66,6 +71,11 @@ def to_integer(value):
 def need_integer(value, arg=1, name="function") -> int:
     integer = to_integer(value)
     if integer is None:
+        if type(value) is float:
+            raise LuaRuntimeError(
+                f"bad argument #{arg} to '{name}' "
+                "(number has no integer representation)"
+            )
         raise LuaRuntimeError(f"bad argument #{arg} to '{name}' (integer expected)")
     return integer
 

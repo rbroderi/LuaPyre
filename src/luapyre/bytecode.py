@@ -72,6 +72,7 @@ class Proto:
     # Lua-visible local metadata: (name, register, start_pc, end_pc).  Debug
     # helpers consult this table without exposing the host Python stack.
     debug_locals: list[tuple[str, int, int, int]] = field(default_factory=list)
+    debug_namewhat: str = ""
     # Native source compilation only emits *_I/*_F opcodes when its optional
     # type analysis has proved the operand classes (including runtime GUARDs at
     # Any -> typed boundaries). The tiered JIT may therefore omit redundant

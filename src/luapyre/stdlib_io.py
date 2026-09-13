@@ -320,6 +320,17 @@ def install_io_library(globals_table: LuaTable, capabilities: RuntimeCapabilitie
         if isinstance(opened, MultiValue):
             error = opened.values[1] if len(opened.values) > 1 else b"cannot open file"
             raise LuaRuntimeError(error.decode("utf-8", "replace"))
+        if not isinstance(opened, _LuaFile):
+            metatable = getattr(opened, "metatable", None)
+            custom = metatable.rawget(b"__name") if isinstance(metatable, LuaTable) else None
+            actual = (
+                custom.decode("utf-8", "replace")
+                if isinstance(custom, bytes)
+                else type(opened).__name__
+            )
+            raise LuaRuntimeError(
+                f"bad argument #1 to 'input' (FILE* expected, got {actual})"
+            )
         current_input = opened
         return current_input
 

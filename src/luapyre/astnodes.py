@@ -50,6 +50,7 @@ class GlobalFunctionDef(Stmt):
     body: list[Stmt]
     vararg_name: str | None = None
     vararg_type: LuaType = ANY
+    end_line: int = 0
 
 
 @dataclass(slots=True)
@@ -135,6 +136,7 @@ class FunctionDef(Stmt):
     local: bool = False
     vararg_name: str | None = None
     vararg_type: LuaType = ANY
+    end_line: int = 0
 
 
 @dataclass(slots=True)
@@ -199,6 +201,8 @@ class FunctionExpr(Expr):
     vararg_type: LuaType = ANY
     inferred_type: LuaType = field(default=ANY)
     debug_name: str | None = None
+    debug_namewhat: str = ""
+    end_line: int = 0
 
 
 @dataclass(slots=True)

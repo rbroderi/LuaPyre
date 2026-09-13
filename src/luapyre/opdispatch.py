@@ -7,7 +7,7 @@ from .errors import LuaRuntimeError
 from .table import LuaTable
 from .values import (
     MultiValue, coerce_lua_integer, i64, lua_equal, parse_lua_number,
-    static_value_type, truthy, type_matches,
+    lua_type_name, static_value_type, truthy, type_matches,
 )
 
 
@@ -18,6 +18,13 @@ _INT_MAX = (1 << 63) - 1
 
 def _is_number(value):
     return type(value) in (int, float)
+
+
+def _object_type(vm, value):
+    custom = vm._tm(value, b"__name")
+    if isinstance(custom, bytes):
+        return custom.decode("utf-8", "replace")
+    return lua_type_name(value)
 
 
 def _need_number(value):
@@ -64,7 +71,7 @@ def _bitwise_error(vm, frames, frame, op, a, b, dest):
             raise LuaRuntimeError("number (field 'huge') has no integer representation")
         raise LuaRuntimeError("number has no integer representation")
     raise LuaRuntimeError(
-        f"attempt to perform '{name}' on a {static_value_type(bad).name} value"
+        f"attempt to perform bitwise operation on a {_object_type(vm, bad)} value"
     )
 
 
@@ -75,7 +82,9 @@ def _to_lua_string(value):
         return str(value).encode("ascii")
     if type(value) is float:
         return repr(value).encode("ascii")
-    raise LuaRuntimeError("attempt to concatenate a non-string value")
+    raise LuaRuntimeError(
+        f"attempt to concatenate a {lua_type_name(value)} value"
+    )
 
 
 def _loadk(vm, frames, frame, ins, regs, constants):
@@ -247,8 +256,16 @@ def _arith_metamethod(vm, frames, frame, name, a, b, dest):
     tm = vm._first_tm(a, b, name)
     if tm is None:
         raise LuaRuntimeError(
-            f"attempt to perform arithmetic on a {static_value_type(a).name} value"
+            f"attempt to perform arithmetic on a {_object_type(vm, a)} value"
         )
+    if vm._tm(tm, b"__call") is None and not isinstance(tm, Closure):
+        from .vm import HostFunction
+        if not isinstance(tm, HostFunction):
+            label = name.removeprefix(b"__").decode("ascii")
+            raise LuaRuntimeError(
+                f"attempt to call a {_object_type(vm, tm)} value "
+                f"(metamethod '{label}')"
+            )
     vm._invoke(frames, frame, tm, [a, b], dest, 1)
 
 
@@ -385,7 +402,7 @@ def _neg(vm, frames, frame, ins, regs, constants):
     tm = vm._tm(value, b"__unm")
     if tm is None:
         raise LuaRuntimeError(
-            f"attempt to perform arithmetic on a {static_value_type(value).name} value"
+            f"attempt to perform arithmetic on a {_object_type(vm, value)} value"
         )
     vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
 
@@ -398,8 +415,10 @@ def _bnot(vm, frames, frame, ins, regs, constants):
         return
     tm = vm._tm(value, b"__bnot")
     if tm is None:
+        if type(value) is float:
+            raise LuaRuntimeError("number has no integer representation")
         raise LuaRuntimeError(
-            f"attempt to perform 'bnot' on a {static_value_type(value).name} value"
+            f"attempt to perform 'bnot' on a {_object_type(vm, value)} value"
         )
     vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
 
@@ -430,7 +449,7 @@ def _len(vm, frames, frame, ins, regs, constants):
     tm = vm._tm(value, b"__len")
     if tm is None:
         raise LuaRuntimeError(
-            f"attempt to get length of a {static_value_type(value).name} value"
+            f"attempt to get length of a {lua_type_name(value)} value"
         )
     vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
 
@@ -468,7 +487,15 @@ def _lt(vm, frames, frame, ins, regs, constants):
         return
     tm = vm._first_tm(a, b, b"__lt")
     if tm is None:
-        raise LuaRuntimeError("attempt to compare incompatible values")
+        left, right = _object_type(vm, a), _object_type(vm, b)
+        relation = f"two {left} values" if left == right else f"{left} with {right}"
+        raise LuaRuntimeError(f"attempt to compare {relation}")
+    if vm._tm(tm, b"__call") is None and not isinstance(tm, Closure):
+        from .vm import HostFunction
+        if not isinstance(tm, HostFunction):
+            raise LuaRuntimeError(
+                f"attempt to call a {_object_type(vm, tm)} value (metamethod 'lt')"
+            )
     vm._invoke(frames, frame, tm, [a, b], ins.a, 1)
 
 
@@ -482,7 +509,9 @@ def _le(vm, frames, frame, ins, regs, constants):
         return
     tm = vm._first_tm(a, b, b"__le")
     if tm is None:
-        raise LuaRuntimeError("attempt to compare incompatible values")
+        left, right = _object_type(vm, a), _object_type(vm, b)
+        relation = f"two {left} values" if left == right else f"{left} with {right}"
+        raise LuaRuntimeError(f"attempt to compare {relation}")
     vm._invoke(frames, frame, tm, [a, b], ins.a, 1)
 
 
@@ -620,7 +649,18 @@ def _tbc(vm, frames, frame, ins, regs, constants):
         frame.close_stack.append(value)
         return
     if vm._tm(value, b"__close") is None:
-        raise LuaRuntimeError("variable got a non-closable value")
+        pc = max(0, frame.pc - 1)
+        encoded_name = constants[ins.b] if 0 <= ins.b < len(constants) else None
+        name = encoded_name.decode("utf-8", "replace") if isinstance(encoded_name, bytes) else next(
+            (
+                local_name
+                for local_name, register, start, end in frame.proto.debug_locals
+                if register == ins.a and start <= pc <= end
+            ),
+            None,
+        )
+        label = f" '{name}'" if name is not None else ""
+        raise LuaRuntimeError(f"variable{label} got a non-closable value")
     frame.close_stack.append(value)
 
 
@@ -635,7 +675,17 @@ def _ptbc(vm, frames, frame, ins, regs, constants):
     if value is None or value is False:
         return
     if vm._tm(value, b"__close") is None:
-        raise LuaRuntimeError("variable got a non-closable value")
+        pc = max(0, frame.pc - 1)
+        name = next(
+            (
+                local_name
+                for local_name, register, start, end in frame.proto.debug_locals
+                if register == ins.a and start <= pc <= end
+            ),
+            None,
+        )
+        label = f" '{name}'" if name is not None else ""
+        raise LuaRuntimeError(f"variable{label} got a non-closable value")
     frame.puc_close_stack.append((ins.a, value))
 
 
@@ -703,10 +753,22 @@ def _unpack(vm, frames, frame, ins, regs, constants):
         regs[ins.a + i] = values[i] if i < len(values) else None
 
 
+def _apply_call_origin(frame, callee, function_reg):
+    pc = frame.pc - 1
+    if 0 <= pc < len(frame.proto.value_origins):
+        origin = frame.proto.value_origins[pc].get(function_reg)
+        if origin is not None:
+            callee.call_namewhat, callee.call_name = origin
+
+
 def _call(vm, frames, frame, ins, regs, constants):
     fn = regs[ins.b]
     args = [regs[ins.c + i] for i in range(ins.d)]
-    return vm._invoke_site(frames, frame, fn, args, ins.a, ins.e, tail=False)
+    depth = len(frames)
+    result = vm._invoke_site(frames, frame, fn, args, ins.a, ins.e, tail=False)
+    if len(frames) > depth and getattr(fn, "protected_mode", None) is None:
+        _apply_call_origin(frame, frames[-1], ins.b)
+    return result
 
 
 def _callv(vm, frames, frame, ins, regs, constants):
@@ -714,13 +776,19 @@ def _callv(vm, frames, frame, ins, regs, constants):
     args = [regs[ins.c + i] for i in range(ins.d)]
     mv = regs[ins.e]
     args.extend(mv.values if isinstance(mv, MultiValue) else (mv,))
-    return vm._invoke_site(frames, frame, fn, args, ins.a, -1, tail=False)
+    depth = len(frames)
+    result = vm._invoke_site(frames, frame, fn, args, ins.a, -1, tail=False)
+    if len(frames) > depth and getattr(fn, "protected_mode", None) is None:
+        _apply_call_origin(frame, frames[-1], ins.b)
+    return result
 
 
 def _tailcall(vm, frames, frame, ins, regs, constants):
     fn = regs[ins.b]
     args = [regs[ins.c + i] for i in range(ins.d)]
     returned = vm._invoke_site(frames, frame, fn, args, ins.a, -1, tail=True)
+    if returned is None and frames and getattr(fn, "protected_mode", None) is None:
+        _apply_call_origin(frame, frames[-1], ins.b)
     return returned if returned is not None else None
 
 
@@ -730,6 +798,8 @@ def _tailcallv(vm, frames, frame, ins, regs, constants):
     mv = regs[ins.e]
     args.extend(mv.values if isinstance(mv, MultiValue) else (mv,))
     returned = vm._invoke_site(frames, frame, fn, args, ins.a, -1, tail=True)
+    if returned is None and frames and getattr(fn, "protected_mode", None) is None:
+        _apply_call_origin(frame, frames[-1], ins.b)
     return returned if returned is not None else None
 
 

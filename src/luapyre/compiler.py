@@ -110,6 +110,7 @@ class _FunctionCompiler:
         self.loop_breaks: list[LoopContext] = []
         self.label_pcs: dict[int, int] = {}
         self.pending_gotos: list[tuple[int, int]] = []
+        self.reg_origins: dict[int, tuple[str, str]] = {}
         for name, typ in params or []:
             r = self.alloc()
             self.scopes[0].bindings[name] = Symbol(r, typ)
@@ -130,6 +131,9 @@ class _FunctionCompiler:
 
     def emit(self, op, a=0, b=0, c=0, d=0, e=0):
         self.proto.code.append(Ins(op, a, b, c, d, e))
+        self.proto.value_origins.append(dict(self.reg_origins))
+        if op in (Op.MOVE, Op.LOCAL) and b in self.reg_origins:
+            self.reg_origins[a] = self.reg_origins[b]
         return len(self.proto.code) - 1
 
     def patch_a(self, at, target):
@@ -368,6 +372,10 @@ class _FunctionCompiler:
         return handler(self, stmt)
 
     def _stmt_local_decl(self, stmt):
+        for declared, value in zip(stmt.names, stmt.values):
+            if isinstance(value, A.FunctionExpr):
+                value.debug_name = declared.name
+                value.debug_namewhat = "local"
         values = self.adjust_values(stmt.values, len(stmt.names))
         for declared, (vr, actual) in zip(stmt.names, values):
             if declared.typ is not ANY and actual is not ANY and not accepts(declared.typ, actual):
@@ -378,8 +386,9 @@ class _FunctionCompiler:
             self.emit(Op.LOCAL, r, vr)
             readonly = declared.attribute in ("const", "close")
             self.define_local(declared.name, Symbol(r, declared.typ, readonly=readonly))
+            self.reg_origins[r] = ("local", declared.name)
             if declared.attribute == "close":
-                self.emit(Op.TBC, r)
+                self.emit(Op.TBC, r, self.proto.add_const(declared.name.encode()))
                 self.close_depth += 1
 
     def _stmt_global_decl(self, stmt):
@@ -407,7 +416,7 @@ class _FunctionCompiler:
         self.declare_global(stmt.name, binding_type, False)
         out = self._new_child(
             stmt.name, stmt.params, stmt.return_types, stmt.body,
-            stmt.vararg_name, stmt.vararg_type,
+            stmt.vararg_name, stmt.vararg_type, stmt.end_line, "global",
         )
         self._global_initialize([declared], [(out, FUNCTION)], stmt.line)
 
@@ -416,8 +425,14 @@ class _FunctionCompiler:
             if isinstance(value, A.FunctionExpr):
                 if isinstance(target, A.Name):
                     value.debug_name = target.value
+                    ref = self.resolve(target.value)
+                    value.debug_namewhat = (
+                        "local" if ref.kind == "local" else
+                        "upvalue" if ref.kind == "upvalue" else "global"
+                    )
                 elif isinstance(target, A.Field):
                     value.debug_name = target.name
+                    value.debug_namewhat = "field"
         targets = [self.prepare_target(t) for t in stmt.targets]
         values = self.adjust_values(stmt.values, len(stmt.targets))
         # Lua evaluates every right-hand value before performing any store.
@@ -426,7 +441,7 @@ class _FunctionCompiler:
         local_targets = set()
         for target in targets:
             if target[0] == "name":
-                ref = self.resolve(target[1])
+                ref = target[1]
                 if ref.kind == "local" and not ref.symbol.captured:
                     local_targets.add(ref.index)
         snapshots = []
@@ -596,7 +611,7 @@ class _FunctionCompiler:
         finally:
             self.pop_scope()
 
-    def _new_child(self, name, params, returns, body, vararg_name, vararg_type):
+    def _new_child(self, name, params, returns, body, vararg_name, vararg_type, end_line=0, namewhat=""):
         analyze_control_flow(body)
         child = Proto(
             name,
@@ -605,6 +620,7 @@ class _FunctionCompiler:
             return_types=returns,
             is_vararg=vararg_name is not None,
             vararg_type=vararg_type,
+            debug_namewhat=namewhat,
         )
         sub = _FunctionCompiler(child, params, self)
         if vararg_name not in (None, ""):
@@ -623,6 +639,7 @@ class _FunctionCompiler:
 
     def function_def(self, stmt):
         local_sym = None
+        target_ref = None
         if stmt.local:
             reg = self.alloc()
             nil = self.nil_reg()
@@ -630,9 +647,16 @@ class _FunctionCompiler:
             binding_type = FUNCTION if getattr(self, "fully_typed", False) else ANY
             local_sym = Symbol(reg, binding_type, returns=stmt.return_types)
             self.define_local(stmt.name, local_sym)
+        else:
+            target_ref = self.resolve(stmt.name)
+        namewhat = "local" if stmt.local else (
+            "local" if target_ref.kind == "local" else
+            "upvalue" if target_ref.kind == "upvalue" else "global"
+        )
         out = self._new_child(
             stmt.name, stmt.params, stmt.return_types, stmt.body,
-            stmt.vararg_name, stmt.vararg_type,
+            stmt.vararg_name, stmt.vararg_type, stmt.end_line,
+            namewhat,
         )
         if stmt.local:
             self._store_ref(
@@ -640,14 +664,15 @@ class _FunctionCompiler:
                 out, stmt.line, FUNCTION,
             )
         else:
-            self._store_ref(self.resolve(stmt.name), out, stmt.line, FUNCTION)
+            self._store_ref(target_ref, out, stmt.line, FUNCTION)
 
     def function_expr(self, expr):
         return (
             self._new_child(
                 expr.debug_name or "<anonymous>",
                 expr.params, expr.return_types, expr.body,
-                expr.vararg_name, expr.vararg_type,
+                expr.vararg_name, expr.vararg_type, expr.end_line,
+                expr.debug_namewhat,
             ),
             FUNCTION,
         )
@@ -655,7 +680,10 @@ class _FunctionCompiler:
     def prepare_target(self, target):
         match target:
             case A.Name(value=name):
-                return ("name", name)
+                # Resolve name targets before compiling right-hand values, as
+                # Lua's parser does. Besides preserving evaluation semantics,
+                # this gives serialized closures Lua's lexical upvalue order.
+                return ("name", self.resolve(name))
             case A.Field(table=table_expr, name=name):
                 table, _ = self.expr(table_expr)
                 stable_table = self.alloc()
@@ -678,8 +706,8 @@ class _FunctionCompiler:
         match target:
             case ("table", table, key):
                 self.emit(Op.SETTABLE, table, key, value)
-            case ("name", name):
-                self._store_ref(self.resolve(name), value, line, actual)
+            case ("name", ref):
+                self._store_ref(ref, value, line, actual)
             case _:
                 raise RuntimeError(f"unknown prepared target: {target!r}")
 
@@ -767,7 +795,14 @@ class _FunctionCompiler:
         return r, expr.inferred_type
 
     def _expr_name(self, expr):
-        return self._load_ref(self.resolve(expr.value))
+        ref = self.resolve(expr.value)
+        out, typ = self._load_ref(ref)
+        self.reg_origins[out] = (
+            "local" if ref.kind == "local" else
+            "upvalue" if ref.kind == "upvalue" else "global",
+            expr.value,
+        )
+        return out, typ
 
     def _expr_vararg(self, expr):
         return self.multi_expr(expr, 1)[0]
@@ -792,6 +827,9 @@ class _FunctionCompiler:
                     self.emit(Op.SETTABLE, out, kr, vr)
                 array_index += 1
             else:
+                if isinstance(field.key, str) and isinstance(field.value, A.FunctionExpr):
+                    field.value.debug_name = field.key
+                    field.value.debug_namewhat = "field"
                 if isinstance(field.key, str):
                     kr = self.alloc()
                     self.emit(Op.LOADK, kr, self.proto.add_const(field.key.encode()))
@@ -807,6 +845,7 @@ class _FunctionCompiler:
         self.emit(Op.LOADK, key, self.proto.add_const(expr.name.encode()))
         out = self.alloc()
         self.emit(Op.GETTABLE, out, table, key)
+        self.reg_origins[out] = ("field", expr.name)
         return out, ANY
 
     def _expr_index(self, expr):
@@ -835,6 +874,9 @@ class _FunctionCompiler:
             right, right_type = self.expr(expr.right)
             self.emit(Op.MOVE, out, right)
             self.patch_a(jump, len(self.proto.code))
+            # A short-circuit result can come from either branch. Lua does
+            # not attribute later errors to either source variable.
+            self.reg_origins.pop(out, None)
             return out, left_type if left_type == right_type else ANY
 
         left, left_type = self.expr(expr.left)
@@ -886,6 +928,7 @@ class _FunctionCompiler:
         return self.expr(expr.value)
 
     def _call_parts(self, expr):
+        origin = None
         match expr:
             case A.MethodCall(receiver=receiver_expr, name=name, args=source_args):
                 receiver, _ = self.expr(receiver_expr)
@@ -894,9 +937,19 @@ class _FunctionCompiler:
                 fn = self.alloc()
                 self.emit(Op.GETTABLE, fn, receiver, key)
                 args = [receiver]
+                origin = ("method", name)
             case A.Call(func=func, args=source_args):
                 fn, _ = self.expr(func)
                 args = []
+                if isinstance(func, A.Name):
+                    ref = self.resolve(func.value)
+                    origin = (
+                        "local" if ref.kind == "local" else
+                        "upvalue" if ref.kind == "upvalue" else "global",
+                        func.value,
+                    )
+                elif isinstance(func, A.Field):
+                    origin = ("field", func.name)
             case _:
                 raise RuntimeError(f"not a call expression: {type(expr).__name__}")
 
@@ -909,21 +962,23 @@ class _FunctionCompiler:
         arg_base = self.alloc_n(len(args)) if args else 0
         for i, reg in enumerate(args):
             self.emit(Op.MOVE, arg_base + i, reg)
-        return fn, arg_base, len(args), multi_last
+        return fn, arg_base, len(args), multi_last, origin
 
     def call_expr(self, expr, want):
-        fn, arg_base, arg_count, multi_last = self._call_parts(expr)
+        fn, arg_base, arg_count, multi_last, origin = self._call_parts(expr)
         out_count = 1 if want in (0, -1) else want
         out = self.alloc_n(out_count)
         if multi_last is None:
-            self.emit(Op.CALL, out, fn, arg_base, arg_count, want)
+            at = self.emit(Op.CALL, out, fn, arg_base, arg_count, want)
         else:
-            self.emit(Op.CALLV, out, fn, arg_base, arg_count, multi_last)
+            at = self.emit(Op.CALLV, out, fn, arg_base, arg_count, multi_last)
             if want != -1:
                 mv = out
                 material = self.alloc_n(max(1, want))
                 self.emit(Op.UNPACK, material, mv, max(0, want))
                 out = material
+        if origin is not None:
+            self.proto.value_origins[at][fn] = origin
         typ = ANY
         if type(expr) is A.Call and type(expr.func) is A.Name:
             ref = self.resolve(expr.func.value)
@@ -936,12 +991,14 @@ class _FunctionCompiler:
         return [(out + i, typ if i == 0 else ANY) for i in range(max(1, want))]
 
     def tailcall_expr(self, expr):
-        fn, arg_base, arg_count, multi_last = self._call_parts(expr)
+        fn, arg_base, arg_count, multi_last, origin = self._call_parts(expr)
         self.emit_close_to(0)
         if multi_last is None:
-            self.emit(Op.TAILCALL, 0, fn, arg_base, arg_count, 0)
+            at = self.emit(Op.TAILCALL, 0, fn, arg_base, arg_count, 0)
         else:
-            self.emit(Op.TAILCALLV, 0, fn, arg_base, arg_count, multi_last)
+            at = self.emit(Op.TAILCALLV, 0, fn, arg_base, arg_count, multi_last)
+        if origin is not None:
+            self.proto.value_origins[at][fn] = origin
 
 
 _STMT_HANDLERS = {

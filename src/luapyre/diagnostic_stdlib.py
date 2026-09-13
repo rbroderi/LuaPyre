@@ -27,6 +27,7 @@ def _as_bytes(value):
 
 def _syntax_message(error: Exception, source_name) -> bytes:
     message = str(error)
+    raw_source = source_name if isinstance(source_name, bytes) else None
     line = getattr(error, "line", None)
     if line is None:
         match = _LINE_RE.search(message)
@@ -38,6 +39,53 @@ def _syntax_message(error: Exception, source_name) -> bytes:
         r"attempt to assign to const variable '\1'",
         message,
     )
+    message = re.sub(
+        r"expected expression at line \d+, got ('[^']+'|\S+)",
+        r"unexpected symbol near \1",
+        message,
+    )
+    if raw_source is not None:
+        text = raw_source.decode("utf-8", "surrogateescape")
+        if re.fullmatch(r"expected '\}', got 'EOF' at line \d+", message):
+            opening = text[: text.find("{")].count("\n") + 1
+            message = f"'}}' expected (to close '{{' at line {opening}) near <eof>"
+        elif "statement is neither assignment nor function call" in message:
+            token = text.strip()
+            if token.startswith("syntax "):
+                token = token.split()[-1]
+                message = f"syntax error near '{token}'"
+            else:
+                message = f"unexpected symbol near '{token}'"
+        elif message.startswith("expected 'NAME', got "):
+            got = re.search(r"got ('[^']+')", message)
+            if got:
+                message = f"<name> expected near {got.group(1)}"
+        elif message.startswith("unexpected character "):
+            bad = next(
+                (byte for byte in raw_source if byte < 32 and byte not in (9, 10, 13) or byte >= 127),
+                None,
+            )
+            if bad is not None:
+                token = f"<\\{bad}>"
+                before = raw_source.find(bytes((bad,)))
+                kind = "syntax error" if before > 0 else "unexpected symbol"
+                message = f"{kind} near '{token}'"
+        elif "label '" in message and "already defined and visible" in message:
+            label = re.search(r"label '([^']+)'", message).group(1)
+            first = next(
+                (i for i, line_text in enumerate(text.splitlines(), 1)
+                 if f"::{label}::" in line_text),
+                1,
+            )
+            message = f"label '{label}' already defined on line {first}"
+        elif "no visible label '" in message and " for goto" in message:
+            label = re.search(r"no visible label '([^']+)'", message).group(1)
+            goto_line = next(
+                (i for i, line_text in enumerate(text.splitlines(), 1)
+                 if re.search(rf"\bgoto\s+{re.escape(label)}\b", line_text)),
+                line,
+            )
+            message = f"no visible label '{label}' for <goto> at line {goto_line}"
     return chunk_id(source_name) + b":" + str(line).encode("ascii") + b": " + message.encode("utf-8", "replace")
 
 
@@ -75,35 +123,16 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
 
     put("assert", lua_assert)
 
-    def pcall(fn, *args):
-        try:
-            results = vm.call_sync(fn, args)
-            return MultiValue((True, *results))
-        except LuaQuotaError:
-            raise
-        except LuaRuntimeError as error:
-            return MultiValue((False, error_value(error)))
-
-    put("pcall", pcall)
-
-    def xpcall(fn, handler, *args):
-        try:
-            results = vm.call_sync(fn, args)
-            return MultiValue((True, *results))
-        except LuaQuotaError:
-            raise
-        except LuaRuntimeError as error:
-            original = error_value(error)
-            try:
-                handled = vm.call_sync(handler, (original,))
-                replacement = handled[0] if handled else None
-            except LuaQuotaError:
-                raise
-            except LuaRuntimeError as handler_error:
-                replacement = error_value(handler_error)
-            return MultiValue((False, replacement))
-
-    put("xpcall", xpcall)
+    # Protected calls are VM continuations, not synchronous host callbacks.
+    # Keeping only a marker here lets coroutine yields suspend the complete
+    # protected stack and lets stack-overflow errors unwind without adding a
+    # second Python call stack.
+    globals_table.rawset(
+        b"pcall", HostFunction(lambda *_args: None, "pcall", protected_mode="pcall")
+    )
+    globals_table.rawset(
+        b"xpcall", HostFunction(lambda *_args: None, "xpcall", protected_mode="xpcall")
+    )
 
     def load(chunk, chunkname=None, mode=b"bt", *env_args):
         if mode is None:
@@ -121,7 +150,12 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
             pieces = []
             total = 0
             while True:
-                results = vm.call_sync(chunk, ())
+                try:
+                    results = vm.call_sync(chunk, ())
+                except LuaQuotaError:
+                    raise
+                except LuaRuntimeError as error:
+                    return MultiValue((None, error_value(error)))
                 piece = results[0] if results else None
                 if piece is None or piece == b"":
                     break
@@ -147,8 +181,6 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
         try:
             if source.startswith(DEBUG_NATIVE_MAGIC):
                 proto = load_debug_chunk(source)
-                if proto.source is None:
-                    proto.source = source_name
             elif source.startswith(NATIVE_MAGIC):
                 proto = load_native_chunk(source)
                 if proto.source in (None, "=?"):
