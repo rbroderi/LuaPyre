@@ -201,6 +201,15 @@ def install_io_library(globals_table: LuaTable, capabilities: RuntimeCapabilitie
                 return None
             return close(_self)
 
+        def gc_metamethod(_self=None):
+            if _self is not stream:
+                raise LuaRuntimeError(
+                    "bad argument #1 to '__gc' (FILE* expected, got no value)"
+                )
+            if not state.closed and state.closable:
+                return close(_self)
+            return None
+
         def tostring_file(_self):
             if _self is not stream:
                 raise LuaRuntimeError("bad argument #1 to 'tostring' (file expected)")
@@ -244,6 +253,7 @@ def install_io_library(globals_table: LuaTable, capabilities: RuntimeCapabilitie
         ):
             methods.rawset(name, HostFunction(fn, f"file:{name.decode()}"))
         metatable.rawset(b"__close", HostFunction(close_metamethod, "file:__close"))
+        metatable.rawset(b"__gc", HostFunction(gc_metamethod, "file:__gc"))
         metatable.rawset(b"__tostring", HostFunction(tostring_file, "file:__tostring"))
         return stream
 

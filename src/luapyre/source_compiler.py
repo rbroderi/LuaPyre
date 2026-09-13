@@ -13,7 +13,22 @@ from .typesys import ANY, FLOAT, INTEGER, TABLE, accepts
 
 
 def _last_body_line(body, default: int) -> int:
-    return max((stmt.line for stmt in body), default=default)
+    return max((getattr(stmt, "end_line", 0) or stmt.line for stmt in body), default=default)
+
+
+def _last_expr_line(expr) -> int:
+    line = getattr(expr, "end_line", 0) or expr.line
+    if is_dataclass(expr):
+        for descriptor in fields(expr):
+            value = getattr(expr, descriptor.name)
+            if isinstance(value, A.Expr):
+                line = max(line, _last_expr_line(value))
+            elif isinstance(value, list):
+                line = max(
+                    (max(line, _last_expr_line(item)) for item in value if isinstance(item, A.Expr)),
+                    default=line,
+                )
+    return line
 
 
 def _intern_source_strings(root) -> None:
@@ -72,10 +87,11 @@ class SourceCompiler(Compiler):
         ctx.current_line = chunk.line
         env = ctx.alloc()
         proto.env_reg = env
-        ctx.define_local("_ENV", Symbol(env, TABLE))
+        ctx.define_local("_ENV", Symbol(env, TABLE if self.fully_typed else ANY))
         ctx.compile_block(chunk.body, scoped=False)
         ctx.emit_close_to(0)
         ctx.emit(Op.HALT, line=_last_body_line(chunk.body, chunk.line))
+        ctx.finish_debug_scope()
         ctx.patch_gotos()
         proto.register_count = ctx.max_reg
         return proto
@@ -97,7 +113,31 @@ class _SourceFunctionCompiler(_FunctionCompiler):
 
     def stmt(self, stmt):
         previous = self.current_line
-        self.current_line = stmt.line
+        previous_definition = getattr(self, "_definition_line", None)
+        # PUC associates the closure-creation instruction for a function
+        # statement with its closing ``end``. This matters to line hooks: an
+        # empty local function reports its end line before the following call.
+        self.current_line = (
+            stmt.end_line
+            if isinstance(stmt, (A.FunctionDef, A.GlobalFunctionDef))
+            and stmt.end_line
+            else stmt.line
+        )
+        if isinstance(stmt, (A.FunctionDef, A.GlobalFunctionDef)):
+            self._definition_line = stmt.line
+        previous_store = getattr(self, "_store_line", None)
+        if isinstance(stmt, A.Assign) and stmt.values:
+            # A dotted function declaration is parsed as an assignment, but
+            # failures while walking/storing its table path belong to the
+            # declaration line, not to the closing ``end`` of its function.
+            dotted_function = (
+                len(stmt.targets) == len(stmt.values) == 1
+                and isinstance(stmt.targets[0], (A.Field, A.Index))
+                and isinstance(stmt.values[0], A.FunctionExpr)
+            )
+            self._store_line = (
+                stmt.line if dotted_function else _last_expr_line(stmt.values[-1])
+            )
         try:
             if self.fully_typed and type(stmt) is A.LocalDecl:
                 return self._typed_local_decl(stmt)
@@ -106,12 +146,48 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             return super().stmt(stmt)
         finally:
             self.current_line = previous
+            self._definition_line = previous_definition
+            self._store_line = previous_store
 
     def expr(self, expr):
         previous = self.current_line
-        self.current_line = expr.line
+        self.current_line = getattr(self, "_line_override", None) or expr.line
         try:
             return super().expr(expr)
+        finally:
+            self.current_line = previous
+
+    def _binary_left(self, expr):
+        # Avoid adding another SourceCompiler.expr frame for every node in a
+        # long left-associative chain. Besides matching the operator's line,
+        # this lets legal 255-term expressions reach Lua's upvalue/register
+        # diagnostics before CPython's own recursion guard.
+        previous = self.current_line
+        previous_override = getattr(self, "_line_override", None)
+        self._line_override = expr.line
+        self.current_line = expr.line
+        try:
+            return super().expr(expr.left)
+        finally:
+            self._line_override = previous_override
+            self.current_line = previous
+
+    def assign_prepared(self, target, value, actual, line):
+        previous = self.current_line
+        self.current_line = getattr(self, "_store_line", None) or line
+        try:
+            return super().assign_prepared(target, value, actual, line)
+        finally:
+            self.current_line = previous
+
+    def _global_initialize(self, declarations, values, line):
+        # Global declaration failures (including an invalid replacement
+        # _ENV) are reported at the declaration, even when the initializer is
+        # a multi-line function whose CLOSURE instruction belongs to ``end``.
+        previous = self.current_line
+        self.current_line = line
+        try:
+            return super()._global_initialize(declarations, values, line)
         finally:
             self.current_line = previous
 
@@ -130,12 +206,18 @@ class _SourceFunctionCompiler(_FunctionCompiler):
 
     def _typed_local_decl(self, stmt: A.LocalDecl):
         values = self.adjust_values(stmt.values, len(stmt.names))
-        for declared, (vr, actual) in zip(stmt.names, values):
+        for position, (declared, (vr, actual)) in enumerate(zip(stmt.names, values)):
             expected = self._binding_type(declared, actual, stmt.line, "local")
             if actual is ANY:
                 self.emit(Op.GUARD, vr, self.proto.add_const(expected.name))
             r = self.alloc()
-            self.emit(Op.LOCAL, r, vr)
+            value_expr = stmt.values[position] if position < len(stmt.values) else None
+            local_line = (
+                value_expr.end_line
+                if isinstance(value_expr, A.FunctionExpr) and value_expr.end_line
+                else stmt.line
+            )
+            self.emit(Op.LOCAL, r, vr, line=local_line)
             readonly = declared.attribute in ("const", "close")
             self.define_local(declared.name, Symbol(r, expected, readonly=readonly))
             self.reg_origins[r] = ("local", declared.name)
@@ -212,7 +294,10 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             visible = self.alloc()
             self.define_local(stmt.name, Symbol(visible, loop_type, readonly=True))
             body_start = len(self.proto.code)
-            self.emit(Op.LOCAL, visible, idx)
+            body_line = (
+                stmt.body[0].line if stmt.body else stmt.end_line or stmt.line
+            )
+            self.emit(Op.LOCAL, visible, idx, line=body_line)
             self.compile_block(stmt.body, scoped=False)
             self.emit_close_to(base, update=True)
             eligible = (
@@ -245,7 +330,7 @@ class _SourceFunctionCompiler(_FunctionCompiler):
 
     def _new_child(self, name, params, returns, body, vararg_name, vararg_type, end_line=0, namewhat=""):
         analyze_control_flow(body)
-        defined_line = self.current_line
+        defined_line = getattr(self, "_definition_line", None) or self.current_line
         child = Proto(
             name,
             param_count=len(params),
@@ -266,6 +351,10 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             self,
             fully_typed=self.fully_typed,
         )
+        if child.is_vararg:
+            child.debug_locals.append(
+                ("(vararg table)", -1, 0, (1 << 31) - 1)
+            )
         if vararg_name not in (None, ""):
             reg = sub.alloc()
             child.vararg_name_reg = reg
@@ -273,6 +362,14 @@ class _SourceFunctionCompiler(_FunctionCompiler):
         sub.compile_block(body, scoped=False)
         sub.emit_close_to(0)
         sub.emit(Op.RETURN, 0, 0, line=end_line or _last_body_line(body, defined_line))
+        if child.is_vararg:
+            for index, item in enumerate(child.debug_locals):
+                if item[0] == "(vararg table)":
+                    child.debug_locals[index] = (
+                        item[0], item[1], item[2], max(0, len(child.code) - 2)
+                    )
+                    break
+        sub.finish_debug_scope()
         sub.patch_gotos()
         child.register_count = sub.max_reg
         self.proto.children.append(child)

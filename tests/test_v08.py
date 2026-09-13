@@ -3,7 +3,8 @@ from __future__ import annotations
 from lupa.lua55 import LuaRuntime as ReferenceLuaRuntime
 
 from luapyre import LuaRuntime
-from luapyre.binary_chunks import NATIVE_MAGIC, PUC_MAGIC
+from luapyre.binary_chunks import PUC_MAGIC
+from luapyre.native_debug_chunks import PUC55_HEADER
 
 
 def run(source):
@@ -30,10 +31,10 @@ return string.byte(dumped,1), err, f(6,7)
 ''') == (27, None, 13, 42)
 
 
-def test_native_dump_magic_and_strip_argument():
+def test_dump_uses_lua_55_header_and_strip_argument():
     lua = LuaRuntime()
     dumped = lua.execute('return string.dump(function() return 42 end, true)')
-    assert dumped.startswith(NATIVE_MAGIC)
+    assert dumped.startswith(PUC55_HEADER)
 
 
 def test_dumped_function_gets_fresh_first_upvalue_from_load_environment():

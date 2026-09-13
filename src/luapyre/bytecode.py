@@ -73,6 +73,9 @@ class Proto:
     # helpers consult this table without exposing the host Python stack.
     debug_locals: list[tuple[str, int, int, int]] = field(default_factory=list)
     debug_namewhat: str = ""
+    # True for a binary prototype whose symbolic debug information was
+    # deliberately stripped. It still receives one line hook with a nil line.
+    debug_stripped: bool = False
     # Native source compilation only emits *_I/*_F opcodes when its optional
     # type analysis has proved the operand classes (including runtime GUARDs at
     # Any -> typed boundaries). The tiered JIT may therefore omit redundant

@@ -91,6 +91,12 @@ lua = LuaRuntime()
 
 Use the exact interpreter-only path with `LuaRuntime(jit=False)`. The default hotness threshold is 32 loop entries/calls and can be changed with `jit_threshold=`. Live counters are available through `lua.jit_stats`; `lua.jit_feedback` snapshots adaptive call/table cache states and deoptimization reasons.
 
+Sandbox-safe debug hooks are opt-in. Construct `LuaRuntime(debug_hooks=True)`
+to expose `debug.sethook` and enable per-thread call, return, tail-call, line,
+and instruction-count events. Hooks are disabled by default; a thread with an
+active hook stays on the interpreter so compiled regions cannot skip events,
+and hook callbacks do not recursively invoke themselves.
+
 0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, 0.23 added escape analysis and virtual Frames/MultiValues, and 0.24 added automatic generational GC pacing. 0.25 shaped generated code for CPython's adaptive interpreter with fast locals and range-proven arithmetic. **0.26 applies those transformations to CFG traces, recycles exact compiled-call Frames, and adds a bounded LRU source cache so repeated execution retains its warmed Proto and JIT state.** See [`docs/runtime-overheads-0.26.md`](docs/runtime-overheads-0.26.md) and the earlier design notes in [`docs/`](docs/).
 
 Pinned tests and workloads from real packages provide an additional
@@ -228,13 +234,15 @@ da07b543872dc0bb2ff12aabd0c248578d78df3eb6b67efdc537a46d455c7f31
 
 The harness bounds archive/download/extraction sizes, rejects traversal paths and links/devices, classifies the upstream suite by dependency type, and runs selected files in fresh LuaPyre runtimes. Its read-only suite access is supplied through the same production `file_loader` capability used by embedders; it no longer replaces `package`, `require`, `loadfile`, `dofile`, or `print` with test-only Lua implementations.
 
-The committed release gate contains eighteen unchanged upstream files: `attrib.lua`, `bitwise.lua`, `bwcoercion.lua`, `closure.lua`, `constructs.lua`, `events.lua`, `files.lua`, `goto.lua`, `literals.lua`, `math.lua`, `nextvar.lua`, `pm.lua`, `sort.lua`, `strings.lua`, `tpack.lua`, `utf8.lua`, `vararg.lua`, and the semantic soft-profile portion of `verybig.lua`. Additional official files remain explicit probes until their semantic gaps are fixed; the baseline is never weakened by copying or patching upstream tests, skipping assertions, or marking failures as expected passes.
+The committed release gate contains twenty-four unchanged upstream files: `attrib.lua`, `bitwise.lua`, `bwcoercion.lua`, `calls.lua`, `closure.lua`, `constructs.lua`, `coroutine.lua`, `db.lua`, `errors.lua`, `events.lua`, `files.lua`, `gengc.lua`, `goto.lua`, `literals.lua`, `locals.lua`, `math.lua`, `nextvar.lua`, `pm.lua`, `sort.lua`, `strings.lua`, `tpack.lua`, `utf8.lua`, `vararg.lua`, and the semantic soft-profile portion of `verybig.lua`. The baseline is never weakened by copying or patching upstream tests, skipping assertions, or marking failures as expected passes.
 
 See [`docs/conformance-0.12.md`](docs/conformance-0.12.md) for the exact conformance tranche. The 0.17 value/CALL-IR work must preserve that same exact gate for ordinary Lua.
 
 The default runtime now includes sandboxed `debug`, `io`, and `os` subsets. Introspection is limited to Lua state, streams write only to per-runtime memory and read host files only through an explicit `file_loader`, and OS mutation is limited to those virtual files. Process execution, environment disclosure, unrestricted host filesystem access, native modules, and Python introspection remain unavailable.
 
-Every top-level suite file has an explicit disposition in `tools/official_551.py`. Protected-call stack-overflow recovery, yieldable `pcall`/`xpcall`, close-error propagation and traceback metadata, applicable debug metadata, and parser-token diagnostics are covered. The remaining tracked portions are exact PUC-Lua binary dump headers, debug-hook execution/ordering, and host-userdata/I/O-specific diagnostics. Intentional exclusions are limited to the suite orchestrator and tests whose substance requires Lua's internal C API, allocator-failure injection, host processes, or destructive resource stress.
+Every top-level suite file has an explicit disposition in `tools/official_551.py`. Protected-call stack-overflow recovery, recursive `xpcall` handlers, yieldable `pcall`/`xpcall`, close-error propagation and traceback metadata, weak coroutine-wrapper collection, exact debug hooks and stripped-chunk inspection, parser/runtime diagnostics, Lua 5.5 dump headers and corruption handling, and the portable portion of the generational-GC suite are covered. There are no remaining tracked-gap files. Intentional exclusions are limited to the suite orchestrator and tests whose substance requires Lua's internal C API, allocator-failure injection, host processes, or destructive resource stress; safe bounded equivalents for GC, parser, and stack-limit behavior remain part of the Python test gate.
+
+See [`docs/official-551-exclusion-audit.md`](docs/official-551-exclusion-audit.md) for the assertion-level disposition of every excluded top-level file.
 
 ## Benchmarking
 
@@ -264,8 +272,8 @@ Use `--json PATH` for a versioned machine-readable report. The permanent **Four-
 
 Major remaining work includes:
 
-- broader official Lua 5.5.1 suite coverage
-- additional exact runtime-error / `getobjname` categories
+- exact source-line hook metadata and advanced debug inspection
+- cross-runtime PUC emission from `string.dump` (LuaPyre dumps use the canonical 5.5 header with a validated LuaPyre payload)
 - yieldable native-library / C-API continuation semantics
 - fuller userdata/C-API behavior beyond the current sandbox value model
 - host-facing `io`, `os`, and `debug` capabilities where an embedding explicitly wants them

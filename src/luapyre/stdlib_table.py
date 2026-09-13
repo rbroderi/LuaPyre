@@ -128,7 +128,7 @@ def install_table_library(globals_table: LuaTable, vm) -> LuaTable:
         return removed
 
     def sort(tab, comp=None):
-        tab = need_table(tab, 1, "sort")
+        tab = need_table(tab, 1, "table.sort")
         length = table_length(tab, "sort")
         if length > 1_000_000:
             raise LuaRuntimeError("array too big")

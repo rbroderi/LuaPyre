@@ -6,7 +6,7 @@ from .binary_chunks import NATIVE_MAGIC, PUC_MAGIC, fresh_loaded_closure, load_n
 from .bytecode import Closure
 from .diagnostics import chunk_id, error_value, where_from_frames
 from .errors import LuaPyreError, LuaQuotaError, LuaRaisedError, LuaRuntimeError
-from .native_debug_chunks import DEBUG_NATIVE_MAGIC, dump_debug_chunk, load_debug_chunk
+from .native_debug_chunks import dump_debug_chunk, is_debug_chunk, load_debug_chunk
 from .parser import Parser
 from .puc55 import load_puc55_chunk
 from .source_compiler import SourceCompiler
@@ -101,6 +101,8 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
                 level = int(level)
             else:
                 raise LuaRuntimeError("bad argument #2 to 'error' (number has no integer representation)")
+        if getattr(vm, "_direct_protected_host", False):
+            level = 0
         original_is_string = isinstance(value, bytes)
         located = False
         if original_is_string and level > 0:
@@ -115,6 +117,8 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
     put("error", lua_error)
 
     def lua_assert(*args):
+        if not args:
+            raise LuaRuntimeError("bad argument #1 to 'assert' (value expected)")
         value = args[0] if args else None
         if truthy(value):
             return MultiValue(tuple(args))
@@ -179,7 +183,7 @@ def install_diagnostic_stdlib(globals_table, vm) -> None:
 
         environment = globals_table if not env_args else env_args[0]
         try:
-            if source.startswith(DEBUG_NATIVE_MAGIC):
+            if is_debug_chunk(source):
                 proto = load_debug_chunk(source)
             elif source.startswith(NATIVE_MAGIC):
                 proto = load_native_chunk(source)

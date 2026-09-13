@@ -68,6 +68,57 @@ return xpcall(work, debug.traceback)
     assert b"in metamethod 'close'" in message
 
 
+def test_weak_table_does_not_keep_coroutine_wrapper_alive():
+    lua = LuaRuntime(jit=False)
+    assert lua.execute(
+        """
+local weak = setmetatable({}, {__mode = "v"})
+local wrapper = coroutine.wrap(function ()
+  local value = 10
+  while true do
+    coroutine.yield(function () value = value + 1; return value end)
+  end
+end)
+weak[1] = wrapper
+local retained = wrapper()
+wrapper = nil
+collectgarbage()
+return weak[1], retained()
+"""
+    ) == (None, 11)
+
+
+def test_wrapped_coroutine_reports_replacement_close_error():
+    lua = LuaRuntime(jit=False)
+    ok, message, closes = lua.execute(
+        """
+local closes = 0
+local function closer(callback)
+  return setmetatable({}, {__close = callback})
+end
+local wrapper = coroutine.wrap(function ()
+  local outer <close> = closer(function (_, prior)
+    closes = closes + 1
+    assert(string.find(prior, "first"))
+    error("replacement")
+  end)
+  local inner <close> = closer(function ()
+    closes = closes + 1
+    error("first")
+  end)
+  coroutine.yield()
+  error("body")
+end)
+wrapper()
+local ok, message = pcall(wrapper)
+return ok, message, closes
+"""
+    )
+    assert ok is False
+    assert b"replacement" in message
+    assert closes == 2
+
+
 def test_debug_function_metadata_and_call_site_names():
     lua = LuaRuntime(jit=False)
     assert lua.execute(

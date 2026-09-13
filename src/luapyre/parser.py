@@ -20,6 +20,16 @@ class Parser:
     def __init__(self, source: str, *, typed: bool = False):
         self.ts = Lexer(source, typed=typed).tokens()
         self.i = 0
+        self.nesting = 0
+
+    def _enter_nesting(self):
+        self.nesting += 1
+        if self.nesting > 120:
+            self.nesting -= 1
+            raise LuaSyntaxError(f"line {self.t.line}: too many syntax levels")
+
+    def _leave_nesting(self):
+        self.nesting -= 1
 
     @property
     def t(self):
@@ -36,9 +46,17 @@ class Parser:
         return self.take() if self.t.kind == kind else None
 
     def parse(self):
-        return A.Chunk(1, self.block({"EOF"}))
+        body = self.block({"EOF"})
+        return A.Chunk(1, body, self.t.line)
 
     def block(self, stops):
+        self._enter_nesting()
+        try:
+            return self._block(stops)
+        finally:
+            self._leave_nesting()
+
+    def _block(self, stops):
         out = []
         while self.t.kind not in stops:
             if self.accept(";"):
@@ -85,20 +103,21 @@ class Parser:
         if kind == "do":
             line = self.take().line
             body = self.block({"end"})
-            self.take("end")
-            return A.DoStmt(line, body)
+            end_line = self.take("end").line
+            return A.DoStmt(line, body, end_line)
         if kind == "while":
             line = self.take().line
             cond = self.expr()
             self.take("do")
             body = self.block({"end"})
-            self.take("end")
-            return A.WhileStmt(line, cond, body)
+            end_line = self.take("end").line
+            return A.WhileStmt(line, cond, body, end_line)
         if kind == "repeat":
             line = self.take().line
             body = self.block({"until"})
             self.take("until")
-            return A.RepeatStmt(line, body, self.expr())
+            condition = self.expr()
+            return A.RepeatStmt(line, body, condition, condition.line)
         if kind == "for":
             return self.for_stmt()
         if kind == "if":
@@ -109,6 +128,8 @@ class Parser:
             targets = [first]
             while self.accept(","):
                 targets.append(self.expr())
+                if len(targets) > 255:
+                    raise LuaSyntaxError(f"line {self.t.line}: too many registers")
             self.take("=")
             self._check_targets(targets)
             return A.Assign(first.line, targets, self.expr_list())
@@ -148,6 +169,10 @@ class Parser:
             if attribute == "close":
                 close_count += 1
             names.append(A.DeclaredName(token.value, typ, attribute))
+            if len(names) > 200:
+                raise LuaSyntaxError(
+                    f"too many local variables in function at line {max(1, token.line - 1)}"
+                )
             if not self.accept(","):
                 break
         if close_count > 1:
@@ -167,8 +192,8 @@ class Parser:
         else_body = []
         if self.accept("else"):
             else_body = self.block({"end"})
-        self.take("end")
-        return A.IfStmt(line, clauses, else_body)
+        end_line = self.take("end").line
+        return A.IfStmt(line, clauses, else_body, end_line)
 
     def for_stmt(self):
         line = self.take("for").line
@@ -180,8 +205,8 @@ class Parser:
             step = self.expr() if self.accept(",") else None
             self.take("do")
             body = self.block({"end"})
-            self.take("end")
-            return A.NumericForStmt(line, name, start, limit, step, body)
+            end_line = self.take("end").line
+            return A.NumericForStmt(line, name, start, limit, step, body, end_line)
         names = [name]
         while self.accept(","):
             names.append(self.take("NAME").value)
@@ -189,8 +214,8 @@ class Parser:
         values = self.expr_list()
         self.take("do")
         body = self.block({"end"})
-        self.take("end")
-        return A.GenericForStmt(line, names, values, body)
+        end_line = self.take("end").line
+        return A.GenericForStmt(line, names, values, body, end_line)
 
     def local_stmt(self):
         line = self.take("local").line
@@ -233,6 +258,8 @@ class Parser:
             if prefix is not None and postfix is not None and prefix != postfix:
                 raise LuaSyntaxError(f"line {token.line}: conflicting variable attributes")
             names.append(A.DeclaredName(token.value, typ, postfix or prefix))
+            if len(names) > 200:
+                raise LuaSyntaxError(f"line {token.line}: too many variables")
             if not self.accept(","):
                 break
         values = self.expr_list() if self.accept("=") else []
@@ -311,15 +338,25 @@ class Parser:
         values = [self.expr()]
         while self.accept(","):
             values.append(self.expr())
+            if len(values) > 255:
+                raise LuaSyntaxError(f"line {self.t.line}: too many registers")
         return values
 
     def expr(self, min_prec=0):
+        self._enter_nesting()
+        try:
+            return self._expr(min_prec)
+        finally:
+            self._leave_nesting()
+
+    def _expr(self, min_prec=0):
         left = self.prefix()
         while self.t.kind in PRECEDENCE and PRECEDENCE[self.t.kind] >= min_prec:
-            op = self.take().kind
+            op_token = self.take()
+            op = op_token.kind
             prec = PRECEDENCE[op]
             right = self.expr(prec if op in RIGHT_ASSOC else prec + 1)
-            left = A.Binary(left.line, op, left, right)
+            left = A.Binary(op_token.line, op, left, right)
         return left
 
     def prefix(self):
@@ -345,7 +382,8 @@ class Parser:
                 name = self.take("NAME").value
                 node = A.MethodCall(node.line, node, name, self.call_args())
             elif self.t.kind in ("(", "STRING", "{"):
-                node = A.Call(node.line, node, self.call_args())
+                call_line = self.t.line
+                node = A.Call(call_line, node, self.call_args())
             else:
                 break
         return node
