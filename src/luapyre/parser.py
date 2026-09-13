@@ -212,9 +212,9 @@ class Parser:
         if self.t.kind == "function":
             self.take("function")
             name = self.take("NAME").value
-            params, returns, body, vararg_name, vararg_type = self.function_body()
+            params, returns, body, vararg_name, vararg_type, end_line = self.function_body()
             return A.GlobalFunctionDef(
-                line, name, params, returns, body, vararg_name, vararg_type
+                line, name, params, returns, body, vararg_name, vararg_type, end_line
             )
 
         prefix = self._attribute()
@@ -243,8 +243,8 @@ class Parser:
             line = line_override or self.t.line
             self.take("function")
             name = self.take("NAME").value
-            params, returns, body, vararg_name, vararg_type = self.function_body()
-            return A.FunctionDef(line, name, params, returns, body, True, vararg_name, vararg_type)
+            params, returns, body, vararg_name, vararg_type, end_line = self.function_body()
+            return A.FunctionDef(line, name, params, returns, body, True, vararg_name, vararg_type, end_line)
 
         line = self.take("function").line
         target = A.Name(line, self.take("NAME").value)
@@ -257,10 +257,11 @@ class Parser:
             target = A.Field(line, target, self.take("NAME").value)
             complex_target = True
             method = True
-        params, returns, body, vararg_name, vararg_type = self.function_body(prepend_self=method)
+        params, returns, body, vararg_name, vararg_type, end_line = self.function_body(prepend_self=method)
         if not complex_target and isinstance(target, A.Name):
-            return A.FunctionDef(line, target.value, params, returns, body, False, vararg_name, vararg_type)
+            return A.FunctionDef(line, target.value, params, returns, body, False, vararg_name, vararg_type, end_line)
         fn = A.FunctionExpr(line, params, returns, body, vararg_name, vararg_type, FUNCTION)
+        fn.end_line = end_line
         return A.Assign(line, [target], [fn])
 
     def function_body(self, prepend_self=False):
@@ -292,8 +293,8 @@ class Parser:
             while self.accept(","):
                 return_types.append(self.type_annotation())
         body = self.block({"end"})
-        self.take("end")
-        return params, return_types, body, vararg_name, vararg_type
+        end_line = self.take("end").line
+        return params, return_types, body, vararg_name, vararg_type, end_line
 
     def type_annotation(self) -> LuaType:
         parts = [parse_simple_type(self.take("NAME").value)]
@@ -391,8 +392,10 @@ class Parser:
             return A.Name(t.line, t.value)
         if t.kind == "function":
             line = self.take().line
-            params, returns, body, vararg_name, vararg_type = self.function_body()
-            return A.FunctionExpr(line, params, returns, body, vararg_name, vararg_type, FUNCTION)
+            params, returns, body, vararg_name, vararg_type, end_line = self.function_body()
+            fn = A.FunctionExpr(line, params, returns, body, vararg_name, vararg_type, FUNCTION)
+            fn.end_line = end_line
+            return fn
         if t.kind == "{":
             return self.table_ctor()
         if self.accept("("):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .bytecode import Cell, Closure
 from .capabilities import RuntimeCapabilities
-from .diagnostics import chunk_id, frame_line
+from .diagnostics import chunk_id, format_traceback, frame_line
 from .errors import LuaRuntimeError
 from .stdlib_support import lua_c_function, need_integer
 from .table import LuaTable
@@ -49,14 +49,28 @@ def install_debug_library(
             result.rawset(b"func", target)
             return result
         if type(target) is int and target == 2:
-            # Synchronous protected calls are host frames around their Lua
-            # callbacks. Represent that C boundary without exposing Python's
-            # stack or frame objects.
+            # Protected calls are VM continuations. Preserve Lua's observable
+            # C boundary without exposing the Python stack or adding a real
+            # host callback frame.
             protected = next(
                 (fn for fn in reversed(getattr(vm, "_host_call_stack", ()))
                  if fn.name in ("pcall", "xpcall")),
                 None,
             )
+            if protected is None:
+                protected_frame = next(
+                    (
+                        frame
+                        for frame in reversed(vm._active_frames or ())
+                        if frame.protected_name in ("pcall", "xpcall")
+                    ),
+                    None,
+                )
+                if protected_frame is not None:
+                    protected = HostFunction(
+                        lambda: None,
+                        protected_frame.protected_name,
+                    )
             if protected is not None:
                 result = getinfo(protected, options)
                 result.rawset(b"name", protected.name.encode())
@@ -69,7 +83,8 @@ def install_debug_library(
         source = proto.source
         if isinstance(source, str):
             source = source.encode("utf-8", "surrogateescape")
-        source = source or b"=?"
+        if source is None:
+            source = b"=?"
         result = LuaTable()
         fields = {
             b"source": source,
@@ -78,19 +93,33 @@ def install_debug_library(
             b"lastlinedefined": proto.lastlinedefined,
             b"what": b"main" if proto.name == "<chunk>" else b"Lua",
             b"currentline": frame_line(frame) if frame is not None else -1,
-            b"name": None if proto.name in ("<chunk>", "<anonymous>") else proto.name.encode(),
-            b"namewhat": b"",
+            b"name": (
+                None
+                if frame is None or proto.name in ("<chunk>", "<anonymous>")
+                else (frame.call_name or proto.name).encode()
+            ),
+            b"namewhat": (
+                (frame.call_namewhat or proto.debug_namewhat).encode()
+                if frame is not None else b""
+            ),
             b"nups": len(proto.upvalues) + int(proto.env_reg >= 0),
             b"nparams": proto.param_count,
             b"isvararg": proto.is_vararg,
             b"istailcall": False,
             b"ftransfer": 0,
             b"ntransfer": 0,
+            b"extraargs": len(frame.varargs) if frame is not None else 0,
             b"func": closure,
         }
         for key, value in fields.items():
             if value is not None:
                 result.rawset(key, value)
+        if b"L" in options:
+            active_lines = LuaTable()
+            for line in set(proto.lineinfo):
+                if proto.linedefined < line <= proto.lastlinedefined:
+                    active_lines.rawset(line, True)
+            result.rawset(b"activelines", active_lines)
         return result
 
     put("getinfo", getinfo)
@@ -144,6 +173,22 @@ def install_debug_library(
 
     put("getupvalue", getupvalue)
     put("setupvalue", setupvalue)
+
+    def getuservalue(value, index=1):
+        index = need_integer(index, 2, "getuservalue")
+        return MultiValue((None, False))
+
+    def setuservalue(value, new_value, index=1):
+        index = need_integer(index, 3, "setuservalue")
+        if isinstance(value, Cell):
+            raise LuaRuntimeError(
+                "bad argument #1 to 'setuservalue' "
+                "(userdata expected, got light userdata)"
+            )
+        return None
+
+    put("getuservalue", getuservalue)
+    put("setuservalue", setuservalue)
 
     def upvalueid(fn, index):
         if not isinstance(fn, (Closure, HostFunction)):
@@ -205,6 +250,18 @@ def install_debug_library(
 
     def traceback(message=None, level=1):
         level = need_integer(level, 2, "traceback")
+        protected_error = getattr(vm, "_active_protected_error", None)
+        if protected_error is None:
+            protected_error = next(
+                (
+                    frame.protected_error
+                    for frame in reversed(vm._active_frames or ())
+                    if frame.protected_error is not None
+                ),
+                None,
+            )
+        if protected_error is not None:
+            return format_traceback(protected_error, include_message=True)
         prefix = b"" if message is None else (
             message if isinstance(message, bytes) else str(message).encode("utf-8", "replace")
         )

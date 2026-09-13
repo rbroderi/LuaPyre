@@ -49,11 +49,11 @@ BASELINE_FILES = (
 )
 
 TRACKED_GAPS = {
-    "calls.lua": "nested protected-call stack-overflow recovery",
-    "coroutine.lua": "yieldable protected calls and remaining close/error interactions",
-    "db.lua": "debug hooks and complete source/local metadata",
-    "errors.lua": "exact Lua parser and runtime diagnostic wording",
-    "locals.lua": "complete close-metamethod traceback metadata",
+    "calls.lua": "exact PUC-Lua binary dump headers and corruption probes",
+    "coroutine.lua": "debug-hook and internal test-API sections",
+    "db.lua": "debug-hook execution and hook-event ordering",
+    "errors.lua": "host-userdata/io diagnostics and remaining runtime wording",
+    "locals.lua": "debug return-hook ordering",
 }
 
 INTENTIONAL_EXCLUSIONS = {

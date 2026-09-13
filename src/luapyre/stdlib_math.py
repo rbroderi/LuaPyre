@@ -75,8 +75,8 @@ def _number_result(value: float):
     return float(value)
 
 
-def _libm_unary(function, value):
-    value = float(need_number(value))
+def _libm_unary(name, function, value):
+    value = float(need_number(value, 1, name))
     try:
         return float(function(value))
     except ValueError:
@@ -99,8 +99,8 @@ def install_math_library(globals_table: LuaTable, vm) -> LuaTable:
         return abs(x)
 
     register("abs", abs_fn)
-    register("acos", lambda x: _libm_unary(math.acos, x))
-    register("asin", lambda x: _libm_unary(math.asin, x))
+    register("acos", lambda x: _libm_unary("acos", math.acos, x))
+    register("asin", lambda x: _libm_unary("asin", math.asin, x))
 
     def atan(y, x=1):
         return math.atan2(float(need_number(y, 1, "atan")), float(need_number(x, 2, "atan")))
@@ -124,7 +124,7 @@ def install_math_library(globals_table: LuaTable, vm) -> LuaTable:
         return _number_result(float(math.floor(x)))
 
     register("ceil", ceil)
-    register("cos", lambda x: _libm_unary(math.cos, x))
+    register("cos", lambda x: _libm_unary("cos", math.cos, x))
     register("deg", lambda x: float(need_number(x, 1, "deg")) * (180.0 / math.pi))
 
     def exp(x):
@@ -261,9 +261,9 @@ def install_math_library(globals_table: LuaTable, vm) -> LuaTable:
 
     register("random", random_fn)
     register("randomseed", randomseed)
-    register("sin", lambda x: _libm_unary(math.sin, x))
-    register("sqrt", lambda x: _libm_unary(math.sqrt, x))
-    register("tan", lambda x: _libm_unary(math.tan, x))
+    register("sin", lambda x: _libm_unary("sin", math.sin, x))
+    register("sqrt", lambda x: _libm_unary("sqrt", math.sqrt, x))
+    register("tan", lambda x: _libm_unary("tan", math.tan, x))
 
     def tointeger(x):
         return to_integer(x)

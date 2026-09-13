@@ -90,6 +90,9 @@ class _SourceFunctionCompiler(_FunctionCompiler):
     def emit(self, op, a=0, b=0, c=0, d=0, e=0, *, line=None):
         self.proto.code.append(Ins(op, a, b, c, d, e))
         self.proto.lineinfo.append(self.current_line if line is None else line)
+        self.proto.value_origins.append(dict(self.reg_origins))
+        if op in (Op.MOVE, Op.LOCAL) and b in self.reg_origins:
+            self.reg_origins[a] = self.reg_origins[b]
         return len(self.proto.code) - 1
 
     def stmt(self, stmt):
@@ -135,8 +138,9 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             self.emit(Op.LOCAL, r, vr)
             readonly = declared.attribute in ("const", "close")
             self.define_local(declared.name, Symbol(r, expected, readonly=readonly))
+            self.reg_origins[r] = ("local", declared.name)
             if declared.attribute == "close":
-                self.emit(Op.TBC, r)
+                self.emit(Op.TBC, r, self.proto.add_const(declared.name.encode()))
                 self.close_depth += 1
 
     def _typed_global_decl(self, stmt: A.GlobalDecl):
@@ -239,7 +243,7 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             )
         return super().generic_for(stmt)
 
-    def _new_child(self, name, params, returns, body, vararg_name, vararg_type):
+    def _new_child(self, name, params, returns, body, vararg_name, vararg_type, end_line=0, namewhat=""):
         analyze_control_flow(body)
         defined_line = self.current_line
         child = Proto(
@@ -251,9 +255,10 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             vararg_type=vararg_type,
             source=self.proto.source,
             linedefined=defined_line,
-            lastlinedefined=_last_body_line(body, defined_line),
+            lastlinedefined=end_line or _last_body_line(body, defined_line),
             jit_trust_types=True,
             jit_fully_typed=self.fully_typed,
+            debug_namewhat=namewhat,
         )
         sub = _SourceFunctionCompiler(
             child,
@@ -267,7 +272,7 @@ class _SourceFunctionCompiler(_FunctionCompiler):
             sub.define_local(vararg_name, Symbol(reg, TABLE, readonly=True))
         sub.compile_block(body, scoped=False)
         sub.emit_close_to(0)
-        sub.emit(Op.RETURN, 0, 0, line=_last_body_line(body, defined_line))
+        sub.emit(Op.RETURN, 0, 0, line=end_line or _last_body_line(body, defined_line))
         sub.patch_gotos()
         child.register_count = sub.max_reg
         self.proto.children.append(child)

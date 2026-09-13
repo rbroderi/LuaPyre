@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .bytecode import Closure, Proto
+from .bytecode import Closure, Ins, Op, Proto
 from .errors import LuaQuotaError, LuaRaisedError, LuaRuntimeError
 from .opdispatch import OPCODE_HANDLERS
 from .table import LuaTable
-from .values import MultiValue, static_value_type
+from .values import MultiValue, lua_type_name, static_value_type
 from .vm import Frame, HostFunction, VM as BaseVM
 
 
@@ -28,6 +28,7 @@ class LuaThread:
     error: LuaRuntimeError | None = None
     yielded: tuple[object, ...] = ()
     yield_target: tuple[Frame, int, int, bool] | None = None
+    yield_prefix: tuple[object, ...] = ()
     pending_tail_resume: tuple[object, ...] | None = None
     is_main: bool = False
     _gc_owner: object = None
@@ -65,6 +66,10 @@ class CoroutineVM(BaseVM):
         args = list(args)
         for _ in range(self.MAXTAGLOOP):
             if isinstance(fn, HostFunction):
+                if fn.protected_mode is not None:
+                    return self._invoke_protected(
+                        frames, parent, fn.protected_mode, args, dest, want, tail
+                    )
                 try:
                     values = self._host_values(fn, args)
                 except _YieldSignal as signal:
@@ -73,6 +78,7 @@ class CoroutineVM(BaseVM):
                         raise LuaRuntimeError("attempt to yield from outside a coroutine")
                     thread.yielded = signal.values
                     thread.yield_target = (parent, dest, want, tail)
+                    thread.yield_prefix = ()
                     raise
                 if tail:
                     return self._return(frames, parent, values)
@@ -80,7 +86,18 @@ class CoroutineVM(BaseVM):
                 return None
             if isinstance(fn, Closure):
                 if tail:
-                    frames[-1] = self._new_frame(fn, args, parent.return_reg, parent.return_want)
+                    replacement = self._new_frame(
+                        fn, args, parent.return_reg, parent.return_want
+                    )
+                    replacement.return_prefix = parent.return_prefix
+                    replacement.return_limit = parent.return_limit
+                    replacement.protected_handler = parent.protected_handler
+                    replacement.protected_name = parent.protected_name
+                    replacement.protected_error = parent.protected_error
+                    replacement.trace_name = parent.trace_name
+                    replacement.call_name = parent.call_name
+                    replacement.call_namewhat = parent.call_namewhat
+                    frames[-1] = replacement
                     return None
                 if len(frames) >= self.max_frames:
                     raise LuaRuntimeError("stack overflow")
@@ -88,10 +105,24 @@ class CoroutineVM(BaseVM):
                 return None
             tm = self._tm(fn, b"__call")
             if tm is None:
-                raise LuaRuntimeError(f"attempt to call a {static_value_type(fn).name} value")
+                raise LuaRuntimeError(f"attempt to call a {lua_type_name(fn)} value")
             args.insert(0, fn)
             fn = tm
         raise LuaRuntimeError("'__call' chain too long; possible loop")
+
+    def _invoke_protected(self, frames, parent, mode, args, dest, want, tail=False):
+        try:
+            return super()._invoke_protected(
+                frames, parent, mode, args, dest, want, tail
+            )
+        except _YieldSignal as signal:
+            thread = self.current_thread
+            if thread is None or thread.is_main:
+                raise LuaRuntimeError("attempt to yield from outside a coroutine")
+            thread.yielded = signal.values
+            thread.yield_target = (parent, dest, want, tail)
+            thread.yield_prefix = (True,)
+            raise
 
     @staticmethod
     def _error_value(error):
@@ -125,7 +156,11 @@ class CoroutineVM(BaseVM):
             thread = self.current_thread or self.main_thread
         if not isinstance(thread, LuaThread):
             raise LuaRuntimeError("bad argument #1 to 'isyieldable' (thread expected)")
-        return not thread.is_main and thread.status != "dead"
+        return (
+            not thread.is_main
+            and thread.status != "dead"
+            and not getattr(self, "_sync_frame_prefixes", ())
+        )
 
     def yield_current(self, *values):
         thread = self.current_thread
@@ -146,6 +181,23 @@ class CoroutineVM(BaseVM):
             thread.error = None
             if isinstance(thread.entry, Closure):
                 thread.frames = [self._new_frame(thread.entry, list(args), -1, 0)]
+            elif isinstance(thread.entry, HostFunction) and thread.entry.protected_mode is not None:
+                trampoline = Proto(
+                    "<coroutine-entry>",
+                    code=[Ins(Op.RETURNV, 0, 0, 0)],
+                    register_count=1,
+                    source=None,
+                )
+                parent_frame = Frame(Closure(trampoline, [], self.globals), [None])
+                thread.frames = [parent_frame]
+                self._invoke(
+                    thread.frames,
+                    parent_frame,
+                    thread.entry,
+                    list(args),
+                    0,
+                    -1,
+                )
             else:
                 parent = self.current_thread
                 if parent is not None:
@@ -174,6 +226,8 @@ class CoroutineVM(BaseVM):
             frame, dest, want, tail = thread.yield_target
             thread.yield_target = None
             thread.yielded = ()
+            args = (*thread.yield_prefix, *args)
+            thread.yield_prefix = ()
             if tail:
                 thread.pending_tail_resume = tuple(args)
             else:
@@ -351,8 +405,10 @@ class CoroutineVM(BaseVM):
             except LuaQuotaError:
                 raise
             except LuaRuntimeError as exc:
-                thread.error = exc
-                thread.status = "dead"
-                return "error", (self._error_value(exc),)
+                if not frames or not any(frame.protected_name for frame in frames):
+                    thread.error = exc
+                    thread.status = "dead"
+                    return "error", (self._error_value(exc),)
+                frames[-1].pending_error = exc
 
         return "return", tuple(final_values)

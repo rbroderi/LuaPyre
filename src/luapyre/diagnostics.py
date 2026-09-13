@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from .bytecode import Op
 from .errors import LuaRaisedError, LuaRuntimeError, LuaTraceFrame
-from .values import static_value_type
 
 
 LUA_IDSIZE = 60
@@ -12,7 +11,9 @@ _ARITH_OPS = frozenset({
     Op.SUB, Op.SUB_I, Op.SUB_F,
     Op.MUL, Op.MUL_I, Op.MUL_F,
     Op.DIV, Op.IDIV, Op.MOD, Op.POW,
+    Op.NEG,
 })
+_CALL_OPS = frozenset({Op.CALL, Op.CALLV, Op.TAILCALL, Op.TAILCALLV})
 
 
 def _bytes(value: str | bytes | None) -> bytes | None:
@@ -59,7 +60,7 @@ def trace_frame(frame, *, pc: int | None = None) -> LuaTraceFrame:
     return LuaTraceFrame(
         frame.proto.source,
         frame_line(frame, pc=pc),
-        frame.proto.name,
+        frame.trace_name or frame.proto.name,
     )
 
 
@@ -102,6 +103,22 @@ def _enrich_runtime_error(error: LuaRuntimeError, frame, pc: int) -> None:
 
     message = str(error)
     ins = frame.proto.code[pc]
+    if ins.op in _CALL_OPS and message.startswith("attempt to call a "):
+        bad_reg = ins.b
+        if pc < len(frame.proto.value_origins):
+            origin = frame.proto.value_origins[pc].get(bad_reg)
+            if origin is not None:
+                kind, name = origin
+                error.args = (message + f" ({kind} '{name}')",)
+        return
+    if ins.op in (Op.GETTABLE, Op.SETTABLE) and message.startswith("attempt to index a "):
+        bad_reg = ins.b if ins.op is Op.GETTABLE else ins.a
+        if pc < len(frame.proto.value_origins):
+            origin = frame.proto.value_origins[pc].get(bad_reg)
+            if origin is not None:
+                kind, name = origin
+                error.args = (message + f" ({kind} '{name}')",)
+        return
     if ins.op not in _ARITH_OPS or not message.startswith("attempt to perform arithmetic on a "):
         return
 
@@ -114,7 +131,6 @@ def _enrich_runtime_error(error: LuaRuntimeError, frame, pc: int) -> None:
     else:
         return
 
-    message = f"attempt to perform arithmetic on a {static_value_type(bad_value).name} value"
     if pc < len(frame.proto.value_origins):
         origin = frame.proto.value_origins[pc].get(bad_reg)
         if origin is not None:
@@ -187,6 +203,8 @@ def format_traceback(error: LuaRuntimeError, *, include_message: bool = True) ->
             desc = b"main chunk"
         elif frame.name == "<anonymous>":
             desc = b"function <?>"
+        elif frame.name == "__close":
+            desc = b"metamethod 'close'"
         else:
             desc = b"function '" + frame.name.encode("utf-8", "replace") + b"'"
         parts.append(prefix + desc)
