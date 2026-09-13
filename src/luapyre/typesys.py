@@ -15,6 +15,7 @@ ANY = LuaType("Any")
 NIL = LuaType("nil")
 BOOLEAN = LuaType("boolean")
 INTEGER = LuaType("integer")
+INTEGER_LUA = LuaType("integer_lua")
 FLOAT = LuaType("float")
 NUMBER = LuaType("number")
 STRING = LuaType("string")
@@ -24,7 +25,8 @@ THREAD = LuaType("thread")
 USERDATA = LuaType("userdata")
 
 _SIMPLE = {t.name: t for t in (
-    ANY, NIL, BOOLEAN, INTEGER, FLOAT, NUMBER, STRING, TABLE, FUNCTION, THREAD, USERDATA
+    ANY, NIL, BOOLEAN, INTEGER, INTEGER_LUA, FLOAT, NUMBER, STRING, TABLE,
+    FUNCTION, THREAD, USERDATA
 )}
 
 
@@ -66,7 +68,9 @@ def accepts(expected: LuaType, actual: LuaType) -> bool:
         return True
     if expected == actual:
         return True
-    if expected is NUMBER and actual in (INTEGER, FLOAT):
+    if expected in (INTEGER, INTEGER_LUA) and actual in (INTEGER, INTEGER_LUA):
+        return True
+    if expected is NUMBER and actual in (INTEGER, INTEGER_LUA, FLOAT):
         return True
     if isinstance(expected, UnionType):
         return any(accepts(member, actual) for member in expected.members)

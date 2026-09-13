@@ -60,7 +60,9 @@ lua.expose("magnitude", magnitude)
 
 ## Boundary rules
 
-- Lua integers retain signed 64-bit Lua semantics.
+- Ordinary Lua integers and typed `integer_lua` retain signed 64-bit Lua
+  semantics. From 0.29, explicit typed `integer`/Python `LuaInt` boundaries are
+  a no-overflow optimization contract.
 - Lua treats integral float and integer table keys as the same key, so Python
   dictionary key identity cannot distinguish `1` from `1.0` after a round trip.
 - A typed `set[T]` accepts either the membership-table representation or a

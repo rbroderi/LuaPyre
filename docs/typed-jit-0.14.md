@@ -19,14 +19,18 @@ The cookie is not a promise that LuaPyre will ignore type errors. It is the oppo
 For a source chunk accepted in fully typed mode:
 
 - lexical locals must have a concrete non-`Any` type after inference or annotation;
-- local initializers with statically known types are inferred, so `local total = 0` becomes `integer` without an annotation;
+- local initializers with statically known types are inferred; since 0.29,
+  `local total = 0` becomes exact-wraparound `integer_lua`, while an explicit
+  `integer` annotation opts into the no-overflow contract;
 - function parameters and return values must be explicitly typed;
 - typed varargs must have an explicit type;
 - implicit globals are disabled;
 - ambient globals must be declared with a concrete type, for example `global math: table` or `global print: function`;
 - `global *` is rejected;
 - dynamic values such as table reads may enter a typed binding only through an explicit annotation, where LuaPyre emits the existing runtime `GUARD` at that boundary;
-- numeric `for` variables become `integer` when start/limit/step are statically integer, or `float` when the bounds prove a numeric float loop;
+- constant integral numeric `for` variables carry a range-proven `integer`
+  fact, other integral loops use `integer_lua`, and numeric float loops use
+  `float`;
 - typed generic-`for` iterator contracts are not defined yet, so generic `for` is rejected in fully typed mode for now.
 
 Example:
@@ -35,7 +39,7 @@ Example:
 -- luapyre: typed
 global input: table
 
-local total = 0
+local total: integer = 0
 for i = 1, 10000 do
     local value: integer = input[i] -- one checked dynamic -> typed boundary
     total = total + value           -- integer specialization from here on

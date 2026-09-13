@@ -5,7 +5,7 @@ import math
 import re
 
 from .table import LuaTable
-from .typesys import ANY, BOOLEAN, FLOAT, FUNCTION, INTEGER, NIL, STRING, TABLE, THREAD, LuaType
+from .typesys import ANY, BOOLEAN, FLOAT, FUNCTION, INTEGER, INTEGER_LUA, NIL, STRING, TABLE, THREAD, LuaType
 
 MASK64 = (1 << 64) - 1
 SIGN64 = 1 << 63
@@ -152,6 +152,8 @@ def type_matches(type_name: str, value) -> bool:
         return True
     if type_name == "number":
         return actual in ("integer", "float")
+    if type_name == "integer_lua":
+        return actual == "integer"
     if " | " in type_name:
         return any(type_matches(part, value) for part in type_name.split(" | "))
     return actual == type_name

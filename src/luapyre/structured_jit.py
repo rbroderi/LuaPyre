@@ -5,7 +5,9 @@ from types import FunctionType
 
 from .bytecode import Closure, Op
 from .jit import CompiledLoop, IRBlock, IRInstruction, IRLoop
+from .opdispatch import _float_divide
 from .range_analysis import analyze_integer_ranges
+from .table import LuaTable
 from .values import type_matches
 
 
@@ -33,12 +35,16 @@ class StructuredTypedLoopJITMixin:
             Op.LOADK,
             Op.MOVE,
             Op.LOCAL,
+            Op.GETTABLE,
+            Op.SETTABLE,
             Op.ADD_I,
             Op.ADD_F,
             Op.SUB_I,
             Op.SUB_F,
             Op.MUL_I,
             Op.MUL_F,
+            Op.DIV,
+            Op.GUARD,
             Op.NOT,
             Op.TOBOOL,
             Op.CALL,
@@ -56,6 +62,7 @@ class StructuredTypedLoopJITMixin:
             Op.SUB_F,
             Op.MUL_I,
             Op.MUL_F,
+            Op.DIV,
             Op.NOT,
             Op.TOBOOL,
             Op.RETURN,
@@ -114,8 +121,10 @@ class StructuredTypedLoopJITMixin:
             Op.SUB_F,
             Op.MUL_I,
             Op.MUL_F,
+            Op.DIV,
             Op.NOT,
             Op.TOBOOL,
+            Op.GETTABLE,
         ):
             return ins.a == reg
         if ins.op is Op.CALL and ins.e > 0:
@@ -184,6 +193,8 @@ class StructuredTypedLoopJITMixin:
 
         namespace: dict[str, object] = {
             "_Closure": Closure,
+            "_LuaTable": LuaTable,
+            "_float_divide": _float_divide,
             "_MASK64": _MASK64,
             "_SIGN64": _SIGN64,
             "_TWO64": _TWO64,
@@ -191,6 +202,28 @@ class StructuredTypedLoopJITMixin:
             "_INT_MAX": _INT_MAX,
             "_type_matches": type_matches,
         }
+        table_arrays: dict[int, str] = {}
+        for pc, ins in zip(range(start_pc, backedge_pc), body):
+            if ins.op not in (Op.GETTABLE, Op.SETTABLE):
+                continue
+            table_reg = ins.b if ins.op is Op.GETTABLE else ins.a
+            if any(self._writes_register(other, table_reg) for other in body):
+                return None
+            if table_reg in table_arrays:
+                continue
+            array_name = f"_array_r{table_reg}"
+            table_arrays[table_reg] = array_name
+            lines.append(
+                f"    if not isinstance(_r{table_reg}, _LuaTable) or _r{table_reg}.metatable is not None:"
+            )
+            lines.extend(self._spill_lines(registers, "        "))
+            lines.extend(
+                [
+                    f"        frame.pc = {start_pc}",
+                    "        return 0, False",
+                    f"    {array_name} = _r{table_reg}.array",
+                ]
+            )
         for pc, (closure, _sequence) in calls.items():
             expected = f"_expected_proto_{pc}"
             # A local function declaration creates a fresh Closure every time
@@ -225,8 +258,35 @@ class StructuredTypedLoopJITMixin:
                 )
             namespace[f"_consts_{pc}"] = closure.proto.constants
 
-        lines.append(f"    while budget - used >= {iteration_cost}:")
-        indent = "        "
+        integer_loop = all(
+            ranges.range_at(start_pc, reg) is not None
+            for reg in (loop_ins.a, loop_ins.b, loop_ins.c)
+        )
+        idx, limit, step = (
+            f"_r{loop_ins.a}",
+            f"_r{loop_ins.b}",
+            f"_r{loop_ins.c}",
+        )
+        batched_can_exit = integer_loop and any(ins.op is Op.GUARD for ins in body)
+        if integer_loop:
+            lines.extend(
+                [
+                    f"    _total = (({limit} - {idx}) // {step} + 1) if {step} > 0 else (({idx} - {limit}) // -{step} + 1)",
+                    f"    _take = min(_total, budget // {iteration_cost})",
+                ]
+            )
+            if batched_can_exit:
+                lines.append("    _completed = 0")
+            lines.extend(
+                [
+                    f"    for _loop_value in range({idx}, {idx} + _take * {step}, {step}):",
+                    f"        {idx} = _loop_value",
+                ]
+            )
+            indent = "        "
+        else:
+            lines.append(f"    while budget - used >= {iteration_cost}:")
+            indent = "        "
 
         for offset, ins in enumerate(body):
             pc = start_pc + offset
@@ -235,6 +295,31 @@ class StructuredTypedLoopJITMixin:
                 lines.append(f"{indent}{a} = consts[{ins.b}]")
             elif ins.op in (Op.MOVE, Op.LOCAL):
                 lines.append(f"{indent}{a} = {b}")
+            elif ins.op is Op.GETTABLE:
+                array_name = table_arrays[ins.b]
+                lines.append(f"{indent}_key_{pc} = {c}")
+                lines.append(
+                    f"{indent}if type(_key_{pc}) is int and 1 <= _key_{pc} <= len({array_name}):"
+                )
+                lines.append(f"{indent}    {a} = {array_name}[_key_{pc} - 1]")
+                lines.append(f"{indent}else:")
+                lines.append(f"{indent}    {a} = {b}.rawget(_key_{pc})")
+            elif ins.op is Op.SETTABLE:
+                lines.append(f"{indent}{a}.rawset({b}, {c})")
+            elif ins.op is Op.GUARD:
+                lines.append(f"{indent}if not _type_matches(consts[{ins.b}], {a}):")
+                lines.extend(self._spill_lines(registers, indent + "    "))
+                consumed = (
+                    f"_completed * {iteration_cost} + {offset}"
+                    if integer_loop
+                    else f"used + {offset}"
+                )
+                lines.extend(
+                    [
+                        f"{indent}    frame.pc = {pc}",
+                        f"{indent}    return {consumed}, False",
+                    ]
+                )
             elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
                 expression = f"{b} {symbol} {c}"
@@ -245,6 +330,8 @@ class StructuredTypedLoopJITMixin:
             elif ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[ins.op]
                 lines.append(f"{indent}{a} = float({b} {symbol} {c})")
+            elif ins.op is Op.DIV:
+                lines.append(f"{indent}{a} = _float_divide({b}, {c})")
             elif ins.op is Op.NOT:
                 lines.append(f"{indent}{a} = ({b} is None or {b} is False)")
             elif ins.op is Op.TOBOOL:
@@ -297,6 +384,8 @@ class StructuredTypedLoopJITMixin:
                             Op.MUL_F: "*",
                         }[child_ins.op]
                         lines.append(f"{indent}{ca} = float({cb} {symbol} {cc})")
+                    elif child_ins.op is Op.DIV:
+                        lines.append(f"{indent}{ca} = _float_divide({cb}, {cc})")
                     elif child_ins.op is Op.NOT:
                         lines.append(f"{indent}{ca} = ({cb} is None or {cb} is False)")
                     elif child_ins.op is Op.TOBOOL:
@@ -321,32 +410,24 @@ class StructuredTypedLoopJITMixin:
             else:
                 return None
 
-        idx, limit, step = (
-            f"_r{loop_ins.a}",
-            f"_r{loop_ins.b}",
-            f"_r{loop_ins.c}",
-        )
-        lines.append(f"{indent}used += {iteration_cost}")
-        integer_loop = all(
-            ranges.range_at(start_pc, reg) is not None
-            for reg in (loop_ins.a, loop_ins.b, loop_ins.c)
-        )
+        if batched_can_exit:
+            lines.append(f"{indent}_completed += 1")
+
         if integer_loop:
+            completed = "_completed" if batched_can_exit else "_take"
+            lines.append(f"    used = {completed} * {iteration_cost}")
+            lines.append("    if _take == _total and _take:")
+            lines.extend(self._spill_lines(registers, "        "))
             lines.extend(
                 [
-                    f"{indent}_next = {idx} + {step}",
-                    f"{indent}if _next < _INT_MIN or _next > _INT_MAX or ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",
-                ]
-            )
-            lines.extend(self._spill_lines(registers, indent + "    "))
-            lines.extend(
-                [
-                    f"{indent}    frame.pc = {ir.exit_pc}",
-                    f"{indent}    return used, True",
-                    f"{indent}{idx} = _next",
+                    f"        frame.pc = {ir.exit_pc}",
+                    "        return used, True",
+                    "    if _take:",
+                    f"        {idx} += {step}",
                 ]
             )
         else:
+            lines.append(f"{indent}used += {iteration_cost}")
             lines.extend(
                 [
                     f"{indent}if type({idx}) is int and type({limit}) is int and type({step}) is int:",

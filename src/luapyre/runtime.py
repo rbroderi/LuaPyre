@@ -25,7 +25,7 @@ from .stdlib_output import install_output_library
 from .stdlib_package import install_package_library
 from .table import LuaTable
 from .threadvm import LuaThread
-from .interop import LuaFunction
+from .interop import LuaFunction, LuaInt
 from .typed_parser import TypedParser
 from .typesys import ANY
 from .values import MultiValue, i64, truthy
@@ -69,6 +69,7 @@ class LuaRuntime:
         self._source_cache = OrderedDict()
         self._source_cache_hits = 0
         self._source_cache_misses = 0
+        self._python_call_cache = OrderedDict()
         self.globals = LuaTable()
         if jit:
             self.vm = OptimizingJITVM(
@@ -229,7 +230,16 @@ class LuaRuntime:
                 if expected is inspect.Parameter.empty:
                     expected = None
                 converted.append(self._from_lua(value, expected))
-            return self._to_lua_result(fn(*converted))
+            result = fn(*converted)
+            return_hint = hints.get(
+                "return",
+                signature.return_annotation if signature is not None else None,
+            )
+            if return_hint is LuaInt:
+                # Validate before ordinary int conversion applies Lua's exact
+                # wraparound and would conceal a broken fast-integer contract.
+                result = self._from_lua(result, LuaInt)
+            return self._to_lua_result(result)
 
         display_name = name or getattr(fn, "__name__", type(fn).__name__)
         return HostFunction(boundary, display_name)
@@ -265,6 +275,12 @@ class LuaRuntime:
                 if type(value) is not bool:
                     raise TypeError("expected boolean")
                 return value
+            if expected is LuaInt:
+                if type(value) is not int:
+                    raise TypeError("expected integer")
+                if not -(1 << 63) <= value <= (1 << 63) - 1:
+                    raise OverflowError("LuaInt result is outside signed 64-bit range")
+                return LuaInt(value)
             if expected is int:
                 if type(value) is not int:
                     raise TypeError("expected integer")
@@ -458,24 +474,37 @@ class LuaRuntime:
             function = self._wrap_python_callable(function)
 
         lua_args = [self._to_lua(arg) for arg in args]
-        constants = [function, *lua_args]
-        code = [Ins(Op.LOADK, index, index) for index in range(len(constants))]
-        code.extend(
-            (
-                Ins(Op.TAILCALL, 0, 0, 1, len(lua_args), 0),
-                Ins(Op.HALT),
+        cache_key = (id(function), len(lua_args))
+        cached = self._python_call_cache.get(cache_key)
+        if cached is not None and cached[0] is function:
+            proto = cached[1]
+            proto.constants[1:] = lua_args
+            self._python_call_cache.move_to_end(cache_key)
+        else:
+            constants = [function, *lua_args]
+            code = [Ins(Op.LOADK, index, index) for index in range(len(constants))]
+            # A stable non-tail CALL site lets repeated Python entry warm the
+            # same feedback slot and enter whole-function typed compilation.
+            code.extend(
+                (
+                    Ins(Op.CALL, 0, 0, 1, len(lua_args), -1),
+                    Ins(Op.RETURNV, 0, 0, 0),
+                    Ins(Op.HALT),
+                )
             )
-        )
-        proto = Proto(
-            "=[python call]",
-            code=code,
-            constants=constants,
-            register_count=max(1, len(constants)),
-            param_types=[],
-            return_types=[ANY],
-            source=b"=[python call]",
-            lineinfo=[1] * len(code),
-        )
+            proto = Proto(
+                "=[python call]",
+                code=code,
+                constants=constants,
+                register_count=max(1, len(constants)),
+                param_types=[],
+                return_types=[ANY],
+                source=b"=[python call]",
+                lineinfo=[1] * len(code),
+            )
+            self._python_call_cache[cache_key] = (function, proto)
+            if len(self._python_call_cache) > max(16, self.source_cache_size):
+                self._python_call_cache.popitem(last=False)
         return self._from_lua(self.vm.run(proto, fuel=fuel), return_type)
 
     def set_output_sink(self, sink=None) -> None:

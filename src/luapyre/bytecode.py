@@ -89,6 +89,11 @@ class Proto:
     # is intentionally separate from ``jit_trust_types`` so future JIT tiers can
     # optimize typed source more aggressively without changing plain Lua.
     jit_fully_typed: bool = False
+    # Arithmetic PCs whose operands carry the explicit typed ``integer``
+    # no-overflow contract.  ADD_I/SUB_I/MUL_I otherwise retain exact Lua
+    # signed-64 wraparound semantics, including for ordinary source and the
+    # inferred ``integer_lua`` type.
+    jit_no_overflow_pcs: set[int] = field(default_factory=set)
 
     def add_const(self, value):
         for i, current in enumerate(self.constants):

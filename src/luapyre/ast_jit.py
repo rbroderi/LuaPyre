@@ -524,14 +524,21 @@ class AstPythonJIT(RegionPythonJIT):
             out.append(f"{indent}else:")
             out.append(f"{indent}    {a} = float(_floor(float({b}) / float({c})))")
         elif op is Op.MOD:
-            deopt(f"type({b}) not in _NUM_TYPES or type({c}) not in _NUM_TYPES")
-            out.append(f"{indent}used += 1")
-            out.append(f"{indent}if type({b}) is int and type({c}) is int:")
-            out.append(f"{indent}    if {c} == 0:")
-            out.append(f"{indent}        raise _LuaRuntimeError(\"attempt to perform 'n%0'\")")
-            out.extend(self._i64_lines(a, f"{b} % {c}", f"mod_{pc}", indent + "    "))
-            out.append(f"{indent}else:")
-            out.append(f"{indent}    {a} = _float_modulo({b}, {c})")
+            if frame.proto.jit_fully_typed and item.specialization == "int":
+                out.append(f"{indent}used += 1")
+                out.append(f"{indent}if {c} == 0:")
+                out.append(f"{indent}    raise _LuaRuntimeError(\"attempt to perform 'n%0'\")")
+                # Integer remainder is always representable in signed 64-bit;
+                # unlike add/sub/mul it needs no wraparound normalization.
+                out.append(f"{indent}{a} = {b} % {c}")
+            else:
+                deopt(f"type({b}) not in _NUM_TYPES or type({c}) not in _NUM_TYPES")
+                out.extend(
+                    [
+                        f"{indent}used += 1",
+                        f"{indent}{a} = _float_modulo({b}, {c})",
+                    ]
+                )
         elif op is Op.POW:
             deopt(f"type({b}) not in _NUM_TYPES or type({c}) not in _NUM_TYPES")
             out.extend([f"{indent}used += 1", f"{indent}{a} = _float_power({b}, {c})"])
@@ -593,16 +600,26 @@ class AstPythonJIT(RegionPythonJIT):
         elif op is Op.TOBOOL:
             out.extend([f"{indent}used += 1", f"{indent}{a} = _truthy({b})"])
         elif op is Op.EQ:
-            # Equality on two unequal metatable-bearing tables can invoke __eq.
-            deopt(
-                f"isinstance({b}, _LuaTable) and isinstance({c}, _LuaTable) and not _lua_equal({b}, {c}) and ({b}.metatable is not None or {c}.metatable is not None)"
-            )
-            out.extend([f"{indent}used += 1", f"{indent}{a} = _lua_equal({b}, {c})"])
+            if (
+                frame.proto.jit_fully_typed
+                and item.specialization in ("int", "number", "bytes")
+            ):
+                out.extend([f"{indent}used += 1", f"{indent}{a} = {b} == {c}"])
+            else:
+                # Equality on unequal metatable-bearing tables can invoke __eq.
+                deopt(
+                    f"isinstance({b}, _LuaTable) and isinstance({c}, _LuaTable) and not _lua_equal({b}, {c}) and ({b}.metatable is not None or {c}.metatable is not None)"
+                )
+                out.extend([f"{indent}used += 1", f"{indent}{a} = _lua_equal({b}, {c})"])
         elif op in (Op.LT, Op.LE):
             symbol = "<" if op is Op.LT else "<="
-            deopt(
-                f"not ((type({b}) in _NUM_TYPES and type({c}) in _NUM_TYPES) or (isinstance({b}, bytes) and isinstance({c}, bytes)))"
-            )
+            if not (
+                frame.proto.jit_fully_typed
+                and item.specialization in ("int", "number", "bytes")
+            ):
+                deopt(
+                    f"not ((type({b}) in _NUM_TYPES and type({c}) in _NUM_TYPES) or (isinstance({b}, bytes) and isinstance({c}, bytes)))"
+                )
             out.extend([f"{indent}used += 1", f"{indent}{a} = {b} {symbol} {c}"])
         elif op is Op.GUARD:
             deopt(f"not _type_matches(consts[{ins.b}], {a})")

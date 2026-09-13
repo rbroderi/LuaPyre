@@ -45,7 +45,7 @@ return s
 """
 
 _TYPED_ARITHMETIC = """-- luapyre: typed
-local s = 0
+local s: integer = 0
 for i = 1, 30000 do
     s = s + i
 end
@@ -67,7 +67,7 @@ _TYPED_CALLS = """-- luapyre: typed
 local function bump(x: integer): integer
     return x + 1
 end
-local s = 0
+local s: integer = 0
 for i = 1, 8000 do
     s = bump(s)
 end
@@ -87,7 +87,7 @@ return s
 """
 
 _TYPED_BRANCHES = """-- luapyre: typed
-local s = 0
+local s: integer = 0
 for i = 1, 30000 do
     if i % 2 == 0 then
         s = s + i
@@ -111,7 +111,7 @@ return s
 _TYPED_GLOBAL_READ = """-- luapyre: typed
 global g: integer
 g = 7
-local s = 0
+local s: integer = 0
 for i = 1, 30000 do
     local v: integer = g
     s = s + v
@@ -131,7 +131,7 @@ return s
 
 _TYPED_CONST_FIELD = """-- luapyre: typed
 local t = {value = 7}
-local s = 0
+local s: integer = 0
 for i = 1, 30000 do
     local v: integer = t.value
     s = s + v

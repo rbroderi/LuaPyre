@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.28.0a1**
+**Python 3.13+** · **current pre-alpha: 0.29.0a1**
 
 LuaPyre implements Lua 5.5.1 language semantics for its supported sandboxed embedding profile. The runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
@@ -37,13 +37,13 @@ LuaPyre 0.14 added an explicit source contract for code that wants maximum optim
 -- luapyre: typed
 ```
 
-In fully typed mode, locals with statically known initializers are inferred, function parameters/returns must be typed, implicit globals are disabled, and a lexical binding may not silently remain `Any`. Dynamic table/host values can still enter typed code through an explicit typed binding, where the compiler emits a runtime guard at that boundary.
+In fully typed mode, locals with statically known initializers are inferred, function parameters/returns must be typed, implicit globals are disabled, and a lexical binding may not silently remain `Any`. Inferred integer bindings use `integer_lua`, which preserves Lua's signed-64 wraparound. An explicit `integer` annotation is a no-overflow contract and enables direct Python integer arithmetic in compiled regions. Dynamic table/host values can still enter typed code through an explicit typed binding, where the compiler emits a runtime guard at that boundary.
 
 ```lua
 -- luapyre: typed
 global input: table
 
-local total = 0
+local total: integer = 0
 for i = 1, 10000 do
     local value: integer = input[i]
     total = total + value
@@ -55,14 +55,14 @@ Accepted chunks carry a stronger `jit_fully_typed` optimization contract. **Full
 
 ### Typing and JIT specialization
 
-The source compiler emits specialized integer/float bytecode only when it has proved those operand classes, and existing `GUARD` instructions protect dynamic `Any -> typed` boundaries. The tiered JIT can therefore omit redundant type guards for source-proven specialized operations.
+The source compiler emits specialized integer/float bytecode only when it has proved those operand classes, and existing `GUARD` instructions protect dynamic `Any -> typed` boundaries. The tiered JIT can therefore omit redundant type guards for source-proven specialized operations. Use `integer_lua` when code may overflow and requires exact Lua wraparound; use explicit `integer` only when the program guarantees every intermediate result remains within signed 64-bit range.
 
 Ordinary untyped Lua remains speculative: generic arithmetic is specialized from observed values and deoptimizes to the interpreter if a guard stops matching. PUC-Lua translated chunks do not inherit source-compiler type trust.
 
 ## Python embedding
 
 ```python
-from luapyre import LuaRuntime
+from luapyre import LuaInt, LuaRuntime
 
 lua = LuaRuntime()
 lua.expose("double_from_python", lambda n: n * 2)
@@ -77,6 +77,19 @@ return add(x, 22)
 """)
 
 assert result == 42
+```
+
+`LuaInt` is the matching Python type-hint marker for an `integer` boundary. It
+is runtime-compatible with `int`, while result conversion verifies the signed
+64-bit range:
+
+```python
+def double(value: LuaInt) -> LuaInt:
+    return LuaInt(value * 2)
+
+lua.expose("double", double)
+answer = lua.execute_python("return double(21)", return_type=LuaInt)
+assert answer == 42
 ```
 
 ### Python/Lua value and function interop
@@ -167,7 +180,7 @@ and instruction-count events. Hooks are disabled by default; a thread with an
 active hook stays on the interpreter so compiled regions cannot skip events,
 and hook callbacks do not recursively invoke themselves.
 
-0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, 0.23 added escape analysis and virtual Frames/MultiValues, and 0.24 added automatic generational GC pacing. 0.25 shaped generated code for CPython's adaptive interpreter with fast locals and range-proven arithmetic. 0.26 applied those transformations to CFG traces, recycled exact compiled-call Frames, and added a bounded LRU source cache. **0.27 accelerates GC/table writes and compiled calls, then adds resumable compiled coroutine state machines. 0.28 adds typed Python/Lua value, dataclass, and callable interoperability.** LuaPyre remains Python-only; the [`native typed-IR backend evaluation`](docs/native-typed-ir-backend.md) is retained as a deferred design record. See [`docs/coroutine-jit-0.27.md`](docs/coroutine-jit-0.27.md), [`docs/python-interop-0.28.md`](docs/python-interop-0.28.md), and the earlier design notes in [`docs/`](docs/).
+0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, 0.23 added escape analysis and virtual Frames/MultiValues, and 0.24 added automatic generational GC pacing. 0.25 shaped generated code for CPython's adaptive interpreter with fast locals and range-proven arithmetic. 0.26 applied those transformations to CFG traces, recycled exact compiled-call Frames, and added a bounded LRU source cache. 0.27 accelerates GC/table writes and compiled calls, then adds resumable compiled coroutine state machines. 0.28 adds typed Python/Lua value, dataclass, and callable interoperability. **0.29 adds explicit fast-integer contracts, stable compiled entry from Python, batched scalar loops, cheaper compiled child calls, and broader structured table compilation.** LuaPyre remains Python-only. See [`docs/fast-integer-0.29.md`](docs/fast-integer-0.29.md), [`docs/python-interop-0.28.md`](docs/python-interop-0.28.md), and the earlier design notes in [`docs/`](docs/).
 
 Pinned tests and workloads from real packages provide an additional
 compatibility gate. Penlight's portable upstream suite is 23/23 green,
