@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.27.0a1**
+**Python 3.13+** · **current pre-alpha: 0.28.0a1**
 
 LuaPyre implements Lua 5.5.1 language semantics for its supported sandboxed embedding profile. The runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
@@ -79,6 +79,76 @@ return add(x, 22)
 assert result == 42
 ```
 
+### Python/Lua value and function interop
+
+`set()` accepts Python `int`, `float`, `str`, `list`, `set`, `dict`, and
+dataclass values and recursively turns them into Lua values and tables. Sets
+use Lua membership tables (`element -> true`):
+
+```python
+lua.set("numbers", [10, 20, 12])
+lua.set("allowed", {"fox", "rabbit"})
+lua.set("weights", {"nick": 20, "judy": 22})
+
+assert lua.execute(
+    "return numbers[1] + numbers[2] + numbers[3], "
+    "allowed.fox, weights.nick + weights.judy"
+) == (42, True, 42)
+```
+
+Use `execute_python()` or `get_python()` when results should be converted back
+to ordinary Python values. Pass `return_type=` to select an exact container or
+dataclass shape:
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+lua.set("point", Point(20, 22))
+point = lua.execute_python(
+    "return {x = point.x * 2, y = point.y * 2}",
+    return_type=Point,
+)
+assert point == Point(40, 44)
+```
+
+Lua functions returned to Python become callable `LuaFunction` objects. Named
+Lua globals can also be retrieved with `function()` or invoked directly with
+`call()`:
+
+```python
+add = lua.execute_python("return function(a, b) return a + b end")
+assert add(20, 22, return_type=int) == 42
+
+lua.execute("function join(a, b) return a .. ':' .. b end")
+assert lua.function("join")("Nick", "Judy", return_type=str) == "Nick:Judy"
+assert lua.call("join", "Finn", "Bell", return_type=str) == "Finn:Bell"
+```
+
+Python functions cross the boundary only when explicitly supplied through
+`set()` or `expose()`. Python annotations select exact argument conversion, so
+Lua tables can arrive as typed containers or dataclasses:
+
+```python
+def move(point: Point, delta: list[int]) -> Point:
+    return Point(point.x + delta[0], point.y + delta[1])
+
+lua.expose("move", move)
+result = lua.execute_python(
+    "return move({x = 20, y = 20}, {1, 2})",
+    return_type=Point,
+)
+assert result == Point(21, 22)
+```
+
+The original `execute()` and `get()` methods remain raw APIs for callers that
+want Lua strings as `bytes`, tables as `LuaTable`, and functions as internal
+closure values. See [`docs/python-interop-0.28.md`](docs/python-interop-0.28.md).
+
 Host capabilities are explicit. A default runtime includes sandbox-safe `io`, `os`, and read-only `debug` subsets, but has no ambient filesystem, networking, process execution, Python import/eval, native-library loading, environment disclosure, or Python object introspection. File access and output are available only through capabilities supplied by the embedder; hooks and stack mutation require `debug_hooks=True`.
 
 ### JIT controls
@@ -97,7 +167,7 @@ and instruction-count events. Hooks are disabled by default; a thread with an
 active hook stays on the interpreter so compiled regions cannot skip events,
 and hook callbacks do not recursively invoke themselves.
 
-0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, 0.23 added escape analysis and virtual Frames/MultiValues, and 0.24 added automatic generational GC pacing. 0.25 shaped generated code for CPython's adaptive interpreter with fast locals and range-proven arithmetic. 0.26 applied those transformations to CFG traces, recycled exact compiled-call Frames, and added a bounded LRU source cache. **0.27 accelerates GC/table writes and compiled calls, then adds resumable compiled coroutine state machines.** See [`docs/coroutine-jit-0.27.md`](docs/coroutine-jit-0.27.md), the [`native typed-IR backend evaluation`](docs/native-typed-ir-backend.md), and the earlier design notes in [`docs/`](docs/).
+0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, 0.23 added escape analysis and virtual Frames/MultiValues, and 0.24 added automatic generational GC pacing. 0.25 shaped generated code for CPython's adaptive interpreter with fast locals and range-proven arithmetic. 0.26 applied those transformations to CFG traces, recycled exact compiled-call Frames, and added a bounded LRU source cache. **0.27 accelerates GC/table writes and compiled calls, then adds resumable compiled coroutine state machines. 0.28 adds typed Python/Lua value, dataclass, and callable interoperability.** LuaPyre remains Python-only; the [`native typed-IR backend evaluation`](docs/native-typed-ir-backend.md) is retained as a deferred design record. See [`docs/coroutine-jit-0.27.md`](docs/coroutine-jit-0.27.md), [`docs/python-interop-0.28.md`](docs/python-interop-0.28.md), and the earlier design notes in [`docs/`](docs/).
 
 Pinned tests and workloads from real packages provide an additional
 compatibility gate. Penlight's portable upstream suite is 23/23 green,
@@ -296,6 +366,6 @@ LuaPyre-native `string.dump` output, cross-runtime PUC emission, and additional 
 11. hot side-exit traces and CFG OSR through the exact live Frame/PC/register contract
 12. CPython-specialization-aware code shapes, conservative overflow facts, and bytecode audits
 13. resumable compiled coroutine state machines using the exact live Frame/PC/register contract
-14. optional prebuilt native numeric-region executor; see the [native typed-IR backend evaluation](docs/native-typed-ir-backend.md)
+14. typed Python/Lua value conversion, dataclass mapping, and callable bridges
 
 CPython's own optimizer/JIT can accelerate generated Python when available, but it is never a LuaPyre correctness dependency.

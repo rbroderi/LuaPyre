@@ -1,7 +1,11 @@
 # Native typed-IR backend evaluation
 
-Status: **prototype recommended, production backend deferred until it clears
-the gates below**.
+Status: **evaluation complete; deferred by project policy**.
+
+LuaPyre is remaining a Python-only runtime. No native extension, native code
+generator, or runtime compiler is planned for the current roadmap. The
+analysis below is retained as an architectural record only, should that policy
+ever be revisited.
 
 LuaPyre's typed/value/CALL/CFG IR is already backend-neutral, but its current
 lowering produces Python functions operating on Python objects. Profiling shows
@@ -28,7 +32,7 @@ LLVM remains a possible later compiler through
 but it should compete against the native-executor prototype rather than become
 a prerequisite by assumption.
 
-## Recommended prototype
+## Previously evaluated prototype
 
 Build an optional extension module that accepts a validated, immutable region
 descriptor produced by the existing IR pipeline. At region entry it converts
@@ -66,4 +70,3 @@ If the executor clears those gates, the next experiment is direct native code
 generation for the same shadow-frame ABI. Cranelift or LLVM can then be judged
 on compile latency, wheel size, architecture support, and additional speed,
 without changing the Lua semantics or deoptimization contract again.
-

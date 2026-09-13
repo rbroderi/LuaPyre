@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import fields, is_dataclass
+import inspect
+import types
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from .binary_chunks import fresh_loaded_closure
-from .bytecode import Closure
+from .bytecode import Closure, Ins, Op, Proto
 from .capabilities import RuntimeCapabilities
 from .diagnostics import format_traceback
 from .diagnostic_stdlib import install_diagnostic_stdlib
@@ -21,8 +25,10 @@ from .stdlib_output import install_output_library
 from .stdlib_package import install_package_library
 from .table import LuaTable
 from .threadvm import LuaThread
+from .interop import LuaFunction
 from .typed_parser import TypedParser
-from .values import MultiValue, i64
+from .typesys import ANY
+from .values import MultiValue, i64, truthy
 from .vm import HostFunction
 
 
@@ -96,36 +102,77 @@ class LuaRuntime:
                 self.globals, self.vm, self.capabilities
             )
 
-    def _to_lua(self, value, *, _adopt=True):
+    def _to_lua(self, value, *, _adopt=True, _seen=None):
         if value is None or type(value) in (bool, float) or isinstance(value, bytes):
             return value
         if type(value) is int:
             return i64(value)
         if isinstance(value, str):
             return value.encode("utf-8")
+        if isinstance(value, LuaFunction):
+            if value._runtime is not self:
+                raise ValueError("a Lua function cannot cross between runtimes")
+            return value.raw
         if isinstance(value, (LuaTable, LuaThread, Closure, HostFunction)):
             if _adopt and not isinstance(value, HostFunction):
                 self.vm.gc.adopt(value)
             return value
-        if isinstance(value, (list, tuple)):
-            t = LuaTable()
-            for i, item in enumerate(value, 1):
-                t.rawset(i, self._to_lua(item, _adopt=False))
-            if _adopt:
-                self.vm.gc.safepoint()
-                self.vm.gc.adopt(t)
-            return t
-        if isinstance(value, dict):
-            t = LuaTable()
-            for key, item in value.items():
-                t.rawset(
-                    self._to_lua(key, _adopt=False),
-                    self._to_lua(item, _adopt=False),
-                )
-            if _adopt:
-                self.vm.gc.safepoint()
-                self.vm.gc.adopt(t)
-            return t
+        if callable(value):
+            return self._wrap_python_callable(value)
+
+        container = (
+            isinstance(value, (list, tuple, set, frozenset, dict))
+            or is_dataclass(value) and not isinstance(value, type)
+        )
+        if container:
+            seen = set() if _seen is None else _seen
+            ident = id(value)
+            if ident in seen:
+                raise ValueError("cyclic Python values cannot be converted to Lua")
+            seen.add(ident)
+            try:
+                t = LuaTable()
+                if isinstance(value, (list, tuple)):
+                    for i, item in enumerate(value, 1):
+                        t.rawset(
+                            i,
+                            self._to_lua(item, _adopt=False, _seen=seen),
+                        )
+                elif isinstance(value, (set, frozenset)):
+                    for item in value:
+                        key = self._to_lua(item, _adopt=False, _seen=seen)
+                        if type(key) not in (bool, int, float, bytes):
+                            raise TypeError(
+                                "set elements must be int, float, str, bytes, or bool"
+                            )
+                        t.rawset(key, True)
+                elif isinstance(value, dict):
+                    for key, item in value.items():
+                        lua_key = self._to_lua(key, _adopt=False, _seen=seen)
+                        if type(lua_key) not in (bool, int, float, bytes):
+                            raise TypeError(
+                                "dictionary keys must be int, float, str, bytes, or bool"
+                            )
+                        t.rawset(
+                            lua_key,
+                            self._to_lua(item, _adopt=False, _seen=seen),
+                        )
+                else:
+                    for field in fields(value):
+                        t.rawset(
+                            field.name.encode("utf-8"),
+                            self._to_lua(
+                                getattr(value, field.name),
+                                _adopt=False,
+                                _seen=seen,
+                            ),
+                        )
+                if _adopt:
+                    self.vm.gc.safepoint()
+                    self.vm.gc.adopt(t)
+                return t
+            finally:
+                seen.remove(ident)
 
         # Opaque host userdata is represented by the Python object itself.
         # Do not replace this with a recyclable integer/ref-slot registry unless
@@ -135,14 +182,251 @@ class LuaRuntime:
         # of bug this direct-reference invariant deliberately avoids.
         return value
 
+    def _to_lua_result(self, value):
+        if isinstance(value, MultiValue):
+            return MultiValue(tuple(self._to_lua(item) for item in value.values))
+        return self._to_lua(value)
+
+    @staticmethod
+    def _annotation_for_argument(signature, hints, index):
+        if signature is None:
+            return None
+        positional = [
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        if index < len(positional):
+            parameter = positional[index]
+            return hints.get(parameter.name, parameter.annotation)
+        variadic = next(
+            (
+                parameter
+                for parameter in signature.parameters.values()
+                if parameter.kind is inspect.Parameter.VAR_POSITIONAL
+            ),
+            None,
+        )
+        if variadic is None:
+            return None
+        return hints.get(variadic.name, variadic.annotation)
+
+    def _wrap_python_callable(self, fn, name=None):
+        try:
+            signature = inspect.signature(fn)
+        except (TypeError, ValueError):
+            signature = None
+        try:
+            hints = get_type_hints(fn)
+        except (NameError, TypeError):
+            hints = {}
+
+        def boundary(*args):
+            converted = []
+            for index, value in enumerate(args):
+                expected = self._annotation_for_argument(signature, hints, index)
+                if expected is inspect.Parameter.empty:
+                    expected = None
+                converted.append(self._from_lua(value, expected))
+            return self._to_lua_result(fn(*converted))
+
+        display_name = name or getattr(fn, "__name__", type(fn).__name__)
+        return HostFunction(boundary, display_name)
+
+    @staticmethod
+    def _dense_table_values(value: LuaTable):
+        if value.hash or any(item is None for item in value.array):
+            raise TypeError("Lua table is not a dense sequence")
+        return tuple(value.array)
+
+    def _from_lua(self, value, expected=None, *, _seen=None):
+        if expected in (inspect.Parameter.empty, Any, object):
+            expected = None
+
+        if expected is not None:
+            origin = get_origin(expected)
+            args = get_args(expected)
+            if origin in (types.UnionType, Union):
+                errors = []
+                for option in args:
+                    try:
+                        return self._from_lua(value, option, _seen=_seen)
+                    except (TypeError, UnicodeDecodeError) as error:
+                        errors.append(str(error))
+                raise TypeError(
+                    f"Lua value does not match {expected!r}: " + "; ".join(errors)
+                )
+            if expected is type(None):
+                if value is not None:
+                    raise TypeError("expected nil")
+                return None
+            if expected is bool:
+                if type(value) is not bool:
+                    raise TypeError("expected boolean")
+                return value
+            if expected is int:
+                if type(value) is not int:
+                    raise TypeError("expected integer")
+                return value
+            if expected is float:
+                if type(value) is not float:
+                    raise TypeError("expected float")
+                return value
+            if expected is bytes:
+                if not isinstance(value, bytes):
+                    raise TypeError("expected string")
+                return value
+            if expected is str:
+                if not isinstance(value, bytes):
+                    raise TypeError("expected string")
+                return value.decode("utf-8")
+            if expected is LuaFunction:
+                if not isinstance(value, (Closure, HostFunction)):
+                    raise TypeError("expected function")
+                return LuaFunction(self, value, getattr(value, "name", "?"))
+
+            if expected in (list, set, frozenset, dict, tuple):
+                origin = expected
+                args = ()
+
+            if origin is tuple and isinstance(value, tuple):
+                if len(args) == 2 and args[1] is Ellipsis:
+                    return tuple(
+                        self._from_lua(item, args[0], _seen=_seen)
+                        for item in value
+                    )
+                if args and len(value) != len(args):
+                    raise TypeError("Lua return has the wrong tuple length")
+                return tuple(
+                    self._from_lua(
+                        item,
+                        args[index] if args else None,
+                        _seen=_seen,
+                    )
+                    for index, item in enumerate(value)
+                )
+
+            if origin in (list, set, frozenset, dict, tuple) or (
+                isinstance(expected, type) and is_dataclass(expected)
+            ):
+                if not isinstance(value, LuaTable):
+                    raise TypeError("expected table")
+                seen = set() if _seen is None else _seen
+                ident = id(value)
+                if ident in seen:
+                    raise ValueError("cyclic Lua tables cannot be converted to Python")
+                seen.add(ident)
+                try:
+                    if origin is list:
+                        item_type = args[0] if args else None
+                        return [
+                            self._from_lua(item, item_type, _seen=seen)
+                            for item in self._dense_table_values(value)
+                        ]
+                    if origin in (set, frozenset):
+                        item_type = args[0] if args else None
+                        pairs = tuple(value.items())
+                        if pairs and all(included is True for _, included in pairs):
+                            # Python sets use the Lua membership-table shape.
+                            # This also handles positive integer keys that the
+                            # table stores in its dense array part.
+                            items = tuple(key for key, _ in pairs)
+                        elif not value.hash:
+                            items = self._dense_table_values(value)
+                        else:
+                            items = tuple(
+                                key for key, included in pairs if truthy(included)
+                            )
+                        result = {
+                            self._from_lua(item, item_type, _seen=seen)
+                            for item in items
+                        }
+                        return result if origin is set else frozenset(result)
+                    if origin is tuple:
+                        values = self._dense_table_values(value)
+                        if len(args) == 2 and args[1] is Ellipsis:
+                            return tuple(
+                                self._from_lua(item, args[0], _seen=seen)
+                                for item in values
+                            )
+                        if args and len(values) != len(args):
+                            raise TypeError("Lua sequence has the wrong tuple length")
+                        return tuple(
+                            self._from_lua(
+                                item,
+                                args[index] if args else None,
+                                _seen=seen,
+                            )
+                            for index, item in enumerate(values)
+                        )
+                    if origin is dict:
+                        key_type = args[0] if args else None
+                        item_type = (
+                            args[1]
+                            if len(args) > 1
+                            else args[0] if len(args) == 1 else None
+                        )
+                        return {
+                            self._from_lua(key, key_type, _seen=seen): self._from_lua(
+                                item, item_type, _seen=seen
+                            )
+                            for key, item in value.items()
+                        }
+
+                    type_hints = get_type_hints(expected)
+                    keyword = {}
+                    for field in fields(expected):
+                        lua_value = value.rawget(field.name.encode("utf-8"))
+                        if lua_value is None and not value.rawhas(
+                            field.name.encode("utf-8")
+                        ):
+                            raise TypeError(f"missing dataclass field {field.name!r}")
+                        keyword[field.name] = self._from_lua(
+                            lua_value,
+                            type_hints.get(field.name, field.type),
+                            _seen=seen,
+                        )
+                    return expected(**keyword)
+                finally:
+                    seen.remove(ident)
+            raise TypeError(f"unsupported Python return type {expected!r}")
+
+        if value is None or type(value) in (bool, int, float):
+            return value
+        if isinstance(value, bytes):
+            try:
+                return value.decode("utf-8")
+            except UnicodeDecodeError:
+                return value
+        if isinstance(value, (Closure, HostFunction)):
+            return LuaFunction(self, value, getattr(value, "name", "?"))
+        if isinstance(value, tuple):
+            return tuple(self._from_lua(item, _seen=_seen) for item in value)
+        if isinstance(value, LuaTable):
+            seen = set() if _seen is None else _seen
+            ident = id(value)
+            if ident in seen:
+                raise ValueError("cyclic Lua tables cannot be converted to Python")
+            seen.add(ident)
+            try:
+                if not value.hash and not any(item is None for item in value.array):
+                    return [self._from_lua(item, _seen=seen) for item in value.array]
+                return {
+                    self._from_lua(key, _seen=seen): self._from_lua(item, _seen=seen)
+                    for key, item in value.items()
+                }
+            finally:
+                seen.remove(ident)
+        return value
+
     def expose(self, name: str, fn):
         if not callable(fn):
             raise TypeError("exposed host capability must be callable")
-
-        def boundary(*args):
-            return self._to_lua(fn(*args))
-
-        self.globals.rawset(name.encode("utf-8"), HostFunction(boundary, name))
+        self.globals.rawset(
+            name.encode("utf-8"),
+            self._wrap_python_callable(fn, name),
+        )
         return fn
 
     def set(self, name: str, value):
@@ -150,6 +434,49 @@ class LuaRuntime:
 
     def get(self, name: str):
         return self.globals.rawget(name.encode("utf-8"))
+
+    def get_python(self, name: str, *, return_type=None):
+        """Read a global through the Python conversion boundary."""
+        return self._from_lua(self.get(name), return_type)
+
+    def function(self, name: str) -> LuaFunction:
+        """Return a named Lua function as a callable Python object."""
+        value = self.get(name)
+        if not isinstance(value, (Closure, HostFunction)):
+            raise TypeError(f"global {name!r} is not a Lua function")
+        return LuaFunction(self, value, name)
+
+    def call(self, function, *args, return_type=None, fuel=None):
+        """Call a Lua function from Python with recursive value conversion."""
+        if isinstance(function, str):
+            function = self.get(function)
+        elif isinstance(function, LuaFunction):
+            if function._runtime is not self:
+                raise ValueError("a Lua function cannot cross between runtimes")
+            function = function.raw
+        elif callable(function) and not isinstance(function, HostFunction):
+            function = self._wrap_python_callable(function)
+
+        lua_args = [self._to_lua(arg) for arg in args]
+        constants = [function, *lua_args]
+        code = [Ins(Op.LOADK, index, index) for index in range(len(constants))]
+        code.extend(
+            (
+                Ins(Op.TAILCALL, 0, 0, 1, len(lua_args), 0),
+                Ins(Op.HALT),
+            )
+        )
+        proto = Proto(
+            "=[python call]",
+            code=code,
+            constants=constants,
+            register_count=max(1, len(constants)),
+            param_types=[],
+            return_types=[ANY],
+            source=b"=[python call]",
+            lineinfo=[1] * len(code),
+        )
+        return self._from_lua(self.vm.run(proto, fuel=fuel), return_type)
 
     def set_output_sink(self, sink=None) -> None:
         """Replace the byte-oriented sink used by Lua ``print``."""
@@ -174,8 +501,8 @@ class LuaRuntime:
 
         ``module`` may be Lua source text/bytes, a Lua function, or a Python
         callable. Python callables receive the standard loader arguments
-        ``(module_name, loader_data)`` and have their result converted through
-        the ordinary host boundary.
+        ``(module_name, loader_data)`` as raw Lua byte strings for compatibility;
+        their result is converted through the ordinary host boundary.
         """
         if self._package_state is None:
             raise RuntimeError("preload requires safe_stdlib=True")
@@ -192,9 +519,17 @@ class LuaRuntime:
         elif isinstance(module, (Closure, HostFunction)):
             loader = module
         elif callable(module):
+            # Preserve the established low-level package-loader contract:
+            # loader names and searcher data are Lua byte strings. General
+            # Python callbacks installed with set()/expose() use the friendly
+            # conversion boundary instead.
             def boundary(*args):
-                return self._to_lua(module(*args))
-            loader = HostFunction(boundary, f"package.preload[{key!r}]")
+                return self._to_lua_result(module(*args))
+
+            loader = HostFunction(
+                boundary,
+                f"package.preload[{key!r}]",
+            )
         else:
             raise TypeError("preloaded module must be Lua source or callable")
         self._package_state.preload.rawset(key, loader)
@@ -243,6 +578,20 @@ class LuaRuntime:
 
     def execute(self, source: str, *, fuel=None, chunkname: str | bytes = "=(luapyre)"):
         return self.vm.run(self.compile(source, chunkname=chunkname), fuel=fuel)
+
+    def execute_python(
+        self,
+        source: str,
+        *,
+        return_type=None,
+        fuel=None,
+        chunkname: str | bytes = "=(luapyre)",
+    ):
+        """Execute Lua and recursively convert its result for Python callers."""
+        return self._from_lua(
+            self.execute(source, fuel=fuel, chunkname=chunkname),
+            return_type,
+        )
 
     @property
     def jit_stats(self):
