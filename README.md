@@ -4,7 +4,7 @@ LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1**
 
 **Python 3.13+** · **current pre-alpha: 0.26.0a1**
 
-LuaPyre is not yet a complete Lua 5.5.1 implementation. Correct semantics come first; the runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
+LuaPyre implements Lua 5.5.1 language semantics for its supported sandboxed embedding profile. The runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
 ## Language model
 
@@ -79,7 +79,7 @@ return add(x, 22)
 assert result == 42
 ```
 
-Host capabilities are explicit. A default runtime has no ambient filesystem, networking, process execution, Python import/eval, `io`, `os`, `debug`, native-library loading, or Python object introspection.
+Host capabilities are explicit. A default runtime includes sandbox-safe `io`, `os`, and read-only `debug` subsets, but has no ambient filesystem, networking, process execution, Python import/eval, native-library loading, environment disclosure, or Python object introspection. File access and output are available only through capabilities supplied by the embedder; hooks and stack mutation require `debug_hooks=True`.
 
 ### JIT controls
 
@@ -200,7 +200,7 @@ The default safe environment includes the deterministic/in-memory portions of th
 - `utf8`
 - safe `package` / `require` with preload-only loading by default
 
-`io`, `os`, `debug`, C/native module loading, and ambient file loading are intentionally excluded from the default sandbox.
+Sandbox-safe `io`, `os`, and `debug` subsets are included. Streams and logical files operate only through per-runtime state and embedder-provided capabilities; process execution, ambient filesystem/environment access, C/native module loading, and Python introspection are intentionally unavailable. Debug hooks and `debug.setlocal` require the explicit `debug_hooks=True` profile.
 
 Standard-library callbacks are currently synchronous continuation boundaries. Lua callbacks from facilities such as `__pairs`, `__tostring`, `table.sort`, protected calls, and pattern replacements work, but yielding through those native-library callback boundaries is still rejected. Full C/API-style yieldable continuations are future work.
 
@@ -268,18 +268,16 @@ python benchmarks/compare_runtimes.py --group algorithm --require-all
 
 Use `--json PATH` for a versioned machine-readable report. The permanent **Four-way runtime benchmark** Actions workflow records text and JSON artifacts. See [`benchmarks/README.md`](benchmarks/README.md) for methodology and comparison guidance.
 
-## Current compatibility gaps
+## Intentional compatibility boundaries
 
-Major remaining work includes:
+There are no tracked Lua 5.5.1 language-semantic gaps in the supported profile. The remaining boundaries are deliberate properties of the sandbox and implementation model:
 
-- exact source-line hook metadata and advanced debug inspection
-- cross-runtime PUC emission from `string.dump` (LuaPyre dumps use the canonical 5.5 header with a validated LuaPyre payload)
-- yieldable native-library / C-API continuation semantics
-- fuller userdata/C-API behavior beyond the current sandbox value model
-- host-facing `io`, `os`, and `debug` capabilities where an embedding explicitly wants them
-- typed generic-`for` iterator contracts
+- no native C API, C modules, or unrestricted userdata bridge
+- no standalone CLI, shell/process execution, ambient filesystem access, or environment disclosure
+- no allocator-failure injection or destructive host-resource exhaustion
+- debug hooks and stack mutation are opt-in with `debug_hooks=True`
 
-Unsafe host-facing libraries are not treated as default-sandbox requirements.
+LuaPyre-native `string.dump` output, cross-runtime PUC emission, and additional typed-language contracts are interoperability or extension choices, not gaps in the supported Lua semantics. See the [official Lua 5.5.1 exclusion audit](docs/official-551-exclusion-audit.md) for the exact test disposition.
 
 ## Performance roadmap
 
