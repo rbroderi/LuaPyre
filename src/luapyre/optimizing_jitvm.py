@@ -40,7 +40,7 @@ class OptimizingJITVM(TieredJITVM):
         )
 
     def _acquire_compiled_frame(
-        self, compiled, closure, args, return_reg, return_want
+        self, compiled, closure, args, return_reg, return_want, *, validate_args=True
     ):
         """Reuse an inactive exact Frame for a compiled call when available."""
         proto = closure.proto
@@ -50,12 +50,13 @@ class OptimizingJITVM(TieredJITVM):
             regs = frame.regs
             for index in range(proto.param_count):
                 arg = args[index] if index < len(args) else None
-                expected = proto.param_types[index].name
-                if not type_matches(expected, arg):
-                    raise LuaRuntimeError(
-                        f"argument {index + 1}: expected {expected}, "
-                        f"got {static_value_type(arg).name}"
-                    )
+                if validate_args:
+                    expected = proto.param_types[index].name
+                    if not type_matches(expected, arg):
+                        raise LuaRuntimeError(
+                            f"argument {index + 1}: expected {expected}, "
+                            f"got {static_value_type(arg).name}"
+                        )
                 regs[index] = arg
             if proto.env_reg >= 0:
                 regs[proto.env_reg] = closure.env
@@ -63,27 +64,8 @@ class OptimizingJITVM(TieredJITVM):
             frame.pc = 0
             frame.return_reg = return_reg
             frame.return_want = return_want
-            frame.varargs = ()
-            frame.cells.clear()
-            frame.close_stack.clear()
-            frame.pending_close_target = None
-            frame.pending_error = None
-            frame.puc_close_stack.clear()
-            frame.pending_puc_close_reg = None
-            frame.return_prefix = ()
-            frame.return_limit = -1
-            frame.protected_handler = None
-            frame.protected_name = None
-            frame.protected_error = None
-            frame.protected_error_depth = 0
-            frame.trace_name = None
-            frame.call_name = None
-            frame.call_namewhat = ""
-            frame.hook_call_pending = True
-            frame.hook_last_pc = -1
-            frame.hook_last_line = -1
-            frame.hook_call_values = tuple(args[:proto.param_count])
-            frame.is_tailcall = False
+            if self.debug_hooks_enabled:
+                frame.hook_call_values = tuple(args[:proto.param_count])
             return frame
 
         self.jit.stats.compiled_frame_allocations += 1
@@ -114,9 +96,11 @@ class OptimizingJITVM(TieredJITVM):
         # their live budget on the VM object. Whole-function compilation obeys
         # the same entry rule as the leaf tier.
         thread = self.current_thread
+        if thread is not None and not thread.is_main:
+            return super()._invoke(frames, parent, fn, args, dest, want, tail=tail)
         budget_is_current = (
-            thread is not None and not thread.is_main
-        ) or self._jit_main_leaf_allowed
+            self._jit_main_leaf_allowed
+        )
 
         if (
             isinstance(fn, Closure)

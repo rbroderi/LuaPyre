@@ -181,7 +181,35 @@ class DenseEmitterJITMixin:
         tree = optimize_generated_ast(ast.parse("\n".join(lines)))
         tree = promote_constant_registers(tree, spill_returns=False)
         exec(compile(tree, "<luapyre-dense-jit-leaf>", "exec"), namespace)
-        return CompiledLeaf(proto, cost, namespace["_jit_leaf"])
+        direct_lines = [
+            "def _jit_leaf_direct(vm, closure, args):",
+            f"    regs = [None] * {max(1, proto.register_count)}",
+        ]
+        for index in range(proto.param_count):
+            direct_lines.append(
+                f"    regs[{index}] = args[{index}] if {index} < len(args) else None"
+            )
+        if proto.env_reg >= 0:
+            direct_lines.append(f"    regs[{proto.env_reg}] = closure.env")
+        direct_lines.extend(
+            [
+                "    consts = closure.proto.constants",
+                "    cells = {}",
+                *lines[4:],
+            ]
+        )
+        direct_tree = optimize_generated_ast(ast.parse("\n".join(direct_lines)))
+        direct_tree = promote_constant_registers(direct_tree, spill_returns=False)
+        exec(
+            compile(direct_tree, "<luapyre-dense-jit-leaf-direct>", "exec"),
+            namespace,
+        )
+        return CompiledLeaf(
+            proto,
+            cost,
+            namespace["_jit_leaf"],
+            namespace["_jit_leaf_direct"],
+        )
 
     @staticmethod
     def _leaf_ops_for_dense_codegen():

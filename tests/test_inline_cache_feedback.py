@@ -24,7 +24,7 @@ return total
     assert runtime.jit_stats.table_ic_hits > 0
 
 
-def test_table_read_cache_invalidates_after_write_without_stale_value():
+def test_table_read_cache_observes_writes_without_version_invalidation():
     runtime = LuaRuntime(jit_threshold=10_000, fuel=2_000_000)
     result = runtime.execute("""
 local t = {value = 1}
@@ -36,8 +36,22 @@ end
 return total
 """)
     assert result == 40
-    assert runtime.jit_stats.cache_invalidations >= 1
-    assert runtime.jit_feedback["invalidations"] >= 1
+    assert runtime.jit_stats.cache_invalidations == 0
+    assert runtime.jit_feedback["invalidations"] == 0
+
+
+def test_streaming_integer_keys_bypass_the_identity_pic():
+    runtime = LuaRuntime(jit_threshold=10_000, fuel=2_000_000)
+    result = runtime.execute("""
+local t = {}
+for i = 1, 100 do t[i] = i end
+local total = 0
+for i = 1, 100 do total = total + t[i] end
+return total
+""")
+    assert result == 5050
+    assert runtime.jit_feedback["table_sites"] == 0
+    assert runtime.jit_feedback["states"]["megamorphic"] == 0
 
 
 def test_call_site_widens_when_function_identity_changes():

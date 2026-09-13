@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import FunctionType
 
 from .bytecode import Cell, Ins, Op, Proto
@@ -72,6 +72,8 @@ class JITStats:
     virtual_multivalue_elisions: int = 0
     virtual_multivalue_materializations: int = 0
     compiled_frame_allocations: int = 0
+    leaf_frame_elisions: int = 0
+    compile_failure_reasons: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +88,7 @@ class CompiledLeaf:
     proto: Proto
     instruction_cost: int
     runner: FunctionType
+    direct_runner: FunctionType
 
 
 _LOOP_BODY_OPS = JIT_LOOP_BODY_OPS
@@ -138,6 +141,11 @@ class PythonJIT:
         self._loop_cache: dict[tuple[int, int], CompiledLoop | None] = {}
         self._leaf_hot: dict[int, int] = {}
         self._leaf_cache: dict[int, tuple[Proto, CompiledLeaf | None]] = {}
+
+    def record_compile_failure(self, reason: str) -> None:
+        self.stats.compile_failures += 1
+        reasons = self.stats.compile_failure_reasons
+        reasons[reason] = reasons.get(reason, 0) + 1
 
     @staticmethod
     def _profile_binary(regs, ins: Ins) -> str | None:
@@ -424,7 +432,7 @@ class PythonJIT:
             compiled = self._compile_loop(frame, start_pc, backedge)
             self._loop_cache[key] = compiled
             if compiled is None:
-                self.stats.compile_failures += 1
+                self.record_compile_failure("loop_unsupported")
                 return 0, False
             self.stats.loop_compiles += 1
             cached = compiled
@@ -556,8 +564,33 @@ class PythonJIT:
             "_lua_equal": lua_equal,
             "_type_matches": type_matches,
         }
-        exec(compile("\n".join(lines), "<luapyre-jit-leaf>", "exec"), namespace)
-        return CompiledLeaf(proto, cost, namespace["_jit_leaf"])
+        direct_lines = [
+            "def _jit_leaf_direct(vm, closure, args):",
+            f"    regs = [None] * {max(1, proto.register_count)}",
+        ]
+        for index in range(proto.param_count):
+            direct_lines.append(
+                f"    regs[{index}] = args[{index}] if {index} < len(args) else None"
+            )
+        if proto.env_reg >= 0:
+            direct_lines.append(f"    regs[{proto.env_reg}] = closure.env")
+        direct_lines.extend(
+            [
+                "    consts = closure.proto.constants",
+                "    cells = {}",
+                *lines[4:],
+            ]
+        )
+        exec(
+            compile("\n".join((*lines, "", *direct_lines)), "<luapyre-jit-leaf>", "exec"),
+            namespace,
+        )
+        return CompiledLeaf(
+            proto,
+            cost,
+            namespace["_jit_leaf"],
+            namespace["_jit_leaf_direct"],
+        )
 
     def maybe_leaf(self, proto: Proto) -> CompiledLeaf | None:
         if not self.enabled:
@@ -573,7 +606,7 @@ class PythonJIT:
         compiled = self._compile_leaf(proto)
         self._leaf_cache[ident] = (proto, compiled)
         if compiled is None:
-            self.stats.compile_failures += 1
+            self.record_compile_failure("leaf_unsupported")
             return None
         self.stats.leaf_compiles += 1
         return compiled

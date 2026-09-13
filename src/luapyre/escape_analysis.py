@@ -11,6 +11,7 @@ VIRTUAL_FRAME_OPS = frozenset(
         Op.LOADK, Op.MOVE, Op.LOCAL,
         Op.ADD_I, Op.SUB_I, Op.MUL_I,
         Op.ADD_F, Op.SUB_F, Op.MUL_F,
+        Op.DIV,
         Op.NOT, Op.TOBOOL, Op.LT, Op.LE, Op.GUARD,
         Op.JMP, Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL,
         Op.FORPREP, Op.FORLOOP, Op.JFORLOOP,
