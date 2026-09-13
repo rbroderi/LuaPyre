@@ -7,6 +7,9 @@ from .bytecode import Closure
 from .capabilities import RuntimeCapabilities
 from .diagnostics import format_traceback
 from .diagnostic_stdlib import install_diagnostic_stdlib
+from .stdlib_debug import install_debug_library
+from .stdlib_io import install_io_library
+from .stdlib_os import install_os_library
 from .errors import LuaRuntimeError
 from .gcvm import GarbageCollectedVM
 from .optimizing_jitvm import OptimizingJITVM
@@ -77,6 +80,9 @@ class LuaRuntime:
             install_safe_stdlib(self.globals, self.vm)
             install_output_library(self.globals, self.vm, self.capabilities)
             install_diagnostic_stdlib(self.globals, self.vm)
+            install_io_library(self.globals, self.capabilities)
+            install_os_library(self.globals, self.capabilities)
+            install_debug_library(self.globals, self.vm, self.capabilities)
             self._package_state = install_package_library(
                 self.globals, self.vm, self.capabilities
             )
@@ -149,6 +155,10 @@ class LuaRuntime:
         self.capabilities.set_file_loader(loader)
         if self._package_state is not None:
             self._package_state.refresh_file_capability()
+
+    def set_environment(self, values=None) -> None:
+        """Replace the private environment exposed through ``os.getenv``."""
+        self.capabilities.set_environment(values)
 
     def preload(self, name: str | bytes, module) -> None:
         """Register an in-memory module for the standard preload searcher.

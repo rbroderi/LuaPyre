@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 
 from .bytecode import Op, Proto, Closure, Cell
 from .errors import LuaRuntimeError, LuaRaisedError, LuaQuotaError
 from .opdispatch import OPCODE_HANDLERS
 from .table import LuaTable
-from .values import MultiValue, i64, static_value_type, truthy, type_matches
+from .values import MultiValue, i64, lua_type_name, parse_lua_number, static_value_type, truthy, type_matches
 
 
 @dataclass(slots=True)
@@ -136,7 +137,7 @@ class VM:
             else:
                 tm = self._tm(obj, b"__index")
                 if tm is None:
-                    raise LuaRuntimeError(f"attempt to index a {static_value_type(obj).name} value")
+                    raise LuaRuntimeError(f"attempt to index a {lua_type_name(obj)} value")
             if isinstance(tm, (Closure, HostFunction)):
                 self._invoke(frames, frame, tm, [obj, key], dest, 1)
                 return
@@ -156,7 +157,7 @@ class VM:
             else:
                 tm = self._tm(obj, b"__newindex")
                 if tm is None:
-                    raise LuaRuntimeError(f"attempt to index a {static_value_type(obj).name} value")
+                    raise LuaRuntimeError(f"attempt to index a {lua_type_name(obj)} value")
             if isinstance(tm, (Closure, HostFunction)):
                 self._invoke(frames, frame, tm, [obj, key, value], 0, 0)
                 return
@@ -168,11 +169,38 @@ class VM:
 
     def _forprep(self, regs, ins):
         idx, limit, step = regs[ins.a], regs[ins.b], regs[ins.c]
-        if not all(_is_number(value) for value in (idx, limit, step)):
-            raise LuaRuntimeError("'for' limit must be a number")
+        converted = []
+        for label, value in (("initial", idx), ("limit", limit), ("step", step)):
+            number = value if _is_number(value) else parse_lua_number(value)
+            if number is None:
+                raise LuaRuntimeError(f"'for' {label} value must be a number")
+            converted.append(number)
+        idx, limit, step = converted
+        regs[ins.a], regs[ins.b], regs[ins.c] = idx, limit, step
         if step == 0:
             raise LuaRuntimeError("'for' step is zero")
-        if any(type(value) is float for value in (idx, limit, step)):
+        if type(idx) is int and type(step) is int:
+            if type(limit) is float:
+                if math.isnan(limit):
+                    return False
+                if step > 0:
+                    if limit < -(1 << 63):
+                        return False
+                    limit = (
+                        (1 << 63) - 1
+                        if math.isinf(limit)
+                        else min((1 << 63) - 1, math.floor(limit))
+                    )
+                else:
+                    if limit > (1 << 63) - 1:
+                        return False
+                    limit = (
+                        -(1 << 63)
+                        if math.isinf(limit)
+                        else max(-(1 << 63), math.ceil(limit))
+                    )
+                regs[ins.b] = limit
+        else:
             idx, limit, step = float(idx), float(limit), float(step)
             regs[ins.a], regs[ins.b], regs[ins.c] = idx, limit, step
         return idx <= limit if step > 0 else idx >= limit

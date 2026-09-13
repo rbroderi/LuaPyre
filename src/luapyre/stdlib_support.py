@@ -94,7 +94,8 @@ def number_to_bytes(value) -> bytes:
 
 
 def tostring_value(vm, value) -> bytes:
-    tm = vm._tm(value, b"__tostring") if vm is not None else None
+    metatable = vm.metatable_for(value) if vm is not None else None
+    tm = metatable.rawget(b"__tostring") if isinstance(metatable, LuaTable) else None
     if tm is not None:
         results = vm.call_sync(tm, (value,))
         rendered = results[0] if results else None
@@ -111,4 +112,13 @@ def tostring_value(vm, value) -> bytes:
         return value
     if type(value) in (int, float):
         return number_to_bytes(value)
+    name = metatable.rawget(b"__name") if isinstance(metatable, LuaTable) else None
+    if isinstance(name, bytes):
+        return name + b": " + f"0x{id(value):x}".encode("ascii")
+    # Use Lua's conventional opaque function rendering and do not expose
+    # Python implementation details for host-backed functions.
+    from .bytecode import Closure
+    from .vm import HostFunction
+    if isinstance(value, (Closure, HostFunction)):
+        return f"function: 0x{id(value):x}".encode("ascii")
     return repr(value).encode("utf-8", "replace")

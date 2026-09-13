@@ -115,6 +115,17 @@ def _setupval(vm, frames, frame, ins, regs, constants):
     cell = frame.closure.upvalues[ins.a]
     vm.gc.write_barrier(cell, regs[ins.b])
     cell.value = regs[ins.b]
+    # A closure can capture a local after earlier bytecode in a loop has
+    # already been emitted as a direct register read. Keep that register view
+    # coherent while its owning frame is live and the loop executes again.
+    live_frames = list(frames)
+    prefixes = getattr(vm, "_sync_frame_prefixes", ())
+    if prefixes:
+        live_frames.extend(prefixes[-1])
+    for live_frame in live_frames:
+        for register, live_cell in live_frame.cells.items():
+            if live_cell is cell:
+                live_frame.regs[register] = cell.value
 
 
 def _closure(vm, frames, frame, ins, regs, constants):
@@ -376,7 +387,7 @@ def _neg(vm, frames, frame, ins, regs, constants):
         raise LuaRuntimeError(
             f"attempt to perform arithmetic on a {static_value_type(value).name} value"
         )
-    vm._invoke(frames, frame, tm, [value], ins.a, 1)
+    vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
 
 
 def _bnot(vm, frames, frame, ins, regs, constants):
@@ -390,7 +401,7 @@ def _bnot(vm, frames, frame, ins, regs, constants):
         raise LuaRuntimeError(
             f"attempt to perform 'bnot' on a {static_value_type(value).name} value"
         )
-    vm._invoke(frames, frame, tm, [value], ins.a, 1)
+    vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
 
 
 def _concat(vm, frames, frame, ins, regs, constants):
@@ -414,14 +425,14 @@ def _len(vm, frames, frame, ins, regs, constants):
         if tm is None:
             regs[ins.a] = value.rawlen()
         else:
-            vm._invoke(frames, frame, tm, [value], ins.a, 1)
+            vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
         return
     tm = vm._tm(value, b"__len")
     if tm is None:
         raise LuaRuntimeError(
             f"attempt to get length of a {static_value_type(value).name} value"
         )
-    vm._invoke(frames, frame, tm, [value], ins.a, 1)
+    vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
 
 
 def _not(vm, frames, frame, ins, regs, constants):
@@ -598,12 +609,15 @@ def _checknil(vm, frames, frame, ins, regs, constants):
     name = constants[ins.b]
     if isinstance(name, bytes):
         name = name.decode("utf-8", "replace")
-    raise LuaRuntimeError(f"global '{name}' already has a value")
+    raise LuaRuntimeError(f"global '{name}' already defined (already has a value)")
 
 
 def _tbc(vm, frames, frame, ins, regs, constants):
     value = regs[ins.a]
     if value is None or value is False:
+        # Keep a lexical slot so CLOSE depth remains stable even when the
+        # runtime value needs no __close call.
+        frame.close_stack.append(value)
         return
     if vm._tm(value, b"__close") is None:
         raise LuaRuntimeError("variable got a non-closable value")

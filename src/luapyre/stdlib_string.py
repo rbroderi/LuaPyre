@@ -75,7 +75,7 @@ def _quote_lua(value) -> bytes:
     if type(value) is float:
         return _quote_float(value)
     if not isinstance(value, bytes):
-        raise LuaRuntimeError("bad argument to 'format' for %q")
+        raise LuaRuntimeError("value has no literal form")
 
     out = bytearray(b'"')
     for index, byte in enumerate(value):
@@ -422,6 +422,11 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                 i += 2
                 continue
             i += 1
+            modifier_end = i
+            while modifier_end < len(fmt) and fmt[modifier_end] in b"-+#0 123456789.":
+                modifier_end += 1
+            if modifier_end - i > 100:
+                raise LuaRuntimeError("format too long")
             start = i
             while i < len(fmt) and fmt[i] in b"-+#0 ":
                 i += 1
@@ -442,6 +447,14 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                 raise LuaRuntimeError("invalid conversion specification")
             spec = chr(fmt[i])
             i += 1
+            if spec == "c" and (precision or any(flag != "-" for flag in flags)):
+                raise LuaRuntimeError("invalid conversion specification")
+            if spec == "s" and any(flag != "-" for flag in flags):
+                raise LuaRuntimeError("invalid conversion specification")
+            if spec in "diu" and "#" in flags:
+                raise LuaRuntimeError("invalid conversion specification")
+            if spec == "p" and precision:
+                raise LuaRuntimeError("invalid conversion specification")
             if arg >= len(values):
                 raise LuaRuntimeError("bad argument to 'format' (no value)")
             value = values[arg]
@@ -452,6 +465,8 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                 rendered = _quote_lua(value)
             elif spec == "s":
                 rendered = tostring_value(vm, value)
+                if (width or precision) and b"\0" in rendered:
+                    raise LuaRuntimeError("string contains zeros")
                 if precision:
                     limit = int(precision[1:] or "0")
                     rendered = rendered[:limit]
@@ -464,6 +479,9 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                 if not 0 <= integer <= 255:
                     raise LuaRuntimeError("value out of range")
                 rendered = bytes((integer,))
+                if width:
+                    fill = b" " * max(0, int(width) - 1)
+                    rendered = rendered + fill if "-" in flags else fill + rendered
             elif spec in "diouxX":
                 integer = need_integer(value, arg + 1, "format")
                 if spec == "u":
@@ -471,9 +489,18 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                     py_spec = "d"
                 else:
                     py_spec = spec
+                    if spec in "oxX" and integer < 0:
+                        integer &= UINT_MASK
                 token = "%" + flags + width + precision + py_spec
                 rendered = (token % integer).encode("ascii")
-            elif spec in "eEfFgG":
+                if spec == "o" and "#" in flags:
+                    rendered = rendered.replace(b"0o", b"0", 1)
+                    if width and len(rendered) < int(width):
+                        pad = b" " * (int(width) - len(rendered))
+                        rendered = rendered + pad if "-" in flags else pad + rendered
+                if spec == "u" and precision == "." and integer == 0:
+                    rendered = b""
+            elif spec in "eEfgG":
                 if type(value) not in (int, float):
                     raise LuaRuntimeError("number expected")
                 token = "%" + flags + width + precision + spec
@@ -481,14 +508,31 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
             elif spec in "aA":
                 if type(value) not in (int, float):
                     raise LuaRuntimeError("number expected")
-                rendered = float(value).hex().encode("ascii")
+                rendered_text = float(value).hex()
+                if precision:
+                    places = int(precision[1:] or "0")
+                    mantissa, exponent = rendered_text.split("p", 1)
+                    whole, fraction = mantissa.split(".", 1)
+                    fraction = (fraction + "0" * places)[:places]
+                    rendered_text = whole + ("." + fraction if places else "") + "p" + exponent
+                if "+" in flags and not rendered_text.startswith("-"):
+                    rendered_text = "+" + rendered_text
+                rendered = rendered_text.encode("ascii")
                 if spec == "A":
                     rendered = rendered.upper()
+                if width:
+                    fill = b" " * max(0, int(width) - len(rendered))
+                    rendered = rendered + fill if "-" in flags else fill + rendered
             elif spec == "p":
                 if value is None or type(value) in (bool, int, float):
                     rendered = b"(null)"
+                elif isinstance(value, bytes) and len(value) <= 40:
+                    rendered = f"0x{hash(value) & ((1 << 64) - 1):x}".encode("ascii")
                 else:
                     rendered = f"0x{id(value):x}".encode("ascii")
+                if width:
+                    padding = b" " * max(0, int(width) - len(rendered))
+                    rendered = rendered + padding if "-" in flags else padding + rendered
             else:
                 raise LuaRuntimeError(f"invalid conversion '%{spec}'")
             out.extend(rendered)

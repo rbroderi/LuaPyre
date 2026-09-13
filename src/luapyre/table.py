@@ -31,7 +31,10 @@ def _hash_key(key):
 class LuaTable:
     """Lua table with dense array storage, tagged hash keys, and a metatable."""
 
-    __slots__ = ("array", "hash", "metatable", "version", "_gc_owner", "_gc_age")
+    __slots__ = (
+        "array", "hash", "metatable", "version", "_gc_owner", "_gc_age",
+        "_deleted_successors", "_reserved_bytes",
+    )
 
     def __init__(self):
         self.array: list[object | None] = []
@@ -40,6 +43,8 @@ class LuaTable:
         self.version = 0
         self._gc_owner = None
         self._gc_age = 0
+        self._deleted_successors: dict[object, object | None] = {}
+        self._reserved_bytes = 0
 
     def rawget(self, key):
         h = _hash_key(key)
@@ -69,6 +74,15 @@ class LuaTable:
         h = _hash_key(key)
         if h is None:
             raise LuaRuntimeError("table index is nil")
+        if value is None and self.rawhas(key):
+            entries = list(self.items())
+            for index, (current, _item) in enumerate(entries):
+                if _hash_key(current) == h:
+                    successor = entries[index + 1][0] if index + 1 < len(entries) else None
+                    self._deleted_successors[h] = successor
+                    break
+        elif value is not None:
+            self._deleted_successors.pop(h, None)
         self.version += 1
         collector = self._gc_owner
         if collector is not None:
@@ -101,6 +115,20 @@ class LuaTable:
             if collector is not None and h not in self.hash:
                 collector.account_bytes(32)
             self.hash[h] = (key, value)
+
+    def successor_after_deleted(self, key):
+        """Find a surviving successor for a key deleted during traversal."""
+        seen = set()
+        successor = self._deleted_successors.get(_hash_key(key), _ABSENT)
+        while successor is not _ABSENT and successor is not None:
+            successor_hash = _hash_key(successor)
+            if successor_hash in seen:
+                return True, None
+            seen.add(successor_hash)
+            if self.rawhas(successor):
+                return True, successor
+            successor = self._deleted_successors.get(successor_hash, _ABSENT)
+        return (False, None) if successor is _ABSENT else (True, None)
 
     def rawlen(self) -> int:
         return len(self.array)

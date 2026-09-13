@@ -22,6 +22,16 @@ def test_multiple_assignment_snapshots_aliased_locals():
     assert LuaRuntime().execute(source) == (22, 20)
 
 
+def test_multiple_assignment_snapshots_indexed_destinations():
+    source = """
+local a = {'a', 'b'}
+local i, j, original = 1, 2, a
+i, a[i], a, j, a[j], a[i+j] = j, i, i, original, j, i
+return i, a, j == original, original[1], original[2], original[3]
+"""
+    assert LuaRuntime().execute(source) == (2, 1, True, 1, 2, 1)
+
+
 def test_typed_arithmetic_specializes():
     lua = LuaRuntime()
     src = "local x: integer = 20; local y: integer = 22; return x + y"
@@ -220,13 +230,13 @@ return f(), env.x
     assert LuaRuntime().execute(src) == (42, 42)
 
 
-def test_safe_stdlib_has_no_io_or_os():
+def test_safe_stdlib_has_sandboxed_io_os_and_debug():
     lua = LuaRuntime()
     assert lua.execute('return type(_G), _VERSION') == (b"table", b"Lua 5.5")
-    assert lua.get("io") is None and lua.get("os") is None
-    assert lua.get("debug") is None
+    assert lua.get("io") is not None and lua.get("os") is not None
+    assert lua.get("debug") is not None
     assert lua.get("package") is not None and lua.get("require") is not None
-    assert lua.get("loadfile") is None and lua.get("dofile") is None
+    assert lua.get("loadfile") is not None and lua.get("dofile") is not None
 
 
 def test_rawlen_table_and_string():

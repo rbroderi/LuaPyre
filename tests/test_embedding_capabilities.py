@@ -54,11 +54,12 @@ def test_python_callable_can_be_preloaded():
     assert seen == [(b"hostmod", b":preload:")]
 
 
-def test_default_package_has_no_file_capability():
+def test_default_package_has_virtual_only_file_capability():
     lua = LuaRuntime(output=lambda _data: None)
     assert lua.execute(
         "return loadfile == nil, dofile == nil, package.searchers[1] ~= nil, package.searchers[2] == nil"
-    ) == (True, True, True, True)
+    ) == (False, False, True, False)
+    assert lua.execute("return loadfile('/etc/passwd')")[:1] == (None,)
 
 
 def test_file_loader_enables_loadfile_dofile_and_require_searcher():
@@ -79,14 +80,12 @@ def test_file_loader_enables_loadfile_dofile_and_require_searcher():
 
 def test_file_loader_can_be_added_and_removed_dynamically():
     lua = LuaRuntime(output=lambda _data: None)
-    assert lua.get("loadfile") is None
+    assert lua.get("loadfile") is not None
     lua.set_file_loader(lambda name: b"return 9" if name == "x.lua" else None)
     assert lua.execute("return dofile('x.lua'), package.searchers[2] ~= nil") == (9, True)
     lua.set_file_loader(None)
-    assert lua.execute("return loadfile == nil, dofile == nil, package.searchers[2] == nil") == (
-        True,
-        True,
-        True,
+    assert lua.execute("return loadfile ~= nil, dofile ~= nil, package.searchers[2] ~= nil") == (
+        True, True, True,
     )
 
 

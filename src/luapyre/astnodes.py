@@ -198,6 +198,7 @@ class FunctionExpr(Expr):
     vararg_name: str | None = None
     vararg_type: LuaType = ANY
     inferred_type: LuaType = field(default=ANY)
+    debug_name: str | None = None
 
 
 @dataclass(slots=True)

@@ -8,7 +8,7 @@ from .opdispatch import OPCODE_HANDLERS
 from .table import LuaTable
 from .threadvm import CoroutineVM, _CloseSelfSignal, _YieldSignal
 from .values import MultiValue, truthy
-from .vm import Frame
+from .vm import Frame, HostFunction
 
 
 class GarbageCollectedVM(CoroutineVM):
@@ -31,6 +31,7 @@ class GarbageCollectedVM(CoroutineVM):
         self._active_frames = None
         self._active_host_values = None
         self._active_call_result = None
+        self._host_call_stack: list[HostFunction] = []
         self._sync_frame_prefixes: list[list[Frame]] = []
         self.type_metatables: dict[bytes, LuaTable] = {}
         self.gc = LuaGC(self)
@@ -67,7 +68,16 @@ class GarbageCollectedVM(CoroutineVM):
             return value.metatable
         if isinstance(value, bytes):
             return self.type_metatables.get(b"string")
-        return None
+        if type(value) in (int, float):
+            return self.type_metatables.get(b"number")
+        if type(value) is bool:
+            return self.type_metatables.get(b"boolean")
+        if value is None:
+            return self.type_metatables.get(b"nil")
+        if isinstance(value, (Closure, HostFunction)):
+            return self.type_metatables.get(b"function")
+        metatable = getattr(value, "metatable", None)
+        return metatable if isinstance(metatable, LuaTable) else None
 
     def _tm(self, value, name):
         mt = self.metatable_for(value)
@@ -102,6 +112,7 @@ class GarbageCollectedVM(CoroutineVM):
     def _host_values(self, fn, args):
         previous = self._active_host_values
         self._active_host_values = (fn, *args)
+        self._host_call_stack.append(fn)
         try:
             values = super()._host_values(fn, args)
             for value in values:
@@ -109,6 +120,7 @@ class GarbageCollectedVM(CoroutineVM):
             self.gc.safepoint((*(self._active_frames or ()), *values))
             return values
         finally:
+            self._host_call_stack.pop()
             self._active_host_values = previous
 
     def run(self, proto: Proto, fuel=None):
@@ -172,7 +184,7 @@ class GarbageCollectedVM(CoroutineVM):
             self._active_frames = previous_frames
             self.current_thread = previous_thread
 
-    def call_sync(self, fn, args=()):
+    def call_sync(self, fn, args=(), *, fuel=None):
         """Call a Lua/host callable to completion and return all results.
 
         This is the continuation boundary used by safe standard-library
@@ -189,7 +201,7 @@ class GarbageCollectedVM(CoroutineVM):
         try:
             try:
                 self._invoke(frames, parent, fn, list(args), 0, -1)
-                remaining = self.default_fuel
+                remaining = self.default_fuel if fuel is None else fuel
                 while len(frames) > 1:
                     try:
                         frame = frames[-1]
@@ -324,6 +336,28 @@ class GarbageCollectedVM(CoroutineVM):
             values = self.call_sync(tm, (obj, key))
             return values[0] if values else None
         raise LuaRuntimeError("'__index' chain too long; possible loop")
+
+    def set_index_sync(self, obj, key, value):
+        """Perform one ordinary Lua assignment, including __newindex."""
+        for _ in range(self.MAXTAGLOOP):
+            if isinstance(obj, LuaTable):
+                if obj.rawhas(key):
+                    obj.rawset(key, value)
+                    return
+                tm = self._tm(obj, b"__newindex")
+                if tm is None:
+                    obj.rawset(key, value)
+                    return
+            else:
+                tm = self._tm(obj, b"__newindex")
+                if tm is None:
+                    raise LuaRuntimeError("attempt to index a value without __newindex")
+            if isinstance(tm, LuaTable):
+                obj = tm
+                continue
+            self.call_sync(tm, (obj, key, value))
+            return
+        raise LuaRuntimeError("'__newindex' chain too long; possible loop")
 
     def less_than_sync(self, left, right) -> bool:
         if type(left) in (int, float) and type(right) in (int, float):

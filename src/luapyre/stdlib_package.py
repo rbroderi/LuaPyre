@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 
+from .binary_chunks import NATIVE_MAGIC, PUC_MAGIC
 from .bytecode import Closure
 from .capabilities import RuntimeCapabilities
+from .compiler import Compiler
 from .errors import LuaRaisedError, LuaRuntimeError
+from .parser import Parser
 from .stdlib_support import need_bytes
 from .table import LuaTable
 from .values import MultiValue, truthy
@@ -36,11 +39,13 @@ class PackageState:
     preload: LuaTable
     searchers: LuaTable
     loadfile_host: HostFunction
-    dofile_host: HostFunction
+    dofile_host: object
     file_searcher_host: HostFunction
 
     def refresh_file_capability(self) -> None:
-        enabled = self.capabilities.file_loader is not None
+        # These functions can always access the runtime's private in-memory
+        # filesystem. A host loader merely adds an explicit read capability.
+        enabled = True
         self.globals_table.rawset(b"loadfile", self.loadfile_host if enabled else None)
         self.globals_table.rawset(b"dofile", self.dofile_host if enabled else None)
         self.searchers.rawset(2, self.file_searcher_host if enabled else None)
@@ -53,9 +58,9 @@ def install_package_library(
 ) -> PackageState:
     """Install a sandbox-safe package library.
 
-    The default runtime has only the preload searcher.  A Lua-file searcher,
-    ``loadfile``, and ``dofile`` become visible only while an explicit host
-    file-loader capability is installed.  Native/C loading is never exposed.
+    The default runtime can search only its private in-memory filesystem.
+    An explicit host file-loader capability adds read access chosen by the
+    embedder. Native/C loading is never exposed.
     """
 
     package = LuaTable()
@@ -81,32 +86,44 @@ def install_package_library(
 
     searchers.rawset(1, HostFunction(preload_searcher, "package.preload searcher"))
 
-    def _load_source(source: bytes, filename: bytes, mode=b"bt", env=None):
+    def _load_source(source: bytes, filename: bytes, mode=b"bt", env_args=()):
+        if source.startswith(b"\xef\xbb\xbf"):
+            source = source[3:]
+        if source.startswith(b"#"):
+            newline = source.find(b"\n")
+            remainder = source[newline + 1:] if newline >= 0 else b""
+            if remainder.startswith((NATIVE_MAGIC, PUC_MAGIC)):
+                source = remainder
+            else:
+                source = b"--" + source[1:]
         load_host = globals_table.rawget(b"load")
-        args = (source, b"@" + filename, mode, env)
+        args = (source, b"@" + filename, mode, *env_args)
         return vm.call_sync(load_host, args)
 
-    def loadfile(filename, mode=b"bt", env=None):
+    def loadfile(filename, *optional):
         filename = need_bytes(filename, 1, "loadfile")
+        mode = optional[0] if optional else b"bt"
+        env_args = optional[1:2]
         source, error = capabilities.read_file(filename)
         if source is None:
             return MultiValue((None, error))
-        results = _load_source(source, filename, mode, env)
+        results = _load_source(source, filename, mode, env_args)
         return MultiValue(tuple(results))
 
     loadfile_host = HostFunction(loadfile, "loadfile")
 
-    def dofile(filename):
-        filename = need_bytes(filename, 1, "dofile")
-        loaded_chunk = vm.call_sync(loadfile_host, (filename,))
-        chunk = loaded_chunk[0] if loaded_chunk else None
-        if chunk is None:
-            error = loaded_chunk[1] if len(loaded_chunk) > 1 else b"cannot load file"
-            raise LuaRaisedError(error, located=True)
-        results = vm.call_sync(chunk, ())
-        return MultiValue(tuple(results))
-
-    dofile_host = HostFunction(dofile, "dofile")
+    # The loaded chunk is invoked from Lua so dofile remains yieldable.
+    factory = Compiler().compile(Parser("""
+        local loadfile = ...
+        return function (filename)
+          local chunk, message = loadfile(filename)
+          if chunk == nil then error(message, 0) end
+          return chunk()
+        end
+    """).parse())
+    dofile_host = vm.call_sync(
+        Closure(factory, [], globals_table), (loadfile_host,), fuel=1_000
+    )[0]
 
     def _find_file(name: bytes):
         path = package.rawget(b"path")
@@ -134,6 +151,21 @@ def install_package_library(
         return MultiValue((loader, candidate))
 
     file_searcher_host = HostFunction(file_searcher, "package Lua searcher")
+
+    def native_searcher(name):
+        # Report standard C-searcher candidates without loading native code.
+        # This preserves require's diagnostics while keeping the sandbox from
+        # importing shared libraries.
+        name = _module_name(name, function="require")
+        cpath = package.rawget(b"cpath")
+        if not isinstance(cpath, bytes):
+            raise LuaRuntimeError("'package.cpath' must be a string")
+        module = name.replace(b".", os.sep.encode("ascii", "replace"))
+        errors = [b"no file '" + template.replace(b"?", module) + b"'"
+                  for template in _templates(cpath)]
+        return b"\n\t".join(errors)
+
+    searchers.rawset(3, HostFunction(native_searcher, "package C searcher"))
 
     def searchpath(name, path, sep=b".", rep=b"/"):
         name = need_bytes(name, 1, "searchpath")
@@ -197,7 +229,7 @@ def install_package_library(
     # already present in this sandboxed runtime.
     loaded.rawset(b"_G", globals_table)
     loaded.rawset(b"package", package)
-    for name in (b"coroutine", b"math", b"string", b"table", b"utf8"):
+    for name in (b"coroutine", b"debug", b"io", b"math", b"os", b"string", b"table", b"utf8"):
         value = globals_table.rawget(name)
         if value is not None:
             loaded.rawset(name, value)

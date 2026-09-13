@@ -43,6 +43,7 @@ class Lexer:
         self.i = 0
         self.line = 1
         self.col = 1
+        self._last_newline = ""
         self.n = len(source)
         # Lua's standalone loader treats a Unix shebang as a skipped first
         # line. Preserve its line number while allowing real package scripts
@@ -60,11 +61,17 @@ class Lexer:
         if not ch:
             return ""
         self.i += 1
-        if ch == "\n":
-            self.line += 1
+        if ch in "\r\n":
+            # Lua treats CR, LF, CRLF, and LFCR as one newline sequence.
+            if self._last_newline and self._last_newline != ch:
+                self._last_newline = ""
+            else:
+                self.line += 1
+                self._last_newline = ch
             self.col = 1
         else:
             self.col += 1
+            self._last_newline = ""
         return ch
 
     def _syntax(self, message: str, line: int | None = None, col: int | None = None):
@@ -119,12 +126,14 @@ class Lexer:
                 self._take()
         elif self._peek() == "\n":
             self._take()
+            if self._peek() == "\r":
+                self._take()
 
         chars = bytearray()
         while True:
             if not self._peek():
                 kind = "comment" if comment else "string"
-                self._syntax(f"unfinished long {kind}", line, col)
+                self._syntax(f"unfinished long {kind} near <eof>", line, col)
             if self._peek() == "]":
                 j = self.i + 1
                 count = 0
@@ -143,27 +152,33 @@ class Lexer:
                     if self._peek() == "\n":
                         self._take()
                     chars.append(0x0A)
+                elif ch == "\n":
+                    if self._peek() == "\r":
+                        self._take()
+                    chars.append(0x0A)
                 else:
-                    chars.extend(ch.encode("utf-8"))
+                    chars.extend(ch.encode("utf-8", "surrogateescape"))
 
     def _read_short_string(self, quote: str, line: int, col: int) -> bytes:
         self._take()
+        literal_start = self.i
         chars = bytearray()
         while True:
             ch = self._peek()
             if not ch:
-                self._syntax("unfinished string", line, col)
+                self._syntax("unfinished string near <eof>", line, col)
             if ch == quote:
                 self._take()
                 return bytes(chars)
             if ch in "\r\n":
                 self._syntax("unfinished string", line, col)
             if ch != "\\":
-                chars.extend(self._take().encode("utf-8"))
+                chars.extend(self._take().encode("utf-8", "surrogateescape"))
                 continue
 
             self._take()
             escape_line, escape_col = self.line, self.col
+            escape_start = self.i - 1
             esc = self._peek()
             if not esc:
                 self._syntax("unfinished string", line, col)
@@ -173,29 +188,50 @@ class Lexer:
                 continue
             if esc == "x":
                 self._take()
-                digits = self._take() + self._take()
-                if len(digits) != 2 or any(char not in _HEX for char in digits):
-                    self._syntax("hexadecimal digit expected", escape_line, escape_col)
+                digits = ""
+                for _ in range(2):
+                    digit = self._take()
+                    digits += digit
+                    if digit not in _HEX:
+                        fragment = self.source[escape_start:self.i]
+                        self._syntax(
+                            f"hexadecimal digit expected near '{fragment}'",
+                            escape_line, escape_col,
+                        )
                 chars.append(int(digits, 16))
                 continue
             if esc == "u":
                 self._take()
                 if self._peek() != "{":
-                    self._syntax("missing '{'", escape_line, escape_col)
+                    fragment = self.source[literal_start:self.i + 1]
+                    self._syntax(
+                        f"missing '{{' near '{fragment}'", escape_line, escape_col
+                    )
                 self._take()
                 digits = ""
                 while self._peek() in _HEX:
                     digits += self._take()
                 if not digits:
-                    self._syntax("hexadecimal digit expected", escape_line, escape_col)
+                    fragment = self.source[literal_start:self.i + 1]
+                    self._syntax(
+                        f"hexadecimal digit expected near '{fragment}'",
+                        escape_line, escape_col,
+                    )
                 if self._peek() != "}":
-                    self._syntax("missing '}'", escape_line, escape_col)
+                    fragment = self.source[literal_start:self.i + 1]
+                    self._syntax(
+                        f"missing '}}' near '{fragment}'", escape_line, escape_col
+                    )
                 self._take()
                 value = int(digits, 16)
                 try:
                     chars.extend(self._extended_utf8(value))
                 except ValueError:
-                    self._syntax("UTF-8 value too large", escape_line, escape_col)
+                    fragment = self.source[literal_start:self.i - 1]
+                    self._syntax(
+                        f"UTF-8 value too large near '{fragment}'",
+                        escape_line, escape_col,
+                    )
                 continue
             if esc == "z":
                 self._take()
@@ -204,6 +240,8 @@ class Lexer:
                 continue
             if esc == "\n":
                 self._take()
+                if self._peek() == "\r":
+                    self._take()
                 chars.append(0x0A)
                 continue
             if esc == "\r":
@@ -220,10 +258,20 @@ class Lexer:
                     digits += self._take()
                 value = int(digits, 10)
                 if value > 255:
-                    self._syntax("decimal escape too large", escape_line, escape_col)
+                    end = self.i + int(self._peek() in "\"'")
+                    fragment = self.source[escape_start:end]
+                    self._syntax(
+                        f"decimal escape too large near '{fragment}'",
+                        escape_line, escape_col,
+                    )
                 chars.append(value)
                 continue
-            self._syntax("invalid escape sequence", escape_line, escape_col)
+            self._take()
+            fragment = self.source[escape_start:self.i]
+            self._syntax(
+                f"invalid escape sequence near '{fragment}'",
+                escape_line, escape_col,
+            )
 
     def _read_number(self, line: int, col: int) -> Token:
         start = self.i
@@ -298,7 +346,7 @@ class Lexer:
                     if level is not None:
                         self._consume_long(level, comment=True, line=self.line, col=self.col)
                         continue
-                while self._peek() not in ("", "\n"):
+                while self._peek() not in ("", "\r", "\n"):
                     self._take()
                 continue
 
