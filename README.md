@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.26.0a1**
+**Python 3.13+** · **current pre-alpha: 0.27.0a1**
 
 LuaPyre implements Lua 5.5.1 language semantics for its supported sandboxed embedding profile. The runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
@@ -97,7 +97,7 @@ and instruction-count events. Hooks are disabled by default; a thread with an
 active hook stays on the interpreter so compiled regions cannot skip events,
 and hook callbacks do not recursively invoke themselves.
 
-0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, 0.23 added escape analysis and virtual Frames/MultiValues, and 0.24 added automatic generational GC pacing. 0.25 shaped generated code for CPython's adaptive interpreter with fast locals and range-proven arithmetic. **0.26 applies those transformations to CFG traces, recycles exact compiled-call Frames, and adds a bounded LRU source cache so repeated execution retains its warmed Proto and JIT state.** See [`docs/runtime-overheads-0.26.md`](docs/runtime-overheads-0.26.md) and the earlier design notes in [`docs/`](docs/).
+0.13 introduced generated-Python straight-line numeric-loop and leaf-function compilation. 0.14–0.20 built the typed/value/CALL/CFG pipeline, exact deopt rematerialization, dominance, cyclic SSA, LICM, guard hoisting, and induction recognition. 0.21 added adaptive call/table PICs and deoptimization feedback, 0.22 added hot trace-shaped CFG compilation and exact OSR, 0.23 added escape analysis and virtual Frames/MultiValues, and 0.24 added automatic generational GC pacing. 0.25 shaped generated code for CPython's adaptive interpreter with fast locals and range-proven arithmetic. 0.26 applied those transformations to CFG traces, recycled exact compiled-call Frames, and added a bounded LRU source cache. **0.27 accelerates GC/table writes and compiled calls, then adds resumable compiled coroutine state machines.** See [`docs/coroutine-jit-0.27.md`](docs/coroutine-jit-0.27.md), the [`native typed-IR backend evaluation`](docs/native-typed-ir-backend.md), and the earlier design notes in [`docs/`](docs/).
 
 Pinned tests and workloads from real packages provide an additional
 compatibility gate. Penlight's portable upstream suite is 23/23 green,
@@ -295,6 +295,7 @@ LuaPyre-native `string.dump` output, cross-runtime PUC emission, and additional 
 10. bounded call/table polymorphic inline caches and deoptimization site/reason feedback with unstable-region retirement
 11. hot side-exit traces and CFG OSR through the exact live Frame/PC/register contract
 12. CPython-specialization-aware code shapes, conservative overflow facts, and bytecode audits
-13. later: native x86-64/AArch64 or LLVM backend consuming the same typed/value/CALL IR and deoptimization contract
+13. resumable compiled coroutine state machines using the exact live Frame/PC/register contract
+14. optional prebuilt native numeric-region executor; see the [native typed-IR backend evaluation](docs/native-typed-ir-backend.md)
 
 CPython's own optimizer/JIT can accelerate generated Python when available, but it is never a LuaPyre correctness dependency.

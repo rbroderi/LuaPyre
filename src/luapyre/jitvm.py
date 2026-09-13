@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from .bytecode import Closure, Op, Proto
+from .coroutine_jit import (
+    COROUTINE_DEOPT,
+    COROUTINE_RETURN,
+    COROUTINE_YIELD,
+    compile_coroutine,
+)
 from .diagnostics import capture_error
 from .errors import LuaQuotaError, LuaRuntimeError
 from .gcvm import GarbageCollectedVM
@@ -134,6 +140,8 @@ class TieredJITVM(GarbageCollectedVM):
         self.inline_caches = InlineCacheFeedback()
         self._call_site_arrays: dict[int, tuple[Proto, list[object | None]]] = {}
         self.trace_jit = TraceJIT(threshold=jit_threshold)
+        self._coroutine_hot: dict[int, tuple[Proto, int]] = {}
+        self._coroutine_cache: dict[int, tuple[Proto, object | None]] = {}
         from .table import LuaTable, _hash_key
         self._ic_table_type = LuaTable
         self._ic_hash_key = _hash_key
@@ -461,6 +469,19 @@ class TieredJITVM(GarbageCollectedVM):
             if not frames:
                 return "return", tuple(final_values)
 
+        if stop_depth is None and frames:
+            frame = frames[-1]
+            compiled_event = self._try_compiled_coroutine(thread, frame)
+            if compiled_event is not None:
+                status, values = compiled_event
+                if status == COROUTINE_YIELD:
+                    thread.status = "suspended"
+                    return "yield", values
+                if status == COROUTINE_RETURN:
+                    final_values = self._return(frames, frame, values)
+                    if not frames:
+                        return "return", tuple(final_values)
+
         while frames:
             if stop_depth is not None and len(frames) <= stop_depth:
                 return "callback", ()
@@ -514,3 +535,51 @@ class TieredJITVM(GarbageCollectedVM):
                 frames[-1].pending_error = exc
 
         return "return", tuple(final_values)
+
+    def _try_compiled_coroutine(self, thread, frame):
+        if (
+            not self.jit.enabled
+            or self.hooks_active()
+            or frame.pending_error is not None
+            or frame.pending_close_target is not None
+            or frame.pending_puc_close_reg is not None
+            or frame.protected_name is not None
+        ):
+            return None
+
+        proto = frame.proto
+        ident = id(proto)
+        cached = self._coroutine_cache.get(ident)
+        if cached is not None and cached[0] is proto:
+            compiled = cached[1]
+            if compiled is None:
+                return None
+        else:
+            hot_entry = self._coroutine_hot.get(ident)
+            hot = hot_entry[1] if hot_entry is not None and hot_entry[0] is proto else 0
+            hot += 1
+            self._coroutine_hot[ident] = (proto, hot)
+            if hot < self.jit.threshold:
+                return None
+            compiled = compile_coroutine(proto)
+            self._coroutine_cache[ident] = (proto, compiled)
+            if compiled is None:
+                self.jit.record_compile_failure("coroutine_unsupported")
+                return None
+            self.jit.stats.coroutine_compiles += 1
+
+        used, status, values = compiled.runner(
+            self, thread, frame, self._jit_budget()
+        )
+        if used:
+            self._jit_consume(used)
+            self.jit.stats.coroutine_executions += 1
+            self.jit.stats.coroutine_instructions += used
+        if status == COROUTINE_YIELD:
+            self.jit.stats.coroutine_yields += 1
+            return status, tuple(values)
+        if status == COROUTINE_RETURN:
+            return status, tuple(values)
+        if status == COROUTINE_DEOPT:
+            self.jit.stats.coroutine_deopts += 1
+        return None
