@@ -403,7 +403,23 @@ class _FunctionCompiler:
     def _stmt_assign(self, stmt):
         targets = [self.prepare_target(t) for t in stmt.targets]
         values = self.adjust_values(stmt.values, len(stmt.targets))
-        for target, (vr, actual) in zip(targets, values):
+        # Lua evaluates every right-hand value before performing any store.
+        # Local references can alias assignment targets, so snapshot them into
+        # fresh registers before the first target is mutated (a,b = b,a).
+        local_targets = set()
+        for target in targets:
+            if target[0] == "name":
+                ref = self.resolve(target[1])
+                if ref.kind == "local" and not ref.symbol.captured:
+                    local_targets.add(ref.index)
+        snapshots = []
+        for vr, actual in values:
+            if vr in local_targets:
+                snapshot = self.alloc()
+                self.emit(Op.MOVE, snapshot, vr)
+                vr = snapshot
+            snapshots.append((vr, actual))
+        for target, (vr, actual) in zip(targets, snapshots):
             self.assign_prepared(target, vr, actual, stmt.line)
 
     def _stmt_return(self, stmt):
@@ -829,6 +845,10 @@ class _FunctionCompiler:
     def _expr_call(self, expr):
         return self.call_expr(expr, 1)[0]
 
+    def _expr_paren(self, expr):
+        # Parentheses adjust a call/vararg expression to exactly one value.
+        return self.expr(expr.value)
+
     def _call_parts(self, expr):
         match expr:
             case A.MethodCall(receiver=receiver_expr, name=name, args=source_args):
@@ -917,6 +937,7 @@ _EXPR_HANDLERS = {
     A.Index: _FunctionCompiler._expr_index,
     A.Unary: _FunctionCompiler._expr_unary,
     A.Binary: _FunctionCompiler._expr_binary,
+    A.Paren: _FunctionCompiler._expr_paren,
     A.Call: _FunctionCompiler._expr_call,
     A.MethodCall: _FunctionCompiler._expr_call,
 }

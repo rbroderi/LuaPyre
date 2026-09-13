@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import math
 
 from .errors import LuaRuntimeError
@@ -13,8 +14,22 @@ INT_MAX = (1 << 63) - 1
 UINT_MASK = (1 << 64) - 1
 
 
+def lua_c_function(fn, name: str) -> HostFunction:
+    """Wrap a stdlib function so surplus Lua arguments are ignored."""
+    parameters = tuple(inspect.signature(fn).parameters.values())
+    if any(parameter.kind is inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
+        return HostFunction(fn, name)
+    positional = sum(
+        parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        for parameter in parameters
+    )
+
+    return HostFunction(fn, name, positional)
+
+
 def put(table: LuaTable, name: str, fn):
-    host = HostFunction(fn, name)
+    host = lua_c_function(fn, name)
     table.rawset(name.encode("ascii"), host)
     return host
 

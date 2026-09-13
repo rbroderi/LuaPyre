@@ -26,6 +26,37 @@ def test_index_and_newindex_table_chains():
     assert run('local p={}; local t={}; setmetatable(t,{__newindex=p}); t.x=42; return p.x,rawget(t,"x")') == (42, None)
 
 
+def test_callable_table_used_as_index_is_still_indexed_as_a_table():
+    source = '''
+local methods = {answer = function() return 42 end}
+setmetatable(methods, {__call = function() return "wrong" end})
+local object = setmetatable({}, {__index = methods})
+return object.answer()
+'''
+    assert run(source) == 42
+
+
+def test_parentheses_collapse_multiple_results():
+    source = '''
+local function pair() return 20, 22 end
+local function count(...) return select("#", ...), ... end
+return count((pair()))
+'''
+    assert run(source) == (1, 20)
+
+
+def test_native_style_library_calls_ignore_extra_arguments_and_optional_nil():
+    source = '''
+local t = {}
+local mt = {}
+return setmetatable(t, mt, "ignored") == t,
+       string.sub("abc", 2, nil),
+       tostring(42, "ignored"),
+       string.upper("x", 1, 2)
+'''
+    assert run(source) == (True, b"bc", b"42", b"X")
+
+
 def test_call_metamethod():
     assert run('local t={n=40}; setmetatable(t,{__call=function(self,x) return self.n+x end}); return t(2)') == 42
 

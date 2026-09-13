@@ -5,8 +5,13 @@ from functools import cmp_to_key
 from .errors import LuaRuntimeError
 from .table import LuaTable
 from .values import MultiValue
-from .vm import HostFunction
-from .stdlib_support import need_bytes, need_integer, need_table, number_to_bytes
+from .stdlib_support import (
+    lua_c_function,
+    need_bytes,
+    need_integer,
+    need_table,
+    number_to_bytes,
+)
 
 
 def install_table_library(globals_table: LuaTable, vm) -> LuaTable:
@@ -137,7 +142,7 @@ def install_table_library(globals_table: LuaTable, vm) -> LuaTable:
         ("sort", sort),
         ("unpack", unpack),
     ):
-        tablelib.rawset(short.encode("ascii"), HostFunction(fn, f"table.{short}"))
+        tablelib.rawset(short.encode("ascii"), lua_c_function(fn, f"table.{short}"))
 
     globals_table.rawset(b"table", tablelib)
     return tablelib
