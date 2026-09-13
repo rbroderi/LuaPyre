@@ -31,12 +31,18 @@ BASELINE_FILES = (
     "attrib.lua",
     "bitwise.lua",
     "bwcoercion.lua",
+    "calls.lua",
     "closure.lua",
     "constructs.lua",
+    "coroutine.lua",
+    "db.lua",
     "events.lua",
+    "errors.lua",
     "files.lua",
     "goto.lua",
+    "gengc.lua",
     "literals.lua",
+    "locals.lua",
     "math.lua",
     "nextvar.lua",
     "pm.lua",
@@ -48,13 +54,7 @@ BASELINE_FILES = (
     "verybig.lua",
 )
 
-TRACKED_GAPS = {
-    "calls.lua": "exact PUC-Lua binary dump headers and corruption probes",
-    "coroutine.lua": "debug-hook and internal test-API sections",
-    "db.lua": "debug-hook execution and hook-event ordering",
-    "errors.lua": "host-userdata/io diagnostics and remaining runtime wording",
-    "locals.lua": "debug return-hook ordering",
-}
+TRACKED_GAPS = {}
 
 INTENTIONAL_EXCLUSIONS = {
     "all.lua": "upstream orchestrator for internal, native, process, and stress tests",
@@ -63,7 +63,6 @@ INTENTIONAL_EXCLUSIONS = {
     "code.lua": "Lua internal compiler/bytecode test API",
     "cstack.lua": "C-stack and internal API stress",
     "gc.lua": "Lua internal GC test API and allocator controls",
-    "gengc.lua": "Lua internal generational-GC test API",
     "heavy.lua": "multi-process, high-resource stress driver",
     "main.lua": "standalone executable and host shell/process behavior",
     "memerr.lua": "allocator-failure injection and internal C test API",
@@ -303,7 +302,9 @@ def make_suite_runtime(
 ):
     from luapyre import LuaRuntime
 
-    lua = LuaRuntime(fuel=fuel)
+    # The official conformance profile explicitly opts into sandbox-safe
+    # Lua hook delivery. Production runtimes keep hooks disabled by default.
+    lua = LuaRuntime(fuel=fuel, debug_hooks=True)
     install_suite_capabilities(lua, suite_root, echo=echo)
     if unrestricted:
         lua.set("_U", True)

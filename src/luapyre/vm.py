@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import re
 
 from .bytecode import Ins, Op, Proto, Closure, Cell
 from .errors import LuaRuntimeError, LuaRaisedError, LuaQuotaError
@@ -16,6 +17,9 @@ class HostFunction:
     name: str = "?"
     max_args: int | None = None
     protected_mode: str | None = None
+    _gc_refs: tuple[object, ...] = ()
+    _gc_owner: object = None
+    _gc_age: int = 0
 
 
 @dataclass(slots=True)
@@ -43,9 +47,15 @@ class Frame:
     protected_handler: object | None = None
     protected_name: str | None = None
     protected_error: LuaRuntimeError | None = None
+    protected_error_depth: int = 0
     trace_name: str | None = None
     call_name: str | None = None
     call_namewhat: str = ""
+    hook_call_pending: bool = True
+    hook_last_pc: int = -1
+    hook_last_line: int = -1
+    hook_call_values: tuple[object, ...] = ()
+    is_tailcall: bool = False
 
     @property
     def proto(self):
@@ -101,8 +111,25 @@ class VM:
             if fn.max_args is not None and len(args) > fn.max_args:
                 args = args[: fn.max_args]
             result = fn.fn(*args)
-        except LuaRuntimeError:
+        except LuaRuntimeError as error:
+            origins = getattr(self, "_host_call_origins", ())
+            origin = origins[-1] if origins else None
+            message = str(error)
+            if origin is not None and origin[0] == "method" and message.startswith("bad argument #"):
+                match = re.match(r"bad argument #(\d+)(.*)", message)
+                if match:
+                    index = int(match.group(1))
+                    message = (
+                        "bad self" + match.group(2)
+                        if index == 1
+                        else f"bad argument #{index - 1}" + match.group(2)
+                    )
+                    error.args = (message,)
             raise
+        except RecursionError:
+            # CPython's recursion guard is an implementation detail.  Lua code
+            # observes the conventional protected-call diagnostic instead.
+            raise LuaRuntimeError("C stack overflow") from None
         except Exception as exc:
             raise LuaRuntimeError(str(exc)) from None
         return result.values if isinstance(result, MultiValue) else (result,)
@@ -130,6 +157,7 @@ class VM:
                     replacement.protected_handler = parent.protected_handler
                     replacement.protected_name = parent.protected_name
                     replacement.protected_error = parent.protected_error
+                    replacement.protected_error_depth = parent.protected_error_depth
                     replacement.trace_name = parent.trace_name
                     replacement.call_name = parent.call_name
                     replacement.call_namewhat = parent.call_namewhat
@@ -202,7 +230,12 @@ class VM:
                     False,
                 )
             if isinstance(target, HostFunction) and target.protected_mode is None:
-                values = self._host_values(target, target_args)
+                previous_direct = getattr(self, "_direct_protected_host", False)
+                self._direct_protected_host = True
+                try:
+                    values = self._host_values(target, target_args)
+                finally:
+                    self._direct_protected_host = previous_direct
                 values = (True, *values)
                 if tail:
                     return self._return(frames, parent, values)
@@ -230,6 +263,7 @@ class VM:
                 trampoline.protected_handler = parent.protected_handler
                 trampoline.protected_name = parent.protected_name
                 trampoline.protected_error = parent.protected_error
+                trampoline.protected_error_depth = parent.protected_error_depth
                 trampoline.trace_name = parent.trace_name
                 frames[-1] = trampoline
                 frame = self._new_frame(target, target_args, 0, -1)
@@ -246,6 +280,40 @@ class VM:
         except LuaQuotaError:
             raise
         except LuaRuntimeError as error:
+            if handler is not None:
+                error_object = self._error_object(error)
+                try:
+                    resolved, handler_args = self._callable_target(
+                        handler, [error_object]
+                    )
+                    if isinstance(resolved, HostFunction) and resolved.protected_mode is None:
+                        try:
+                            handled = self._host_values(resolved, handler_args)
+                            replacement = handled[0] if handled else None
+                        except LuaRuntimeError:
+                            replacement = b"error in error handling"
+                        values = (False, replacement)
+                        if tail:
+                            return self._return(frames, parent, values)
+                        self._write_results(parent.regs, dest, want, values)
+                        return None
+                    if isinstance(resolved, Closure):
+                        callback = self._new_frame(resolved, handler_args, dest, want)
+                        callback.return_prefix = (False,)
+                        callback.return_limit = 1
+                        callback.protected_name = "xpcall handler"
+                        callback.protected_handler = resolved
+                        callback.protected_error = error
+                        callback.protected_error_depth = 1
+                        if tail:
+                            frames[-1] = callback
+                        else:
+                            if len(frames) >= self.max_frames:
+                                raise LuaRuntimeError("stack overflow")
+                            frames.append(callback)
+                        return None
+                except LuaRuntimeError:
+                    error = LuaRaisedError(b"error in error handling")
             values = (False, self._error_object(error))
             if tail:
                 return self._return(frames, parent, values)
@@ -254,13 +322,17 @@ class VM:
 
     def _finish_protected_error(self, frames, frame, error):
         error_object = self._error_object(error)
-        if (
+        fatal_handler_error = (
             frame.protected_name == "xpcall handler"
             and isinstance(error_object, bytes)
             and b"stack overflow" in error_object
-        ):
+        )
+        if fatal_handler_error:
             error = LuaRaisedError(b"error in error handling")
         handler = frame.protected_handler
+        if fatal_handler_error:
+            handler = None
+        handler_depth = frame.protected_error_depth
         return_reg, return_want = frame.return_reg, frame.return_want
         frames.pop()
         if not frames:
@@ -270,6 +342,20 @@ class VM:
             self._write_results(
                 parent.regs, return_reg, return_want,
                 (False, self._error_object(error)),
+            )
+            return True
+        if handler_depth >= 200:
+            current = self._error_object(error)
+            exhausted = (
+                b"error in error handling"
+                if isinstance(current, bytes) and b"stack overflow" in current
+                else b"C stack overflow"
+            )
+            self._write_results(
+                parent.regs,
+                return_reg,
+                return_want,
+                (False, exhausted),
             )
             return True
         try:
@@ -298,6 +384,8 @@ class VM:
             callback.return_limit = 1
             callback.protected_name = "xpcall handler"
             callback.protected_error = error
+            callback.protected_handler = handler
+            callback.protected_error_depth = handler_depth + 1
             frames.append(callback)
             return True
         except LuaRuntimeError as handler_error:
@@ -310,6 +398,14 @@ class VM:
     def _invoke_site(self, frames, parent, fn, args, dest, want, tail=False):
         """Call-site hook used by adaptive VMs; Tier 0 stays cache-free."""
         return self._invoke(frames, parent, fn, args, dest, want, tail=tail)
+
+    def _invoke_metamethod(self, frames, parent, fn, args, dest, want, name):
+        depth = len(frames)
+        result = self._invoke(frames, parent, fn, args, dest, want)
+        if len(frames) > depth:
+            frames[-1].call_name = name.removeprefix(b"__").decode("ascii")
+            frames[-1].call_namewhat = "metamethod"
+        return result
 
     def _gettable(self, frames, frame, obj, key, dest):
         for _ in range(self.MAXTAGLOOP):
@@ -326,7 +422,9 @@ class VM:
                 if tm is None:
                     raise LuaRuntimeError(f"attempt to index a {lua_type_name(obj)} value")
             if isinstance(tm, (Closure, HostFunction)):
-                self._invoke(frames, frame, tm, [obj, key], dest, 1)
+                self._invoke_metamethod(
+                    frames, frame, tm, [obj, key], dest, 1, b"__index"
+                )
                 return
             obj = tm
         raise LuaRuntimeError("'__index' chain too long; possible loop")
@@ -346,7 +444,9 @@ class VM:
                 if tm is None:
                     raise LuaRuntimeError(f"attempt to index a {lua_type_name(obj)} value")
             if isinstance(tm, (Closure, HostFunction)):
-                self._invoke(frames, frame, tm, [obj, key, value], 0, 0)
+                self._invoke_metamethod(
+                    frames, frame, tm, [obj, key, value], 0, 0, b"__newindex"
+                )
                 return
             obj = tm
         raise LuaRuntimeError("'__newindex' chain too long; possible loop")
@@ -572,7 +672,9 @@ class VM:
             table = LuaTable.from_sequence(extras)
             table.rawset(b"n", len(extras))
             regs[proto.vararg_name_reg] = table
-        return Frame(closure, regs, 0, return_reg, return_want, extras)
+        frame = Frame(closure, regs, 0, return_reg, return_want, extras)
+        frame.hook_call_values = tuple(args[:proto.param_count])
+        return frame
 
     @staticmethod
     def _write_results(regs, dest, want, values):

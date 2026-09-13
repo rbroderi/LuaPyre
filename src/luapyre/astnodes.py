@@ -11,6 +11,7 @@ class Node:
 @dataclass(slots=True)
 class Chunk(Node):
     body: list[Stmt]
+    end_line: int = 0
 
 
 class Stmt(Node):
@@ -73,17 +74,20 @@ class ExprStmt(Stmt):
 class WhileStmt(Stmt):
     condition: Expr
     body: list[Stmt]
+    end_line: int = 0
 
 
 @dataclass(slots=True)
 class RepeatStmt(Stmt):
     body: list[Stmt]
     condition: Expr
+    end_line: int = 0
 
 
 @dataclass(slots=True)
 class DoStmt(Stmt):
     body: list[Stmt]
+    end_line: int = 0
 
 
 @dataclass(slots=True)
@@ -93,6 +97,7 @@ class NumericForStmt(Stmt):
     limit: Expr
     step: Expr | None
     body: list[Stmt]
+    end_line: int = 0
 
 
 @dataclass(slots=True)
@@ -100,6 +105,7 @@ class GenericForStmt(Stmt):
     names: list[str]
     values: list[Expr]
     body: list[Stmt]
+    end_line: int = 0
 
 
 @dataclass(slots=True)
@@ -125,6 +131,7 @@ class LabelStmt(Stmt):
 class IfStmt(Stmt):
     clauses: list[tuple[Expr, list[Stmt]]]
     else_body: list[Stmt]
+    end_line: int = 0
 
 
 @dataclass(slots=True)

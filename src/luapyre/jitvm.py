@@ -18,7 +18,7 @@ def _jit_forloop(vm, frames, frame, ins, regs, constants):
         return
     backedge_pc = frame.pc - 1
     frame.pc = ins.d
-    if not vm.jit.enabled:
+    if not vm.jit.enabled or vm.hooks_active():
         return
     key = id(ins)
     state = vm._jit_loop_states.get(key)
@@ -80,7 +80,7 @@ _JIT_OPCODE_HANDLERS[Op.SETTABLE] = _jit_settable
 def _jit_cfg_branch(vm, frames, frame, ins, regs, constants):
     source = frame.pc - 1
     result = OPCODE_HANDLERS[ins.op](vm, frames, frame, ins, regs, constants)
-    if result is not None or not frame.proto.jit_fully_typed:
+    if result is not None or not frame.proto.jit_fully_typed or vm.hooks_active():
         return result
     return vm._trace_transition(frames, frame, source, frame.pc)
 
@@ -106,8 +106,14 @@ class TieredJITVM(GarbageCollectedVM):
         *,
         jit_enabled: bool = True,
         jit_threshold: int = 32,
+        debug_hooks_enabled: bool = False,
     ):
-        super().__init__(globals, fuel=fuel, max_frames=max_frames)
+        super().__init__(
+            globals,
+            fuel=fuel,
+            max_frames=max_frames,
+            debug_hooks_enabled=debug_hooks_enabled,
+        )
         self.jit = PythonJIT(threshold=jit_threshold, enabled=jit_enabled)
         self._jit_main_fuel = self.default_fuel
         self._jit_main_leaf_allowed = False
@@ -298,6 +304,7 @@ class TieredJITVM(GarbageCollectedVM):
             isinstance(fn, Closure)
             and not tail
             and not self._sync_frame_prefixes
+            and not self.hooks_active()
             and self.jit.enabled
             and leaf_budget_is_current
         ):
@@ -336,7 +343,7 @@ class TieredJITVM(GarbageCollectedVM):
             # budget. Wrapping them once keeps the hot dispatch loop identical
             # to Tier 0: one opcode lookup and one handler call, with no per-op
             # membership test or fuel helper call.
-            handlers = dict(_JIT_OPCODE_HANDLERS)
+            handlers = dict(self.hook_handlers(_JIT_OPCODE_HANDLERS))
 
             def synced(handler, *, leaf_allowed=False):
                 def wrapped(vm, active_frames, frame, ins, regs, constants):
@@ -352,12 +359,17 @@ class TieredJITVM(GarbageCollectedVM):
                         self._jit_main_leaf_allowed = False
                 return wrapped
 
-            handlers[Op.CALL] = synced(OPCODE_HANDLERS[Op.CALL], leaf_allowed=True)
-            handlers[Op.CALLV] = synced(OPCODE_HANDLERS[Op.CALLV], leaf_allowed=True)
-            handlers[Op.JFORLOOP] = synced(_jit_forloop)
+            handlers[Op.CALL] = synced(handlers[Op.CALL], leaf_allowed=True)
+            handlers[Op.CALLV] = synced(handlers[Op.CALLV], leaf_allowed=True)
+            handlers[Op.JFORLOOP] = synced(handlers[Op.JFORLOOP])
             if proto.jit_fully_typed:
                 for branch_op in (Op.JMP, Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL):
-                    handlers[branch_op] = synced(_jit_cfg_branch)
+                    base = _jit_cfg_branch
+                    if self.debug_hooks_enabled:
+                        def base(vm, active_frames, frame, ins, regs, constants, _op=branch_op):
+                            vm._hook_instruction(frame, frame.pc - 1)
+                            return _jit_cfg_branch(vm, active_frames, frame, ins, regs, constants)
+                    handlers[branch_op] = synced(base)
 
             while frames:
                 try:
@@ -407,7 +419,7 @@ class TieredJITVM(GarbageCollectedVM):
     def _execute_thread(self, thread, stop_depth: int | None = None):
         frames = thread.frames
         final_values = ()
-        handlers = _JIT_OPCODE_HANDLERS
+        handlers = self.hook_handlers(_JIT_OPCODE_HANDLERS)
 
         if thread.pending_tail_resume is not None and frames:
             values = thread.pending_tail_resume

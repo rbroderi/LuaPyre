@@ -24,6 +24,7 @@ class OptimizingJITVM(TieredJITVM):
         *,
         jit_enabled: bool = True,
         jit_threshold: int = 32,
+        debug_hooks_enabled: bool = False,
     ):
         super().__init__(
             globals,
@@ -31,6 +32,7 @@ class OptimizingJITVM(TieredJITVM):
             max_frames=max_frames,
             jit_enabled=jit_enabled,
             jit_threshold=jit_threshold,
+            debug_hooks_enabled=debug_hooks_enabled,
         )
         self.jit = SuperPythonJIT(
             threshold=jit_threshold,
@@ -73,9 +75,15 @@ class OptimizingJITVM(TieredJITVM):
             frame.protected_handler = None
             frame.protected_name = None
             frame.protected_error = None
+            frame.protected_error_depth = 0
             frame.trace_name = None
             frame.call_name = None
             frame.call_namewhat = ""
+            frame.hook_call_pending = True
+            frame.hook_last_pc = -1
+            frame.hook_last_line = -1
+            frame.hook_call_values = tuple(args[:proto.param_count])
+            frame.is_tailcall = False
             return frame
 
         self.jit.stats.compiled_frame_allocations += 1
@@ -94,6 +102,7 @@ class OptimizingJITVM(TieredJITVM):
         frame.protected_handler = None
         frame.protected_name = None
         frame.protected_error = None
+        frame.protected_error_depth = 0
         frame.trace_name = None
         frame.call_name = None
         frame.call_namewhat = ""
@@ -114,6 +123,7 @@ class OptimizingJITVM(TieredJITVM):
             and fn.proto.jit_fully_typed
             and not tail
             and not self._sync_frame_prefixes
+            and not self.hooks_active()
             and self.jit.enabled
             and budget_is_current
         ):

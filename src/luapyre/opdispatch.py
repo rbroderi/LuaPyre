@@ -63,7 +63,7 @@ def _bitwise_error(vm, frames, frame, op, a, b, dest):
     }[op]
     tm = vm._first_tm(a, b, vm.ARITH_TM[op])
     if tm is not None:
-        vm._invoke(frames, frame, tm, [a, b], dest, 1)
+        vm._invoke_metamethod(frames, frame, tm, [a, b], dest, 1, vm.ARITH_TM[op])
         return
     bad = a if coerce_lua_integer(a) is None else b
     if type(bad) is float:
@@ -266,7 +266,7 @@ def _arith_metamethod(vm, frames, frame, name, a, b, dest):
                 f"attempt to call a {_object_type(vm, tm)} value "
                 f"(metamethod '{label}')"
             )
-    vm._invoke(frames, frame, tm, [a, b], dest, 1)
+    vm._invoke_metamethod(frames, frame, tm, [a, b], dest, 1, name)
 
 
 def _add(vm, frames, frame, ins, regs, constants):
@@ -404,7 +404,7 @@ def _neg(vm, frames, frame, ins, regs, constants):
         raise LuaRuntimeError(
             f"attempt to perform arithmetic on a {_object_type(vm, value)} value"
         )
-    vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
+    vm._invoke_metamethod(frames, frame, tm, [value, value], ins.a, 1, b"__unm")
 
 
 def _bnot(vm, frames, frame, ins, regs, constants):
@@ -420,7 +420,7 @@ def _bnot(vm, frames, frame, ins, regs, constants):
         raise LuaRuntimeError(
             f"attempt to perform 'bnot' on a {_object_type(vm, value)} value"
         )
-    vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
+    vm._invoke_metamethod(frames, frame, tm, [value, value], ins.a, 1, b"__bnot")
 
 
 def _concat(vm, frames, frame, ins, regs, constants):
@@ -431,7 +431,7 @@ def _concat(vm, frames, frame, ins, regs, constants):
         tm = vm._first_tm(a, b, b"__concat")
         if tm is None:
             raise
-        vm._invoke(frames, frame, tm, [a, b], ins.a, 1)
+        vm._invoke_metamethod(frames, frame, tm, [a, b], ins.a, 1, b"__concat")
 
 
 def _len(vm, frames, frame, ins, regs, constants):
@@ -444,14 +444,14 @@ def _len(vm, frames, frame, ins, regs, constants):
         if tm is None:
             regs[ins.a] = value.rawlen()
         else:
-            vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
+            vm._invoke_metamethod(frames, frame, tm, [value, value], ins.a, 1, b"__len")
         return
     tm = vm._tm(value, b"__len")
     if tm is None:
         raise LuaRuntimeError(
             f"attempt to get length of a {lua_type_name(value)} value"
         )
-    vm._invoke(frames, frame, tm, [value, value], ins.a, 1)
+    vm._invoke_metamethod(frames, frame, tm, [value, value], ins.a, 1, b"__len")
 
 
 def _not(vm, frames, frame, ins, regs, constants):
@@ -474,7 +474,7 @@ def _eq(vm, frames, frame, ins, regs, constants):
     if tm is None:
         regs[ins.a] = False
         return
-    vm._invoke(frames, frame, tm, [a, b], ins.a, 1)
+    vm._invoke_metamethod(frames, frame, tm, [a, b], ins.a, 1, b"__eq")
 
 
 def _lt(vm, frames, frame, ins, regs, constants):
@@ -496,7 +496,7 @@ def _lt(vm, frames, frame, ins, regs, constants):
             raise LuaRuntimeError(
                 f"attempt to call a {_object_type(vm, tm)} value (metamethod 'lt')"
             )
-    vm._invoke(frames, frame, tm, [a, b], ins.a, 1)
+    vm._invoke_metamethod(frames, frame, tm, [a, b], ins.a, 1, b"__lt")
 
 
 def _le(vm, frames, frame, ins, regs, constants):
@@ -512,7 +512,7 @@ def _le(vm, frames, frame, ins, regs, constants):
         left, right = _object_type(vm, a), _object_type(vm, b)
         relation = f"two {left} values" if left == right else f"{left} with {right}"
         raise LuaRuntimeError(f"attempt to compare {relation}")
-    vm._invoke(frames, frame, tm, [a, b], ins.a, 1)
+    vm._invoke_metamethod(frames, frame, tm, [a, b], ins.a, 1, b"__le")
 
 
 def _jmp(vm, frames, frame, ins, regs, constants):
@@ -761,11 +761,29 @@ def _apply_call_origin(frame, callee, function_reg):
             callee.call_namewhat, callee.call_name = origin
 
 
+def _call_origin(frame, function_reg):
+    pc = frame.pc - 1
+    if 0 <= pc < len(frame.proto.value_origins):
+        return frame.proto.value_origins[pc].get(function_reg)
+    return None
+
+
 def _call(vm, frames, frame, ins, regs, constants):
     fn = regs[ins.b]
     args = [regs[ins.c + i] for i in range(ins.d)]
     depth = len(frames)
-    result = vm._invoke_site(frames, frame, fn, args, ins.a, ins.e, tail=False)
+    origin = _call_origin(frame, ins.b)
+    if origin is not None and hasattr(fn, "fn"):
+        origins = getattr(vm, "_host_call_origins", None)
+        if origins is None:
+            origins = vm._host_call_origins = []
+        origins.append(origin)
+        try:
+            result = vm._invoke_site(frames, frame, fn, args, ins.a, ins.e, tail=False)
+        finally:
+            origins.pop()
+    else:
+        result = vm._invoke_site(frames, frame, fn, args, ins.a, ins.e, tail=False)
     if len(frames) > depth and getattr(fn, "protected_mode", None) is None:
         _apply_call_origin(frame, frames[-1], ins.b)
     return result
@@ -777,7 +795,18 @@ def _callv(vm, frames, frame, ins, regs, constants):
     mv = regs[ins.e]
     args.extend(mv.values if isinstance(mv, MultiValue) else (mv,))
     depth = len(frames)
-    result = vm._invoke_site(frames, frame, fn, args, ins.a, -1, tail=False)
+    origin = _call_origin(frame, ins.b)
+    if origin is not None and hasattr(fn, "fn"):
+        origins = getattr(vm, "_host_call_origins", None)
+        if origins is None:
+            origins = vm._host_call_origins = []
+        origins.append(origin)
+        try:
+            result = vm._invoke_site(frames, frame, fn, args, ins.a, -1, tail=False)
+        finally:
+            origins.pop()
+    else:
+        result = vm._invoke_site(frames, frame, fn, args, ins.a, -1, tail=False)
     if len(frames) > depth and getattr(fn, "protected_mode", None) is None:
         _apply_call_origin(frame, frames[-1], ins.b)
     return result

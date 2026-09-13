@@ -26,13 +26,28 @@ class GarbageCollectedVM(CoroutineVM):
     executing so an explicit collection cannot lose caller roots.
     """
 
-    def __init__(self, globals: LuaTable | None = None, fuel=1_000_000, max_frames=1000):
-        super().__init__(globals, fuel=fuel, max_frames=max_frames)
+    def __init__(
+        self,
+        globals: LuaTable | None = None,
+        fuel=1_000_000,
+        max_frames=1000,
+        *,
+        debug_hooks_enabled: bool = False,
+    ):
+        super().__init__(
+            globals,
+            fuel=fuel,
+            max_frames=max_frames,
+            debug_hooks_enabled=debug_hooks_enabled,
+        )
         self._active_frames = None
         self._active_host_values = None
         self._active_call_result = None
         self._host_call_stack: list[HostFunction] = []
         self._sync_frame_prefixes: list[list[Frame]] = []
+        self._active_hook_subject = None
+        self._active_hook_transfer = ()
+        self._active_hook_transfer_base = 0
         self.type_metatables: dict[bytes, LuaTable] = {}
         self.gc = LuaGC(self)
         self.gc.adopt(self.globals)
@@ -100,7 +115,9 @@ class GarbageCollectedVM(CoroutineVM):
         if self._sync_frame_prefixes:
             prefix = self._sync_frame_prefixes[-1]
             if frames is not prefix:
-                visible_frames = [*prefix, *frames]
+                # ``frames[0]`` is call_sync's synthetic result carrier, not
+                # a Lua- or C-visible activation record.
+                visible_frames = [*prefix, *frames[1:]]
         self._active_frames = visible_frames
         self._active_call_result = (parent, dest, want, tail)
         try:
@@ -138,7 +155,7 @@ class GarbageCollectedVM(CoroutineVM):
             frames = [Frame(root, root_regs)]
             self._active_frames = frames
             final_values = ()
-            handlers = OPCODE_HANDLERS
+            handlers = self.hook_handlers(OPCODE_HANDLERS)
 
             while frames:
                 try:
@@ -198,10 +215,16 @@ class GarbageCollectedVM(CoroutineVM):
         frames = [parent]
         prefix = list(self._active_frames or ())
         self._sync_frame_prefixes.append(prefix)
+        previous_frames = self._active_frames
         try:
             try:
                 self._invoke(frames, parent, fn, list(args), 0, -1)
+                if self._hook_thread().hook_running and len(frames) > 1:
+                    frames[-1].call_namewhat = "hook"
+                    frames[-1].trace_name = "hook"
                 remaining = self.default_fuel if fuel is None else fuel
+                self._active_frames = [*prefix, *frames[1:]]
+                handlers = self.hook_handlers(OPCODE_HANDLERS)
                 while len(frames) > 1:
                     try:
                         frame = frames[-1]
@@ -217,7 +240,7 @@ class GarbageCollectedVM(CoroutineVM):
 
                         ins = frame.proto.code[frame.pc]
                         frame.pc += 1
-                        OPCODE_HANDLERS[ins.op](
+                        handlers[ins.op](
                             self,
                             frames,
                             frame,
@@ -242,7 +265,6 @@ class GarbageCollectedVM(CoroutineVM):
                 raise LuaRuntimeError(
                     "attempt to yield across a standard library callback"
                 ) from None
-
             if parent.pending_error is not None:
                 raise parent.pending_error
             result = parent.regs[0]
@@ -250,12 +272,13 @@ class GarbageCollectedVM(CoroutineVM):
                 return tuple(result.values)
             return () if result is None else (result,)
         finally:
+            self._active_frames = previous_frames
             self._sync_frame_prefixes.pop()
 
     def _execute_thread(self, thread, stop_depth: int | None = None):
         frames = thread.frames
         final_values = ()
-        handlers = OPCODE_HANDLERS
+        handlers = self.hook_handlers(OPCODE_HANDLERS)
 
         if thread.pending_tail_resume is not None and frames:
             values = thread.pending_tail_resume

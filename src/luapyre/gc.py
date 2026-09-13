@@ -10,10 +10,10 @@ from .errors import LuaQuotaError, LuaRaisedError, LuaRuntimeError
 from .opdispatch import OPCODE_HANDLERS
 from .table import LuaTable
 from .values import MultiValue
-from .vm import Frame
+from .vm import Frame, HostFunction
 
 
-_COLLECTABLE_TYPES = (LuaTable, Closure, Cell)
+_COLLECTABLE_TYPES = (LuaTable, Closure, Cell, HostFunction)
 _GC_NEW = 0
 _GC_SURVIVAL = 1
 _GC_OLD = 2
@@ -394,8 +394,11 @@ class LuaGC:
                 stack.extend(current.upvalues)
             elif isinstance(current, Cell):
                 stack.append(current.value)
+            elif isinstance(current, HostFunction):
+                stack.extend(current._gc_refs)
             else:
                 stack.append(current.entry)
+                stack.append(current.hook)
                 stack.extend(current.frames)
                 stack.extend(current.yielded)
 
@@ -639,8 +642,14 @@ class LuaGC:
                     mark(cell.value)
                 return True
 
+            if isinstance(value, HostFunction):
+                for item in value._gc_refs:
+                    mark(item)
+                return True
+
             # LuaThread
             mark(value.entry)
+            mark(value.hook)
             mark_frame_stack(value.frames)
             for item in value.yielded:
                 mark(item)
@@ -736,6 +745,9 @@ class LuaGC:
         handlers = OPCODE_HANDLERS
 
         self.vm._invoke(frames, parent, fn, list(args), 0, 0)
+        if len(frames) > 1:
+            frames[-1].call_name = "__gc"
+            frames[-1].call_namewhat = "metamethod"
         while len(frames) > 1:
             try:
                 frame = frames[-1]
@@ -930,6 +942,8 @@ class LuaGC:
         option = self._as_bytes(option, "string")
 
         if option == b"collect":
+            if self.in_finalizer:
+                return False
             self.collect()
             return None
         if option == b"stop":
@@ -943,6 +957,8 @@ class LuaGC:
         if option == b"count":
             return self.count_kbytes()
         if option == b"step":
+            if self.in_finalizer:
+                return False
             kind = b"minor" if self.mode == b"generational" and self._last_major_bytes else b"major"
             self.collect(kind=kind)
             return True
@@ -959,7 +975,7 @@ class LuaGC:
             previous = self.params[name]
             if len(args) > 1:
                 value = args[1]
-                if type(value) is not int or not 0 <= value <= 100000:
+                if type(value) is not int or not 0 <= value <= 0x7FFFFFFE:
                     raise LuaRuntimeError("garbage-collector parameter out of range")
                 self.params[name] = value
             return previous

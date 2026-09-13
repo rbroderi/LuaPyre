@@ -31,6 +31,9 @@ from .stdlib_table import install_table_library
 from .stdlib_utf8 import install_utf8_library
 
 
+_MISSING = object()
+
+
 def install_safe_stdlib(globals_table: LuaTable, vm=None):
     def put(name, fn):
         host = lua_c_function(fn, name)
@@ -113,9 +116,11 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
 
     put("getmetatable", getmetatable)
 
-    def setmetatable(table, mt, *_ignored):
+    def setmetatable(table, mt=_MISSING, *_ignored):
         if not isinstance(table, LuaTable):
             raise LuaRuntimeError("bad argument #1 to 'setmetatable' (table expected)")
+        if mt is _MISSING:
+            raise LuaRuntimeError("bad argument #2 to 'setmetatable' (value expected)")
         if mt is not None and not isinstance(mt, LuaTable):
             raise LuaRuntimeError("bad argument #2 to 'setmetatable' (nil or table expected)")
         if table.metatable is not None and table.metatable.rawget(b"__metatable") is not None:

@@ -53,9 +53,12 @@ class LuaRuntime:
         jit=True,
         jit_threshold=32,
         source_cache_size=128,
+        debug_hooks=False,
     ):
         if type(source_cache_size) is not int or source_cache_size < 0:
             raise ValueError("source_cache_size must be a non-negative integer")
+        if type(debug_hooks) is not bool:
+            raise TypeError("debug_hooks must be a boolean")
         self.source_cache_size = source_cache_size
         self._source_cache = OrderedDict()
         self._source_cache_hits = 0
@@ -68,9 +71,15 @@ class LuaRuntime:
                 max_frames=max_frames,
                 jit_enabled=True,
                 jit_threshold=jit_threshold,
+                debug_hooks_enabled=debug_hooks,
             )
         else:
-            self.vm = GarbageCollectedVM(self.globals, fuel=fuel, max_frames=max_frames)
+            self.vm = GarbageCollectedVM(
+                self.globals,
+                fuel=fuel,
+                max_frames=max_frames,
+                debug_hooks_enabled=debug_hooks,
+            )
         self.capabilities = RuntimeCapabilities()
         self.capabilities.set_output_sink(output)
         self.capabilities.set_warning_sink(warning)

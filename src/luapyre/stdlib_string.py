@@ -24,6 +24,9 @@ from .stdlib_support import (
 )
 
 
+_MISSING = object()
+
+
 def _start_index(value, length: int) -> int:
     value = normalize_index(value, length)
     if value < 1:
@@ -572,7 +575,11 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
                 finished = True
             return MultiValue(_match_values(match, s))
 
-        return HostFunction(iterator, "string.gmatch iterator")
+        return HostFunction(
+            iterator,
+            "string.gmatch iterator",
+            _gc_refs=(s, pattern),
+        )
 
     def gsub(s, pattern, repl, n=None):
         s = need_bytes(s, 1, "gsub")
@@ -667,8 +674,10 @@ def install_string_library(globals_table: LuaTable, vm) -> LuaTable:
             raise LuaRuntimeError("resulting string too large")
         return sep.join([s] * n)
 
-    def sub(s, i, j=-1):
+    def sub(s, i=_MISSING, j=-1):
         s = need_bytes(s, 1, "sub")
+        if i is _MISSING:
+            raise LuaRuntimeError("bad argument #2 to 'sub' (value expected)")
         i = need_integer(i, 2, "sub")
         j = -1 if j is None else j
         j = need_integer(j, 3, "sub")

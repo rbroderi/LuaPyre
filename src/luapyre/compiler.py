@@ -46,6 +46,7 @@ class Symbol:
     captured: bool = False
     readonly: bool = False
     returns: list[LuaType] | None = None
+    debug_index: int = -1
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,7 @@ class Compiler:
         ctx.compile_block(chunk.body, scoped=False)
         ctx.emit_close_to(0)
         proto.code.append(Ins(Op.HALT))
+        ctx.finish_debug_scope()
         ctx.patch_gotos()
         proto.register_count = ctx.max_reg
         return proto
@@ -113,7 +115,7 @@ class _FunctionCompiler:
         self.reg_origins: dict[int, tuple[str, str]] = {}
         for name, typ in params or []:
             r = self.alloc()
-            self.scopes[0].bindings[name] = Symbol(r, typ)
+            self.define_local(name, Symbol(r, typ))
 
     def alloc(self):
         r = self.next_reg
@@ -129,7 +131,7 @@ class _FunctionCompiler:
             self.alloc()
         return base
 
-    def emit(self, op, a=0, b=0, c=0, d=0, e=0):
+    def emit(self, op, a=0, b=0, c=0, d=0, e=0, *, line=None):
         self.proto.code.append(Ins(op, a, b, c, d, e))
         self.proto.value_origins.append(dict(self.reg_origins))
         if op in (Op.MOVE, Op.LOCAL) and b in self.reg_origins:
@@ -155,11 +157,33 @@ class _FunctionCompiler:
 
     def pop_scope(self):
         scope = self.scopes.pop()
+        end = max(0, len(self.proto.code) - 1)
+        for binding in scope.bindings.values():
+            if isinstance(binding, Symbol) and binding.debug_index >= 0:
+                name, register, start, _old_end = self.proto.debug_locals[binding.debug_index]
+                self.proto.debug_locals[binding.debug_index] = (
+                    name, register, start, end
+                )
         self.implicit_global = scope.implicit_before
         self.close_depth = scope.close_base
 
     def define_local(self, name, sym):
         self.scopes[-1].bindings[name] = sym
+        if name != "_ENV" and sym.debug_index < 0:
+            sym.debug_index = len(self.proto.debug_locals)
+            self.proto.debug_locals.append(
+                (name, sym.reg, len(self.proto.code), (1 << 31) - 1)
+            )
+
+    def finish_debug_scope(self):
+        end = max(0, len(self.proto.code) - 1)
+        for scope in self.scopes:
+            for binding in scope.bindings.values():
+                if isinstance(binding, Symbol) and binding.debug_index >= 0:
+                    name, register, start, _old_end = self.proto.debug_locals[binding.debug_index]
+                    self.proto.debug_locals[binding.debug_index] = (
+                        name, register, start, end
+                    )
 
     def declare_global(self, name, typ=ANY, readonly=False):
         self.implicit_global = False
@@ -193,6 +217,9 @@ class _FunctionCompiler:
                 "upvalue", idx, self.upvalue_types[idx], name=name,
                 readonly=idx in self.readonly_upvalues,
             )
+        if len(self.proto.upvalues) >= 255:
+            line = getattr(self, "current_line", 1)
+            raise LuaSyntaxError(f"too many upvalues in function at line {line}")
         idx = len(self.proto.upvalues)
         self.proto.upvalues.append(UpvalueDesc(source.kind, source.index, name))
         self.upvalue_types.append(source.typ)
@@ -230,7 +257,7 @@ class _FunctionCompiler:
 
         return self._fallback_global(name, allow_implicit=allow_implicit)
 
-    def resolve(self, name):
+    def resolve(self, name, *, line=None):
         binding = self._find_binding(name)
         if isinstance(binding, Symbol):
             return Ref("local", binding.reg, binding.typ, binding, name)
@@ -253,8 +280,9 @@ class _FunctionCompiler:
 
         global_ref = self._fallback_global(name)
         if global_ref is None:
+            prefix = f"line {line}: " if line is not None else ""
             raise LuaSyntaxError(
-                f"global '{name}' is not declared in this scope "
+                f"{prefix}global '{name}' is not declared in this scope "
                 f"(variable '{name}' is not declared)"
             )
         return global_ref
@@ -377,13 +405,19 @@ class _FunctionCompiler:
                 value.debug_name = declared.name
                 value.debug_namewhat = "local"
         values = self.adjust_values(stmt.values, len(stmt.names))
-        for declared, (vr, actual) in zip(stmt.names, values):
+        for position, (declared, (vr, actual)) in enumerate(zip(stmt.names, values)):
             if declared.typ is not ANY and actual is not ANY and not accepts(declared.typ, actual):
                 raise LuaTypeError(f"line {stmt.line}: cannot assign {actual} to {declared.typ}")
             if declared.typ is not ANY and actual is ANY:
                 self.emit(Op.GUARD, vr, self.proto.add_const(declared.typ.name))
             r = self.alloc()
-            self.emit(Op.LOCAL, r, vr)
+            value_expr = stmt.values[position] if position < len(stmt.values) else None
+            local_line = (
+                value_expr.end_line
+                if isinstance(value_expr, A.FunctionExpr) and value_expr.end_line
+                else stmt.line
+            )
+            self.emit(Op.LOCAL, r, vr, line=local_line)
             readonly = declared.attribute in ("const", "close")
             self.define_local(declared.name, Symbol(r, declared.typ, readonly=readonly))
             self.reg_origins[r] = ("local", declared.name)
@@ -480,7 +514,11 @@ class _FunctionCompiler:
         jump_false = self.emit(Op.JMPIFNOT, 0, cr)
         self.loop_breaks.append(LoopContext(self.close_depth))
         self.compile_block(stmt.body)
-        self.emit(Op.JMP, start)
+        backedge_line = (
+            (getattr(stmt.body[-1], "end_line", 0) or stmt.body[-1].line)
+            if stmt.body else stmt.condition.line
+        )
+        self.emit(Op.JMP, start, line=backedge_line)
         end = len(self.proto.code)
         self.patch_a(jump_false, end)
         self._finish_loop(end)
@@ -494,7 +532,7 @@ class _FunctionCompiler:
             self.compile_block(stmt.body, scoped=False)
             cr, _ = self.expr(stmt.condition)
             self.emit_close_to(base, update=True)
-            self.emit(Op.JMPIFNOT, start, cr)
+            self.emit(Op.JMPIFNOT, start, cr, line=stmt.condition.line)
             end = len(self.proto.code)
             self._finish_loop(end)
         finally:
@@ -517,9 +555,9 @@ class _FunctionCompiler:
         end_jumps = []
         for cond, body in stmt.clauses:
             cr, _ = self.expr(cond)
-            jf = self.emit(Op.JMPIFNOT, 0, cr)
+            jf = self.emit(Op.JMPIFNOT, 0, cr, line=cond.line)
             self.compile_block(body)
-            end_jumps.append(self.emit(Op.JMP, 0))
+            end_jumps.append(self.emit(Op.JMP, 0, line=stmt.end_line or stmt.line))
             self.patch_a(jf, len(self.proto.code))
         if stmt.else_body:
             self.compile_block(stmt.else_body)
@@ -552,7 +590,10 @@ class _FunctionCompiler:
             visible = self.alloc()
             self.define_local(stmt.name, Symbol(visible, ANY, readonly=True))
             body_start = len(self.proto.code)
-            self.emit(Op.LOCAL, visible, idx)
+            body_line = (
+                stmt.body[0].line if stmt.body else stmt.end_line or stmt.line
+            )
+            self.emit(Op.LOCAL, visible, idx, line=body_line)
             self.compile_block(stmt.body, scoped=False)
             self.emit_close_to(base, update=True)
             loop_op = (
@@ -573,6 +614,7 @@ class _FunctionCompiler:
         for i, (reg, _) in enumerate(values):
             self.emit(Op.MOVE, hidden + i, reg)
         iterator, state, control = hidden, hidden + 1, hidden + 2
+        self.reg_origins[iterator] = ("for iterator", "for iterator")
         iterator_base = self.close_depth
         self.push_scope()
         self.emit(Op.TBC, hidden + 3)
@@ -590,14 +632,29 @@ class _FunctionCompiler:
             self.emit(Op.MOVE, arg_base, state)
             self.emit(Op.MOVE, arg_base + 1, control)
             out = self.alloc_n(max(1, len(variables)))
-            self.emit(Op.CALL, out, iterator, arg_base, 2, len(variables))
+            self.emit(
+                Op.CALL,
+                out,
+                iterator,
+                arg_base,
+                2,
+                len(variables),
+                line=stmt.values[-1].line if stmt.values else stmt.line,
+            )
             done = self.emit(Op.JMPIFNIL, 0, out)
             self.emit(Op.MOVE, control, out)
+            body_line = (
+                stmt.body[0].line if stmt.body else stmt.end_line or stmt.line
+            )
             for i, reg in enumerate(variables):
-                self.emit(Op.LOCAL, reg, out + i)
+                self.emit(Op.LOCAL, reg, out + i, line=body_line)
             self.compile_block(stmt.body, scoped=False)
             self.emit_close_to(body_base, update=True)
-            self.emit(Op.JMP, loop_start)
+            backedge_line = (
+                (getattr(stmt.body[-1], "end_line", 0) or stmt.body[-1].line)
+                if stmt.body else stmt.values[-1].line
+            )
+            self.emit(Op.JMP, loop_start, line=backedge_line)
             end = len(self.proto.code)
             self.patch_a(done, end)
             self._finish_loop(end)
@@ -623,6 +680,10 @@ class _FunctionCompiler:
             debug_namewhat=namewhat,
         )
         sub = _FunctionCompiler(child, params, self)
+        if child.is_vararg:
+            child.debug_locals.append(
+                ("(vararg table)", -1, 0, (1 << 31) - 1)
+            )
         if vararg_name not in (None, ""):
             reg = sub.alloc()
             child.vararg_name_reg = reg
@@ -630,6 +691,14 @@ class _FunctionCompiler:
         sub.compile_block(body, scoped=False)
         sub.emit_close_to(0)
         child.code.append(Ins(Op.RETURN, 0, 0))
+        if child.is_vararg:
+            for index, item in enumerate(child.debug_locals):
+                if item[0] == "(vararg table)":
+                    child.debug_locals[index] = (
+                        item[0], item[1], item[2], max(0, len(child.code) - 2)
+                    )
+                    break
+        sub.finish_debug_scope()
         sub.patch_gotos()
         child.register_count = sub.max_reg
         self.proto.children.append(child)
@@ -725,6 +794,10 @@ class _FunctionCompiler:
         return values[:wanted]
 
     def compile_return(self, stmt):
+        # Lua's RETURN operand reserves one byte for the result count; the
+        # largest statically enumerated return list therefore has 254 values.
+        if len(stmt.values) > 254:
+            raise LuaSyntaxError(f"line {stmt.line}: too many returns")
         if not stmt.values:
             self.emit_close_to(0)
             self.emit(Op.RETURN, 0, 0)
@@ -795,7 +868,7 @@ class _FunctionCompiler:
         return r, expr.inferred_type
 
     def _expr_name(self, expr):
-        ref = self.resolve(expr.value)
+        ref = self.resolve(expr.value, line=expr.line)
         out, typ = self._load_ref(ref)
         self.reg_origins[out] = (
             "local" if ref.kind == "local" else
@@ -867,7 +940,7 @@ class _FunctionCompiler:
     def _expr_binary(self, expr):
         logical_jump = _LOGICAL_JUMPS.get(expr.op)
         if logical_jump is not None:
-            left, left_type = self.expr(expr.left)
+            left, left_type = self._binary_left(expr)
             out = self.alloc()
             self.emit(Op.MOVE, out, left)
             jump = self.emit(logical_jump, 0, left)
@@ -879,7 +952,7 @@ class _FunctionCompiler:
             self.reg_origins.pop(out, None)
             return out, left_type if left_type == right_type else ANY
 
-        left, left_type = self.expr(expr.left)
+        left, left_type = self._binary_left(expr)
         right, right_type = self.expr(expr.right)
         out = self.alloc()
 
@@ -920,6 +993,9 @@ class _FunctionCompiler:
             return negated, BOOLEAN
         return out, result_type
 
+    def _binary_left(self, expr):
+        return self.expr(expr.left)
+
     def _expr_call(self, expr):
         return self.call_expr(expr, 1)[0]
 
@@ -937,7 +1013,7 @@ class _FunctionCompiler:
                 fn = self.alloc()
                 self.emit(Op.GETTABLE, fn, receiver, key)
                 args = [receiver]
-                origin = ("method", name)
+                origin = ("field" if fn > 255 else "method", name)
             case A.Call(func=func, args=source_args):
                 fn, _ = self.expr(func)
                 args = []
