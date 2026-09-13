@@ -222,6 +222,10 @@ class LuaRuntime:
             hints = get_type_hints(fn)
         except (NameError, TypeError):
             hints = {}
+        return_hint = hints.get(
+            "return",
+            signature.return_annotation if signature is not None else None,
+        )
 
         def boundary(*args):
             converted = []
@@ -231,10 +235,6 @@ class LuaRuntime:
                     expected = None
                 converted.append(self._from_lua(value, expected))
             result = fn(*converted)
-            return_hint = hints.get(
-                "return",
-                signature.return_annotation if signature is not None else None,
-            )
             if return_hint is LuaInt:
                 # Validate before ordinary int conversion applies Lua's exact
                 # wraparound and would conceal a broken fast-integer contract.
@@ -473,13 +473,18 @@ class LuaRuntime:
         elif callable(function) and not isinstance(function, HostFunction):
             function = self._wrap_python_callable(function)
 
+        if isinstance(function, Closure) and function.proto.jit_fully_typed:
+            for arg, typ in zip(args, function.proto.param_types):
+                if typ.name == "integer" and type(arg) is int:
+                    self._from_lua(arg, LuaInt)
         lua_args = [self._to_lua(arg) for arg in args]
         cache_key = (id(function), len(lua_args))
-        cached = self._python_call_cache.get(cache_key)
+        # Borrow an inactive trampoline. A recursive host callback or debug
+        # hook must not overwrite constants the outer call is still loading.
+        cached = self._python_call_cache.pop(cache_key, None)
         if cached is not None and cached[0] is function:
             proto = cached[1]
             proto.constants[1:] = lua_args
-            self._python_call_cache.move_to_end(cache_key)
         else:
             constants = [function, *lua_args]
             code = [Ins(Op.LOADK, index, index) for index in range(len(constants))]
@@ -502,10 +507,14 @@ class LuaRuntime:
                 source=b"=[python call]",
                 lineinfo=[1] * len(code),
             )
+        try:
+            result = self.vm.run(proto, fuel=fuel)
+        finally:
+            proto.constants[1:] = [None] * len(lua_args)
             self._python_call_cache[cache_key] = (function, proto)
             if len(self._python_call_cache) > max(16, self.source_cache_size):
                 self._python_call_cache.popitem(last=False)
-        return self._from_lua(self.vm.run(proto, fuel=fuel), return_type)
+        return self._from_lua(result, return_type)
 
     def set_output_sink(self, sink=None) -> None:
         """Replace the byte-oriented sink used by Lua ``print``."""

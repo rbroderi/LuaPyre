@@ -42,8 +42,11 @@ def compile_virtual_frame(proto: Proto) -> FunctionType | None:
         "        raise _LuaRuntimeError('stack overflow')",
     ]
     for index in range(proto.param_count):
+        expected = proto.param_types[index].name
         lines.extend([
             f"    _r{index} = args[{index}] if {index} < len(args) else None",
+            f"    if not _type_matches({expected!r}, _r{index}):",
+            f"        raise _LuaRuntimeError(f'argument {index + 1}: expected {expected}, got {{_static_value_type(_r{index}).name}}')",
         ])
     for reg in registers[proto.param_count:]:
         lines.append(f"    _r{reg} = None")

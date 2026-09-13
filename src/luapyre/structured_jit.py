@@ -8,6 +8,7 @@ from .jit import CompiledLoop, IRBlock, IRInstruction, IRLoop
 from .opdispatch import _float_divide
 from .range_analysis import analyze_integer_ranges
 from .table import LuaTable
+from .typed_ir import TypedIRCompiler
 from .values import type_matches
 
 
@@ -107,6 +108,15 @@ class StructuredTypedLoopJITMixin:
             return None
         if len(sequence) > 24:
             return None
+        if any(ins.op is Op.DIV for _, ins in sequence):
+            plan = TypedIRCompiler(proto).compile((tuple(sequence),))
+            numeric = ("integer", "integer_lua", "float", "number")
+            for pc, ins in sequence:
+                if ins.op is Op.DIV:
+                    site = plan.instruction(pc)
+                    if (site.value_for(ins.b).type_name not in numeric
+                            or site.value_for(ins.c).type_name not in numeric):
+                        return None
         return tuple(sequence)
 
     @staticmethod
@@ -243,19 +253,6 @@ class StructuredTypedLoopJITMixin:
                     "        return 0, False",
                 ]
             )
-            for arg_index in range(min(closure.proto.param_count, body[pc - start_pc].d)):
-                expected_type = closure.proto.param_types[arg_index].name
-                source_reg = body[pc - start_pc].c + arg_index
-                lines.append(
-                    f"    if not _type_matches({expected_type!r}, _r{source_reg}):"
-                )
-                lines.extend(self._spill_lines(registers, "        "))
-                lines.extend(
-                    [
-                        f"        frame.pc = {start_pc}",
-                        "        return 0, False",
-                    ]
-                )
             namespace[f"_consts_{pc}"] = closure.proto.constants
 
         integer_loop = all(
@@ -267,7 +264,9 @@ class StructuredTypedLoopJITMixin:
             f"_r{loop_ins.b}",
             f"_r{loop_ins.c}",
         )
-        batched_can_exit = integer_loop and any(ins.op is Op.GUARD for ins in body)
+        batched_can_exit = integer_loop and any(
+            ins.op in (Op.GUARD, Op.CALL, Op.SETTABLE, Op.DIV) for ins in body
+        )
         if integer_loop:
             lines.extend(
                 [
@@ -288,8 +287,20 @@ class StructuredTypedLoopJITMixin:
             lines.append(f"    while budget - used >= {iteration_cost}:")
             indent = "        "
 
+        prior_child_cost = 0
+
+        def guard(condition, pc, cost):
+            lines.append(f"{indent}if {condition}:")
+            lines.extend(self._spill_lines(registers, indent + "    "))
+            completed_cost = f"_completed * {iteration_cost}" if integer_loop else "used"
+            lines.extend([
+                f"{indent}    frame.pc = {pc}",
+                f"{indent}    return {completed_cost} + {cost}, False",
+            ])
+
         for offset, ins in enumerate(body):
             pc = start_pc + offset
+            cost = offset + prior_child_cost
             a, b, c = f"_r{ins.a}", f"_r{ins.b}", f"_r{ins.c}"
             if ins.op is Op.LOADK:
                 lines.append(f"{indent}{a} = consts[{ins.b}]")
@@ -305,21 +316,10 @@ class StructuredTypedLoopJITMixin:
                 lines.append(f"{indent}else:")
                 lines.append(f"{indent}    {a} = {b}.rawget(_key_{pc})")
             elif ins.op is Op.SETTABLE:
+                guard(f"{b} is None or (type({b}) is float and {b} != {b})", pc, cost)
                 lines.append(f"{indent}{a}.rawset({b}, {c})")
             elif ins.op is Op.GUARD:
-                lines.append(f"{indent}if not _type_matches(consts[{ins.b}], {a}):")
-                lines.extend(self._spill_lines(registers, indent + "    "))
-                consumed = (
-                    f"_completed * {iteration_cost} + {offset}"
-                    if integer_loop
-                    else f"used + {offset}"
-                )
-                lines.extend(
-                    [
-                        f"{indent}    frame.pc = {pc}",
-                        f"{indent}    return {consumed}, False",
-                    ]
-                )
+                guard(f"not _type_matches(consts[{ins.b}], {a})", pc, cost)
             elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
                 expression = f"{b} {symbol} {c}"
@@ -331,6 +331,7 @@ class StructuredTypedLoopJITMixin:
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[ins.op]
                 lines.append(f"{indent}{a} = float({b} {symbol} {c})")
             elif ins.op is Op.DIV:
+                guard(f"type({b}) not in (int, float) or type({c}) not in (int, float)", pc, cost)
                 lines.append(f"{indent}{a} = _float_divide({b}, {c})")
             elif ins.op is Op.NOT:
                 lines.append(f"{indent}{a} = ({b} is None or {b} is False)")
@@ -349,6 +350,8 @@ class StructuredTypedLoopJITMixin:
                         if arg_index < ins.d
                         else "None"
                     )
+                    expected_type = closure.proto.param_types[arg_index].name
+                    guard(f"not _type_matches({expected_type!r}, {value})", pc, cost)
                     lines.append(f"{indent}{r(arg_index)} = {value}")
                 returned: list[str] | None = None
                 for child_pc, child_ins in sequence:
@@ -407,6 +410,7 @@ class StructuredTypedLoopJITMixin:
                             else "None"
                         )
                         lines.append(f"{indent}_r{ins.a + result_index} = {value}")
+                prior_child_cost += len(sequence)
             else:
                 return None
 

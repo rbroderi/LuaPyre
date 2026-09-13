@@ -207,6 +207,10 @@ class ValueIRCompiler:
         return node_id
 
     def _argument(self, index: int, type_name: str) -> int:
+        # The representation is identical; per-instruction overflow facts
+        # carry the semantic distinction independently from scalar typing.
+        if type_name == "integer_lua":
+            type_name = "integer"
         return self._new_node(
             ValueKind.ARGUMENT,
             type_name,

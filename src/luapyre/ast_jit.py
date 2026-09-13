@@ -524,7 +524,9 @@ class AstPythonJIT(RegionPythonJIT):
             out.append(f"{indent}else:")
             out.append(f"{indent}    {a} = float(_floor(float({b}) / float({c})))")
         elif op is Op.MOD:
-            if frame.proto.jit_fully_typed and item.specialization == "int":
+            if item.specialization == "int":
+                if not item.types_proven:
+                    deopt(f"type({b}) is not int or type({c}) is not int")
                 out.append(f"{indent}used += 1")
                 out.append(f"{indent}if {c} == 0:")
                 out.append(f"{indent}    raise _LuaRuntimeError(\"attempt to perform 'n%0'\")")
@@ -536,7 +538,12 @@ class AstPythonJIT(RegionPythonJIT):
                 out.extend(
                     [
                         f"{indent}used += 1",
-                        f"{indent}{a} = _float_modulo({b}, {c})",
+                        f"{indent}if type({b}) is int and type({c}) is int:",
+                        f"{indent}    if {c} == 0:",
+                        f"{indent}        raise _LuaRuntimeError(\"attempt to perform 'n%0'\")",
+                        f"{indent}    {a} = {b} % {c}",
+                        f"{indent}else:",
+                        f"{indent}    {a} = _float_modulo({b}, {c})",
                     ]
                 )
         elif op is Op.POW:
@@ -601,9 +608,15 @@ class AstPythonJIT(RegionPythonJIT):
             out.extend([f"{indent}used += 1", f"{indent}{a} = _truthy({b})"])
         elif op is Op.EQ:
             if (
-                frame.proto.jit_fully_typed
-                and item.specialization in ("int", "number", "bytes")
+                item.specialization in ("int", "number", "bytes")
             ):
+                if not item.types_proven:
+                    if item.specialization == "int":
+                        deopt(f"type({b}) is not int or type({c}) is not int")
+                    elif item.specialization == "number":
+                        deopt(f"type({b}) not in _NUM_TYPES or type({c}) not in _NUM_TYPES")
+                    else:
+                        deopt(f"not isinstance({b}, bytes) or not isinstance({c}, bytes)")
                 out.extend([f"{indent}used += 1", f"{indent}{a} = {b} == {c}"])
             else:
                 # Equality on unequal metatable-bearing tables can invoke __eq.
@@ -614,7 +627,7 @@ class AstPythonJIT(RegionPythonJIT):
         elif op in (Op.LT, Op.LE):
             symbol = "<" if op is Op.LT else "<="
             if not (
-                frame.proto.jit_fully_typed
+                item.types_proven
                 and item.specialization in ("int", "number", "bytes")
             ):
                 deopt(

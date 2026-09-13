@@ -269,16 +269,7 @@ class _SourceFunctionCompiler(_FunctionCompiler):
 
         numeric_types = (start_type, limit_type, step_type)
         if all(typ in (INTEGER, INTEGER_LUA) for typ in numeric_types):
-            # Constant numeric-for bounds prove the induction variable remains
-            # in range; expose that fact to typed arithmetic without changing
-            # the semantics of inferred scalar integers elsewhere.
-            values = (stmt.start, stmt.limit, stmt.step)
-            constant_loop = all(
-                value is None
-                or isinstance(value, A.Literal) and type(value.value) is int
-                for value in values
-            )
-            loop_type = INTEGER if constant_loop else INTEGER_LUA
+            loop_type = INTEGER_LUA
         elif all(typ in (INTEGER, INTEGER_LUA, FLOAT) for typ in numeric_types):
             loop_type = FLOAT
         else:
@@ -302,6 +293,11 @@ class _SourceFunctionCompiler(_FunctionCompiler):
         try:
             visible = self.alloc()
             self.define_local(stmt.name, Symbol(visible, loop_type, readonly=True))
+            if loop_type is INTEGER_LUA:
+                # An induction value is representable, but its derived
+                # arithmetic is not a no-overflow contract by itself. It may
+                # participate in a contract supplied by an explicit operand.
+                self.integer_induction_regs.add(visible)
             body_start = len(self.proto.code)
             body_line = (
                 stmt.body[0].line if stmt.body else stmt.end_line or stmt.line

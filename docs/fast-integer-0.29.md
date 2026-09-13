@@ -26,10 +26,12 @@ for i = 1, 10000 do
 end
 ```
 
-Constant numeric-for bounds are independently range-proven, so their induction
-variable can participate in fast integer expressions. Python exposes
+Numeric-for variables retain inferred `integer_lua` semantics. Their
+representable induction values and integer literals may participate in fast
+arithmetic when another operand supplies an explicit `integer` contract;
+neither establishes a contract on its own. Python exposes
 `LuaInt = NewType("LuaInt", int)` for annotations and checks its signed-64 range
-when converting a Lua result.
+when converting a Lua result or entering an explicitly typed integer parameter.
 
 ## Execution changes
 
@@ -40,8 +42,9 @@ This tranche also removes overhead around the generated code:
 2. Proven integer numeric-for loops use CPython's `range` iterator and batch
    fuel accounting instead of performing a Python budget and limit branch for
    every Lua iteration.
-3. Statically proven compiled child calls skip duplicate argument validation;
-   virtual frames and newly allocated compiled frames share that rule.
+3. Primitive argument validation uses direct Python representation checks.
+   Compiled and virtual child frames keep entry validation unless a separate
+   static inlining proof establishes the callee's argument contract.
 4. Structured typed loops admit table reads/writes. Stable plain Lua tables are
    guarded once, and positive dense integer reads access the Python list array
    part directly; other keys retain the exact `rawget` fallback.
@@ -52,3 +55,8 @@ This tranche also removes overhead around the generated code:
 All optimizations retain bytecode-level fuel accounting and fail closed to an
 earlier exact tier or the interpreter when a structural or table-shape guard is
 not satisfied.
+
+The pre-merge audit added regression coverage for literal/induction overflow,
+changing dynamic table types, float-to-integer modulo transitions, compiled and
+inlined argument checks, and reentrant Python calls. Runtime profile observations
+remain guarded; only static IR facts can remove representation checks.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from types import FunctionType
 
 from .ast_backend import JumpListLayout, inline_expression_helper, inline_local_jump_list
@@ -102,6 +103,19 @@ class TypedIRLoopJITMixin:
             )
 
         ins, pc, op = item.ins, item.pc, item.ins.op
+        if frame.proto.jit_fully_typed and op in (Op.MOD, Op.EQ, Op.LT, Op.LE):
+            left = site.value_for(ins.b).type_name
+            right = site.value_for(ins.c).type_name
+            integers = ("integer", "integer_lua")
+            numeric = (*integers, "float", "number")
+            proven = (
+                "int" if left in integers and right in integers
+                else "number" if left in numeric and right in numeric
+                else "bytes" if left == right == "string" and op is not Op.MOD
+                else None
+            )
+            if proven is not None:
+                item = replace(item, specialization=proven, types_proven=True)
         if site.dead_definition:
             # The original Lua instruction still consumes one unit of fuel. Its
             # register value is virtual and is reconstructed from IR state on a

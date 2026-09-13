@@ -28,9 +28,9 @@ For a source chunk accepted in fully typed mode:
 - ambient globals must be declared with a concrete type, for example `global math: table` or `global print: function`;
 - `global *` is rejected;
 - dynamic values such as table reads may enter a typed binding only through an explicit annotation, where LuaPyre emits the existing runtime `GUARD` at that boundary;
-- constant integral numeric `for` variables carry a range-proven `integer`
-  fact, other integral loops use `integer_lua`, and numeric float loops use
-  `float`;
+- integral numeric `for` variables use `integer_lua`; induction values may
+  participate in an explicit operand's `integer` contract, and numeric float
+  loops use `float`;
 - typed generic-`for` iterator contracts are not defined yet, so generic `for` is rejected in fully typed mode for now.
 
 Example:

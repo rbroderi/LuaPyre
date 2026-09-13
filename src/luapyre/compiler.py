@@ -113,6 +113,7 @@ class _FunctionCompiler:
         self.label_pcs: dict[int, int] = {}
         self.pending_gotos: list[tuple[int, int]] = []
         self.reg_origins: dict[int, tuple[str, str]] = {}
+        self.integer_induction_regs: set[int] = set()
         for name, typ in params or []:
             r = self.alloc()
             self.define_local(name, Symbol(r, typ))
@@ -962,17 +963,17 @@ class _FunctionCompiler:
         # Integer literals are intrinsically in range.  In a fully typed
         # expression they may participate in an explicit ``integer`` contract
         # without turning that expression back into wrapping ``integer_lua``.
-        if self.proto.jit_fully_typed:
+        if self.proto.jit_fully_typed and INTEGER in (left_type, right_type):
             if (
                 left_type is INTEGER_LUA
-                and isinstance(expr.left, A.Literal)
-                and type(expr.left.value) is int
+                and (left in self.integer_induction_regs
+                     or isinstance(expr.left, A.Literal) and type(expr.left.value) is int)
             ):
                 left_type = INTEGER
             if (
                 right_type is INTEGER_LUA
-                and isinstance(expr.right, A.Literal)
-                and type(expr.right.value) is int
+                and (right in self.integer_induction_regs
+                     or isinstance(expr.right, A.Literal) and type(expr.right.value) is int)
             ):
                 right_type = INTEGER
 
