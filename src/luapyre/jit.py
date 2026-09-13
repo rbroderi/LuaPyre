@@ -74,6 +74,11 @@ class JITStats:
     compiled_frame_allocations: int = 0
     leaf_frame_elisions: int = 0
     compile_failure_reasons: dict[str, int] = field(default_factory=dict)
+    coroutine_compiles: int = 0
+    coroutine_executions: int = 0
+    coroutine_yields: int = 0
+    coroutine_instructions: int = 0
+    coroutine_deopts: int = 0
 
 
 @dataclass(frozen=True, slots=True)

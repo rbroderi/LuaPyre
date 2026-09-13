@@ -314,7 +314,9 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
         coroutine = LuaTable()
         coroutine.rawset(b"create", HostFunction(vm.create_thread, "coroutine.create"))
         coroutine.rawset(b"resume", HostFunction(vm.resume_thread, "coroutine.resume"))
-        coroutine.rawset(b"yield", HostFunction(vm.yield_current, "coroutine.yield"))
+        yield_function = HostFunction(vm.yield_current, "coroutine.yield")
+        vm._coroutine_yield_function = yield_function
+        coroutine.rawset(b"yield", yield_function)
         coroutine.rawset(b"status", HostFunction(vm.coroutine_status, "coroutine.status"))
         coroutine.rawset(b"running", HostFunction(vm.running_thread, "coroutine.running"))
         coroutine.rawset(b"isyieldable", HostFunction(vm.is_yieldable, "coroutine.isyieldable"))
