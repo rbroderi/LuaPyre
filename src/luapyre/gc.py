@@ -14,6 +14,7 @@ from .vm import Frame, HostFunction
 
 
 _COLLECTABLE_TYPES = (LuaTable, Closure, Cell, HostFunction)
+_NON_COLLECTABLE_TYPES = (type(None), bool, int, float, bytes, str)
 _GC_NEW = 0
 _GC_SURVIVAL = 1
 _GC_OLD = 2
@@ -367,6 +368,10 @@ class LuaGC:
 
     def adopt(self, value) -> None:
         """Attach a newly reachable Lua object graph to this collector."""
+        # Primitive Lua values dominate table writes.  Reject them before
+        # allocating the traversal stack or consulting the thread type.
+        if type(value) in _NON_COLLECTABLE_TYPES:
+            return
         stack = [value]
         while stack:
             current = stack.pop()
@@ -403,7 +408,10 @@ class LuaGC:
                 stack.extend(current.yielded)
 
     def write_barrier(self, parent, value) -> None:
-        if not self._is_collectable(parent):
+        if (
+            type(value) in _NON_COLLECTABLE_TYPES
+            or not self._is_collectable(parent)
+        ):
             return
         self.adopt(value)
         if (
@@ -416,6 +424,23 @@ class LuaGC:
         ):
             self._remembered[id(parent)] = parent
             self.stats.remembered_writes += 1
+
+    def table_write_barrier(self, parent: LuaTable, key, value) -> None:
+        """Adopt and remember both halves of one table write in one pass."""
+        parent_is_old = parent._gc_owner is self and parent._gc_age == _GC_OLD
+        for child in (key, value):
+            if type(child) in _NON_COLLECTABLE_TYPES:
+                continue
+            self.adopt(child)
+            if (
+                parent_is_old
+                and self._is_collectable(child)
+                and child._gc_owner is self
+                and child._gc_age != _GC_OLD
+                and id(parent) not in self._remembered
+            ):
+                self._remembered[id(parent)] = parent
+                self.stats.remembered_writes += 1
 
     def safepoint(self, extra_roots=()) -> bool:
         if not self.running or not self.pending or self.in_collection or self.in_finalizer:
@@ -447,6 +472,8 @@ class LuaGC:
 
     @classmethod
     def _is_collectable(cls, value) -> bool:
+        if type(value) in _NON_COLLECTABLE_TYPES:
+            return False
         return isinstance(value, _COLLECTABLE_TYPES) or cls._is_thread(value)
 
     @staticmethod

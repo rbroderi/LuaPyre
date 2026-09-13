@@ -28,6 +28,8 @@ class Backend:
 
 @dataclass(frozen=True, slots=True)
 class Timing:
+    cold_ms: float
+    warmup_median_ms: float
     median_ms: float
     best_ms: float
 
@@ -98,8 +100,17 @@ def measure(
     repeats: int,
     warmups: int,
 ) -> Timing:
+    start = time.perf_counter_ns()
+    result = run()
+    cold_ms = (time.perf_counter_ns() - start) / 1_000_000
+    if not workload.validate(result):
+        raise AssertionError(f"expected {workload.expected!r}, got {result!r}")
+
+    warmup_samples = []
     for _ in range(warmups):
+        start = time.perf_counter_ns()
         result = run()
+        warmup_samples.append((time.perf_counter_ns() - start) / 1_000_000)
         if not workload.validate(result):
             raise AssertionError(f"expected {workload.expected!r}, got {result!r}")
 
@@ -118,7 +129,12 @@ def measure(
         if was_enabled:
             gc.enable()
 
-    return Timing(statistics.median(samples), min(samples))
+    return Timing(
+        cold_ms,
+        statistics.median(warmup_samples) if warmup_samples else cold_ms,
+        statistics.median(samples),
+        min(samples),
+    )
 
 
 def _ratio(value: float, reference: float | None) -> str:
@@ -207,7 +223,7 @@ def write_json_report(
     warmups: int,
 ) -> None:
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "commit": os.environ.get("GITHUB_SHA"),
         "python": sys.version.replace("\n", " "),
         "platform": platform.platform(),
@@ -227,6 +243,8 @@ def write_json_report(
                 "typed_luapyre_source": WORKLOADS[name].luapyre_source is not None,
                 "timings": {
                     backend: {
+                        "cold_ms": timing.cold_ms,
+                        "warmup_median_ms": timing.warmup_median_ms,
                         "median_ms": timing.median_ms,
                         "best_ms": timing.best_ms,
                     }

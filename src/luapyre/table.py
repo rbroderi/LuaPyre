@@ -47,6 +47,12 @@ class LuaTable:
         self._reserved_bytes = 0
 
     def rawget(self, key):
+        if type(key) is int and key >= 1:
+            idx = key - 1
+            if idx < len(self.array):
+                return self.array[idx]
+            item = self.hash.get((_NUM, key), _ABSENT)
+            return None if item is _ABSENT else item[1]
         h = _hash_key(key)
         if h is None:
             return None
@@ -59,6 +65,11 @@ class LuaTable:
 
     def rawhas(self, key) -> bool:
         """Whether a non-nil raw key exists, without invoking metamethods."""
+        if type(key) is int and key >= 1:
+            idx = key - 1
+            if idx < len(self.array) and self.array[idx] is not None:
+                return True
+            return (_NUM, key) in self.hash
         h = _hash_key(key)
         if h is None:
             return False
@@ -86,10 +97,7 @@ class LuaTable:
         self.version += 1
         collector = self._gc_owner
         if collector is not None:
-            collector.adopt(key)
-            collector.adopt(value)
-            collector.write_barrier(self, key)
-            collector.write_barrier(self, value)
+            collector.table_write_barrier(self, key, value)
         if h[0] is _NUM and type(h[1]) is int and h[1] >= 1:
             index = h[1]
             if index <= len(self.array):

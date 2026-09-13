@@ -64,6 +64,7 @@ def test_typed_leaf_uses_trusted_specialized_opcode_and_jits():
     assert stats is not None
     assert stats.leaf_compiles >= 1
     assert stats.leaf_executions >= 1
+    assert stats.leaf_frame_elisions >= 1
 
 
 def test_hot_branch_loop_compiles_as_one_region():

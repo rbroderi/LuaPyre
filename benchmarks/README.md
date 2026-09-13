@@ -9,7 +9,7 @@
 3. **Lua 5.5** — native Lua 5.5 through `lupa.lua55`.
 4. **LuaJIT** — LuaJIT 2.1 through `lupa.luajit21` when available, falling back to 2.0.
 
-Each workload is checked for the expected result before its timing is accepted. Warmup runs happen first, garbage collection is disabled during timed samples, and the report prints the median and records the best sample. The default is 3 warmups and 7 timed samples.
+Each workload is checked for the expected result before its timing is accepted. The JSON report separates first cold execution, warmup median, and steady-state median/best samples. Garbage collection is disabled only during steady-state samples. The console table remains focused on steady-state medians. The default is 3 warmups and 7 timed samples.
 
 Install the development dependencies and run locally with:
 
@@ -39,7 +39,7 @@ A workload can therefore carry two spellings of the same algorithm: standard Lua
 
 This distinction is deliberate. LuaPyre's performance target is now **fully typed LuaPyre source**, while ordinary Lua remains the compatibility/semantic baseline. The benchmark keeps both visible rather than allowing typed-only syntax to make the native comparison impossible.
 
-The JSON report uses a versioned schema and includes the Python/platform information, GitHub commit SHA when available, backend identities/dialects, benchmark settings, workload group, whether a typed LuaPyre source was used, and median/best timing for every workload/backend pair. This makes future performance comparisons scriptable instead of relying on log scraping.
+The JSON report uses a versioned schema and includes the Python/platform information, GitHub commit SHA when available, backend identities/dialects, benchmark settings, workload group, whether a typed LuaPyre source was used, and cold/warmup/steady timing for every workload/backend pair. This makes future performance comparisons scriptable instead of relying on log scraping.
 
 ### GitHub Actions
 

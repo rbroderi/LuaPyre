@@ -97,6 +97,7 @@ class TypedFunctionJITMixin:
         super().__init__(*args, **kwargs)
         self._function_hot: dict[int, tuple[Proto, int]] = {}
         self._function_cache: dict[int, tuple[Proto, CompiledAstFunction | None]] = {}
+        self._virtual_frame_cache: dict[int, tuple[Proto, FunctionType | None]] = {}
         self.function_compiles = 0
         self.function_executions = 0
         self.function_suspends = 0
@@ -197,9 +198,23 @@ class TypedFunctionJITMixin:
     ):
         if len(frames) >= vm.max_frames:
             raise LuaRuntimeError("stack overflow")
+        ident = id(closure.proto)
+        virtual_entry = self._virtual_frame_cache.get(ident)
+        if virtual_entry is not None and virtual_entry[0] is closure.proto:
+            virtual = virtual_entry[1]
+        else:
+            # Import lazily: virtual_frame depends on this module's status
+            # constants.  The compiled result, including refusal, is permanent
+            # for an immutable Proto.
+            from .virtual_frame import compile_virtual_frame
+
+            virtual = compile_virtual_frame(closure.proto)
+            self._virtual_frame_cache[ident] = (closure.proto, virtual)
+        if virtual is not None:
+            return virtual(vm, frames, closure, args, dest, want, budget, meter)
         acquire = getattr(vm, "_acquire_compiled_frame", None)
         child = (
-            acquire(compiled, closure, args, dest, want)
+            acquire(compiled, closure, args, dest, want, validate_args=False)
             if acquire is not None
             else vm._new_frame(closure, list(args), dest, want)
         )

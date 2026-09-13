@@ -5,6 +5,7 @@ from types import FunctionType
 from .bytecode import Op, Proto
 from .errors import LuaRuntimeError
 from .function_jit import _FUNC_RETURN, _FUNC_SUSPEND
+from .opdispatch import _float_divide
 from .range_analysis import analyze_integer_ranges
 from .values import static_value_type, type_matches
 from .vm import Frame
@@ -88,6 +89,8 @@ def compile_virtual_frame(proto: Proto) -> FunctionType | None:
             elif ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[ins.op]
                 lines.extend([f"{indent}used += 1", f"{indent}{a} = float({b} {symbol} {c})"])
+            elif ins.op is Op.DIV:
+                lines.extend([f"{indent}used += 1", f"{indent}{a} = _float_divide({b}, {c})"])
             elif ins.op is Op.NOT:
                 lines.extend([f"{indent}used += 1", f"{indent}{a} = ({b} is None or {b} is False)"])
             elif ins.op is Op.TOBOOL:
@@ -147,6 +150,7 @@ def compile_virtual_frame(proto: Proto) -> FunctionType | None:
         "_Frame": Frame, "_FUNC_RETURN": _FUNC_RETURN, "_FUNC_SUSPEND": _FUNC_SUSPEND,
         "_LuaRuntimeError": LuaRuntimeError, "_type_matches": type_matches,
         "_static_value_type": static_value_type, "_MASK64": _MASK64,
+        "_float_divide": _float_divide,
         "_SIGN64": _SIGN64, "_TWO64": _TWO64,
         "_INT_MIN": -(1 << 63), "_INT_MAX": (1 << 63) - 1,
     }

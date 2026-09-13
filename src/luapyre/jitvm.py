@@ -35,21 +35,28 @@ def _jit_gettable(vm, frames, frame, ins, regs, constants):
     obj, key = regs[ins.b], regs[ins.c]
     if not isinstance(obj, vm._ic_table_type) or obj.metatable is not None:
         return vm._gettable(frames, frame, obj, key, ins.a)
+    # Streaming array indices are an access shape, not a polymorphic collection
+    # of unrelated keys.  Taking them directly also avoids tagged-key creation
+    # and prevents numeric loops from permanently poisoning their cache site.
+    if type(key) is int and key >= 1:
+        regs[ins.a] = obj.rawget(key)
+        return None
     token = vm._ic_hash_key(key)
     if token is None:
         return vm._gettable(frames, frame, obj, key, ins.a)
     site = vm.inline_caches.table_site(frame.proto, frame.pc - 1, "get")
+    if site.megamorphic:
+        regs[ins.a] = obj.rawget(key)
+        return None
     before = site.state
     entry = site.match((obj, token))
     if entry is not None:
-        if entry[2] == obj.version:
-            regs[ins.a] = entry[3]
-            return None
-        site.invalidations += 1
-        site.misses += 1
+        item = obj.hash.get(token)
+        regs[ins.a] = None if item is None else item[1]
+        return None
     value = obj.rawget(key)
     regs[ins.a] = value
-    site.install((obj, token, obj.version, value), key_size=2)
+    site.install((obj, token), key_size=2)
     vm._note_megamorphic(before, site.state)
     return None
 
@@ -58,10 +65,16 @@ def _jit_settable(vm, frames, frame, ins, regs, constants):
     obj, key, value = regs[ins.a], regs[ins.b], regs[ins.c]
     if not isinstance(obj, vm._ic_table_type) or obj.metatable is not None:
         return vm._settable(frames, frame, obj, key, value)
+    if type(key) is int and key >= 1:
+        obj.rawset(key, value)
+        return None
     token = vm._ic_hash_key(key)
     if token is None:
         return vm._settable(frames, frame, obj, key, value)
     site = vm.inline_caches.table_site(frame.proto, frame.pc - 1, "set")
+    if site.megamorphic:
+        obj.rawset(key, value)
+        return None
     before = site.state
     entry = site.match((obj, token))
     if entry is not None:
@@ -130,6 +143,13 @@ class TieredJITVM(GarbageCollectedVM):
             self.jit.stats.megamorphic_sites += 1
 
     def _invoke_site(self, frames, parent, fn, args, dest, want, tail=False):
+        thread = self.current_thread
+        if thread is not None and not thread.is_main:
+            # Coroutine compilation is not implemented yet.  Avoid collecting
+            # per-site feedback and probing tiers that cannot consume it.
+            return GarbageCollectedVM._invoke(
+                self, frames, parent, fn, args, dest, want, tail=tail
+            )
         pc = parent.pc - 1
         sites = parent.jit_call_sites
         if sites is None:
@@ -177,12 +197,12 @@ class TieredJITVM(GarbageCollectedVM):
             ):
                 if len(frames) >= self.max_frames:
                     raise LuaRuntimeError("stack overflow")
-                leaf_frame = self._new_frame(fn, list(args), dest, want)
-                values = compiled.runner(self, leaf_frame)
+                values = compiled.direct_runner(self, fn, args)
                 if values is not DEOPT:
                     self._jit_consume(compiled.instruction_cost)
                     self._write_results(parent.regs, dest, want, values)
                     self.jit.stats.leaf_executions += 1
+                    self.jit.stats.leaf_frame_elisions += 1
                     return None
 
         result = self._invoke(frames, parent, fn, args, dest, want, tail=tail)
@@ -205,10 +225,17 @@ class TieredJITVM(GarbageCollectedVM):
         )
 
     def _trace_transition(self, frames, frame, source: int, target: int):
+        key = (id(frame.proto), target)
+        cached = self.trace_jit.cache.get(key)
+        if cached is not None and cached[0] is frame.proto:
+            compiled = cached[1]
+            if compiled is None:
+                return None
+            self.jit.stats.osr_entries += 1
+            return self._execute_trace(frames, frame, compiled)
         entries = self.trace_jit.record_edge(frame.proto, source, target)
         if entries < self.trace_jit.threshold:
             return None
-        key = (id(frame.proto), target)
         was_cached = key in self.trace_jit.cache
         compiled = self.trace_jit.maybe_trace(frame.proto, target)
         if not was_cached and compiled is not None:
@@ -271,7 +298,7 @@ class TieredJITVM(GarbageCollectedVM):
             compiled = self.jit._compile_loop(frame, frame.pc, backedge_pc)
             if compiled is None:
                 self._jit_loop_states[key] = False
-                self.jit.stats.compile_failures += 1
+                self.jit.record_compile_failure("backedge_loop_unsupported")
                 return
             self._jit_loop_states[key] = compiled
             self.jit.stats.loop_compiles += 1
@@ -297,9 +324,13 @@ class TieredJITVM(GarbageCollectedVM):
         # for callback semantics. On the main thread leaf compilation is entered
         # only from a direct CALL/CALLV wrapper whose local fuel was just synced.
         thread = self.current_thread
+        if thread is not None and not thread.is_main:
+            return GarbageCollectedVM._invoke(
+                self, frames, parent, fn, args, dest, want, tail=tail
+            )
         leaf_budget_is_current = (
-            thread is not None and not thread.is_main
-        ) or self._jit_main_leaf_allowed
+            self._jit_main_leaf_allowed
+        )
         if (
             isinstance(fn, Closure)
             and not tail
@@ -312,12 +343,12 @@ class TieredJITVM(GarbageCollectedVM):
                 raise LuaRuntimeError("stack overflow")
             compiled = self.jit.maybe_leaf(fn.proto)
             if compiled is not None and self._jit_budget() >= compiled.instruction_cost:
-                leaf_frame = self._new_frame(fn, list(args), dest, want)
-                values = compiled.runner(self, leaf_frame)
+                values = compiled.direct_runner(self, fn, args)
                 if values is not DEOPT:
                     self._jit_consume(compiled.instruction_cost)
                     self._write_results(parent.regs, dest, want, values)
                     self.jit.stats.leaf_executions += 1
+                    self.jit.stats.leaf_frame_elisions += 1
                     return None
                 self.jit.stats.deopts += 1
         return super()._invoke(frames, parent, fn, args, dest, want, tail=tail)
@@ -419,7 +450,9 @@ class TieredJITVM(GarbageCollectedVM):
     def _execute_thread(self, thread, stop_depth: int | None = None):
         frames = thread.frames
         final_values = ()
-        handlers = self.hook_handlers(_JIT_OPCODE_HANDLERS)
+        # Coroutine bodies do not yet enter generated regions.  Running the
+        # JIT wrappers here only gathers feedback that no compiler consumes.
+        handlers = self.hook_handlers(OPCODE_HANDLERS)
 
         if thread.pending_tail_resume is not None and frames:
             values = thread.pending_tail_resume
