@@ -109,6 +109,9 @@ For performance comparisons, compare runs on the same runner class and Python ve
   The results, interpretation, and next implementation priorities are in
   [`performance-roadmap-0.35.md`](../docs/performance-roadmap-0.35.md), with the
   earlier comparison retained in the 0.34 roadmap.
+- `native_headroom.py` compares that same corpus three ways: LuaPyre, native
+  Lua 5.5 through `lupa.lua55`, and the reduced-contract Python lower bounds.
+  It runs isolated processes and rotates implementation order.
 - `inspect_codegen.py` captures final generated AST/source, selects hot
   generated functions using checked profiled executions, and records generic
   and warmed adaptive opcode counts plus pooled frame/register-slot counts.

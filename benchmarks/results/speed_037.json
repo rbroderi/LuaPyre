@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "20fb9756cb65b55f29607aacc2ae5aa7ca80a2f4",
+  "candidate": "codex/037-performance-roadmap worktree",
+  "method": "Three isolated processes per Python; Lua/Python, Python/Lua, Lua/Python; seven warmups and 31 checked samples; fixed affinity and PYTHONHASHSEED=0; median of process medians",
+  "interpretation": "Reduced-contract same-algorithm Python references are comparison points, not promised speedups. Improvement is calculated from LuaPyre elapsed times.",
+  "summary": [
+    {"python": "3.13.15", "case": "next_dense", "baseline_ms": 2092.125983, "candidate_ms": 63.960816, "python_ms": 0.141869, "improvement_percent": 96.942784, "candidate_ratio": 450.844201},
+    {"python": "3.13.15", "case": "delete_hash", "baseline_ms": 93.027238, "candidate_ms": 8.619113, "python_ms": 0.489208, "improvement_percent": 90.734850, "candidate_ratio": 17.618504},
+    {"python": "3.13.15", "case": "python_leaf_float", "baseline_ms": 1.662360, "candidate_ms": 1.110228, "python_ms": 0.084053, "improvement_percent": 33.213744, "candidate_ratio": 13.208666},
+    {"python": "3.13.15", "case": "python_leaf_binary", "baseline_ms": 2.161388, "candidate_ms": 1.204636, "python_ms": 0.092356, "improvement_percent": 44.265629, "candidate_ratio": 13.043397},
+    {"python": "3.14.7", "case": "next_dense", "baseline_ms": 1992.278984, "candidate_ms": 59.118938, "python_ms": 0.111022, "improvement_percent": 97.032597, "candidate_ratio": 532.497505},
+    {"python": "3.14.7", "case": "delete_hash", "baseline_ms": 94.613735, "candidate_ms": 7.699087, "python_ms": 0.539831, "improvement_percent": 91.862612, "candidate_ratio": 14.262032},
+    {"python": "3.14.7", "case": "python_leaf_float", "baseline_ms": 1.551137, "candidate_ms": 1.072873, "python_ms": 0.078995, "improvement_percent": 30.833124, "candidate_ratio": 13.581530},
+    {"python": "3.14.7", "case": "python_leaf_binary", "baseline_ms": 2.063980, "candidate_ms": 1.194673, "python_ms": 0.080578, "improvement_percent": 42.117995, "candidate_ratio": 14.826293}
+  ],
+  "process_medians": {
+    "3.13.15": {
+      "next_dense": {"baseline_ms": [2092.125983, 2050.654498, 2100.914270], "candidate_ms": [63.960816, 64.259415, 60.986797]},
+      "delete_hash": {"baseline_ms": [95.222899, 93.027238, 91.676879], "candidate_ms": [8.727673, 8.619113, 8.610342]},
+      "python_leaf_float": {"baseline_ms": [1.640024, 1.728015, 1.662360], "candidate_ms": [1.112183, 1.080666, 1.110228]},
+      "python_leaf_binary": {"baseline_ms": [2.161388, 2.162262, 2.130418], "candidate_ms": [1.226150, 1.191519, 1.204636]}
+    },
+    "3.14.7": {
+      "next_dense": {"baseline_ms": [1974.565288, 2046.980876, 1992.278984], "candidate_ms": [61.082194, 59.118938, 58.734674]},
+      "delete_hash": {"baseline_ms": [94.613735, 96.932285, 93.360822], "candidate_ms": [7.840991, 7.699087, 7.615855]},
+      "python_leaf_float": {"baseline_ms": [1.566387, 1.551137, 1.548914], "candidate_ms": [1.073477, 1.067295, 1.072873]},
+      "python_leaf_binary": {"baseline_ms": [2.083025, 2.032323, 2.063980], "candidate_ms": [1.194673, 1.181823, 1.206769]}
+    }
+  }
+}

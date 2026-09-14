@@ -1,5 +1,9 @@
 # Performance roadmap: 0.36
 
+The next [0.37 roadmap](performance-roadmap-0.37.md) distinguishes the
+unfinished work below from new iteration/deletion and compiled-call
+experiments. It does not mark this roadmap's runtime work as completed.
+
 ## Starting point and scope
 
 The accumulated 0.33–0.35 performance work is merged into `main` by

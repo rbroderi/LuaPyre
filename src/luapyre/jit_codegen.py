@@ -614,6 +614,30 @@ def unwrap_scalar_return(tree: ast.AST) -> ast.AST:
     return tree
 
 
+class _RemoveEmptyCellBranches(ast.NodeTransformer):
+    def visit_If(self, node: ast.If):
+        node = self.generic_visit(node)
+        test = node.test
+        if (
+            isinstance(test, ast.Compare)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.In)
+            and len(test.comparators) == 1
+            and isinstance(test.comparators[0], ast.Name)
+            and test.comparators[0].id == "cells"
+            and not node.orelse
+        ):
+            return None
+        return node
+
+
+def remove_empty_cell_branches(tree: ast.AST) -> ast.AST:
+    """Delete LOCAL cell materialization when a direct leaf has no cells."""
+    tree = _RemoveEmptyCellBranches().visit(tree)
+    ast.fix_missing_locations(tree)
+    return tree
+
+
 def optimize_generated_ast(tree: ast.AST) -> ast.AST:
     tree = _InlineI64Assignments().visit(tree)
     tree = optimize_semantic_helpers(tree)
