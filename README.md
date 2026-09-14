@@ -190,6 +190,11 @@ Python-headroom measurements, 11 focused speed probes, and the next ordered
 work on scalar entry, cross-block facts, nested regions, tables, and recursion.
 This planning pass leaves the runtime at 0.35.0a1.
 
+The [0.37 performance roadmap](docs/performance-roadmap-0.37.md) carries those
+unfinished prerequisites forward and adds table traversal/deletion scaling
+and scalar compiled-call interfaces, with ordered experiments and explicit
+correctness and performance gates. It is a plan, with no runtime version bump.
+
 Pinned tests and workloads from real packages provide an additional
 compatibility gate. Penlight's portable upstream suite is 23/23 green,
 luatest's selected core tests are 5/5 green, LuaCov's line-scanner specs are
