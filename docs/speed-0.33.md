@@ -28,6 +28,9 @@ small-callee costs while preserving the same interpreter fallbacks.
 The attempted structured table/modulo path was removed after it failed the
 cross-version performance gate.
 
+Further measured bottlenecks, comparisons with direct Python, and proposed
+work are in [`performance-roadmap-0.34.md`](performance-roadmap-0.34.md).
+
 ## Measurement
 
 The reusable benchmark is `benchmarks/speed_033_ab.py`. Release measurements use

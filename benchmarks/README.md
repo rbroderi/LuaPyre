@@ -87,3 +87,10 @@ For performance comparisons, compare runs on the same runner class and Python ve
 - `speed_033_ab.py` measures the accepted 0.33 targets plus arithmetic and
   branch controls. Run it in separate processes against each checkout with the
   same Python executable, affinity, hash seed, warmups, and sample count.
+- `python_headroom.py` compares nine algorithms against reduced-contract direct
+  Python implementations. Use `PYTHONPATH=src PYTHONHASHSEED=0`, `--revision`,
+  `--json`, and optionally `--python-first` or repeated `--case` selections.
+  Every result is checked. Ratios include Lua semantic and representation
+  costs; they are not guaranteed available speedups or a mathematical limit.
+  The results, interpretation, and next implementation priorities are in
+  [`performance-roadmap-0.34.md`](../docs/performance-roadmap-0.34.md).
