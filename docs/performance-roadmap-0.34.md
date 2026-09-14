@@ -132,21 +132,22 @@ whole-function compilation. Carry the existing small-callee inlining through
 that lowering. Sieve needs broader compiled coverage; spectral norm needs a
 smaller already-compiled body. Neither should lose whole-function promotion.
 
-Use a leaner-AST-first strategy before considering direct CPython bytecode
-generation. Generate the smallest clear Python AST for each admitted shape,
-warm the resulting function, and inspect its specialized bytecode with
-`dis.dis(function, adaptive=True, show_caches=True)`. Design emitted Python
+Use a leaner-AST strategy throughout 0.34. Generate the smallest clear Python
+AST for each admitted shape, warm the resulting function, and inspect its
+specialized bytecode with `dis.dis(function, adaptive=True, show_caches=True)`.
+Design emitted Python
 around the specialization CPython actually selects. This captures most of the
 potential benefit while leaving cache entries, jumps, exception tables, line
 tables, and version-specific bytecode encoding to CPython.
 
 Record unspecialized and warmed disassembly on both supported Python versions.
 When an expected specialization does not occur, reduce the generated Python
-shape and measure again. Consider direct bytecode only if this process exposes
-a specific instruction sequence that the AST compiler cannot express, and
-only after a version-specific prototype clears the same performance and
-semantic gates. Reducing JIT compilation latency alone should be measured and
-reported separately from steady-state execution speed.
+shape and measure again. Direct bytecode generation is outside the 0.34 plan.
+Reconsider it in a later roadmap only if measured evidence shows that a required
+optimization cannot be expressed through AST-generated Python and the remaining
+gap justifies the version-specific maintenance cost. Reducing JIT compilation
+latency alone should be measured and reported separately from steady-state
+execution speed.
 
 Keep precise maps from optimized values to Lua registers and instruction PCs.
 Charge a block's fuel together only when the complete path can execute safely;
