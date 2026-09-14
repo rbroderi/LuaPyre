@@ -891,6 +891,8 @@ class _FunctionCompiler:
         out = self.alloc()
         self.emit(Op.NEWTABLE, out)
         array_index = 1
+        fresh_keys: set[object] = set()
+        unknown_key_seen = False
         for i, field in enumerate(expr.fields):
             last = i == len(expr.fields) - 1
             if field.key is None:
@@ -901,19 +903,32 @@ class _FunctionCompiler:
                     vr, _ = self.expr(field.value)
                     kr = self.alloc()
                     self.emit(Op.LOADK, kr, self.proto.add_const(array_index))
-                    self.emit(Op.SETTABLE, out, kr, vr)
+                    fresh = not unknown_key_seen and array_index not in fresh_keys
+                    self.emit(Op.SETTABLE, out, kr, vr, d=int(fresh))
+                    fresh_keys.add(array_index)
                 array_index += 1
             else:
                 if isinstance(field.key, str) and isinstance(field.value, A.FunctionExpr):
                     field.value.debug_name = field.key
                     field.value.debug_namewhat = "field"
                 if isinstance(field.key, str):
+                    literal_key = field.key.encode()
                     kr = self.alloc()
-                    self.emit(Op.LOADK, kr, self.proto.add_const(field.key.encode()))
+                    self.emit(Op.LOADK, kr, self.proto.add_const(literal_key))
                 else:
+                    literal_key = None
                     kr, _ = self.expr(field.key)
                 vr, _ = self.expr(field.value)
-                self.emit(Op.SETTABLE, out, kr, vr)
+                fresh = (
+                    literal_key is not None
+                    and not unknown_key_seen
+                    and literal_key not in fresh_keys
+                )
+                self.emit(Op.SETTABLE, out, kr, vr, d=int(fresh))
+                if literal_key is None:
+                    unknown_key_seen = True
+                else:
+                    fresh_keys.add(literal_key)
         return out, TABLE
 
     def _expr_field(self, expr):
