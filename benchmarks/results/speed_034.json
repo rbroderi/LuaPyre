@@ -1,0 +1,604 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "aba563392e887fa21b24de7bc8e6208a678c0e54",
+  "candidate_revision": "working tree before final commit",
+  "method": "Three paired processes per case and Python; A/B, B/A, A/B; 7 warmups and 31 timed samples; CPU affinity and PYTHONHASHSEED held constant",
+  "summary": [
+    {
+      "python": "3.13.15",
+      "case": "table_mix",
+      "baseline_median_ms": 34.814394,
+      "current_median_ms": 34.117955,
+      "reduction_pct": 2.0004340733318466,
+      "baseline_process_medians_ms": [
+        33.748295,
+        34.814394,
+        34.913358
+      ],
+      "current_process_medians_ms": [
+        33.950387,
+        34.117955,
+        34.275358
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "sieve",
+      "baseline_median_ms": 29.687587,
+      "current_median_ms": 27.73193,
+      "reduction_pct": 6.587456905810507,
+      "baseline_process_medians_ms": [
+        29.589373,
+        29.687587,
+        29.79749
+      ],
+      "current_process_medians_ms": [
+        27.73193,
+        27.757518,
+        27.495782
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "string_build",
+      "baseline_median_ms": 3.153388,
+      "current_median_ms": 2.721199,
+      "reduction_pct": 13.705544639606677,
+      "baseline_process_medians_ms": [
+        3.071981,
+        3.247675,
+        3.153388
+      ],
+      "current_process_medians_ms": [
+        2.738921,
+        2.650771,
+        2.721199
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "binary_trees",
+      "baseline_median_ms": 134.37102,
+      "current_median_ms": 118.304772,
+      "reduction_pct": 11.95663172014322,
+      "baseline_process_medians_ms": [
+        133.919473,
+        134.37102,
+        139.5834
+      ],
+      "current_process_medians_ms": [
+        118.304772,
+        118.013134,
+        118.631941
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "fib_recursive",
+      "baseline_median_ms": 34.162542,
+      "current_median_ms": 33.753353,
+      "reduction_pct": 1.1977709387082638,
+      "baseline_process_medians_ms": [
+        34.378982,
+        33.956857,
+        34.162542
+      ],
+      "current_process_medians_ms": [
+        34.134367,
+        33.620506,
+        33.753353
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "spectral_norm",
+      "baseline_median_ms": 32.013454,
+      "current_median_ms": 32.056653,
+      "reduction_pct": -0.13494014110440633,
+      "baseline_process_medians_ms": [
+        32.076706,
+        31.320493,
+        32.013454
+      ],
+      "current_process_medians_ms": [
+        31.582638,
+        32.199977,
+        32.056653
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "python_calls_1000",
+      "baseline_median_ms": 1.44122,
+      "current_median_ms": 0.964917,
+      "reduction_pct": 33.04859771582409,
+      "baseline_process_medians_ms": [
+        1.44122,
+        1.478705,
+        1.430129
+      ],
+      "current_process_medians_ms": [
+        0.964917,
+        0.918075,
+        1.012241
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "typed_arith",
+      "baseline_median_ms": 1.184679,
+      "current_median_ms": 1.144564,
+      "reduction_pct": 3.3861493282146577,
+      "baseline_process_medians_ms": [
+        1.339784,
+        1.184679,
+        1.122304
+      ],
+      "current_process_medians_ms": [
+        1.144564,
+        1.12259,
+        1.237847
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "typed_branch",
+      "baseline_median_ms": 8.03679,
+      "current_median_ms": 4.321229,
+      "reduction_pct": 46.231903533624745,
+      "baseline_process_medians_ms": [
+        7.979338,
+        8.094492,
+        8.03679
+      ],
+      "current_process_medians_ms": [
+        4.226175,
+        4.321229,
+        4.397274
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "table_mix",
+      "baseline_median_ms": 25.466199,
+      "current_median_ms": 25.538149,
+      "reduction_pct": -0.2825313663809863,
+      "baseline_process_medians_ms": [
+        25.466199,
+        25.306509,
+        25.490554
+      ],
+      "current_process_medians_ms": [
+        25.227432,
+        26.211644,
+        25.538149
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "sieve",
+      "baseline_median_ms": 26.260828,
+      "current_median_ms": 25.159509,
+      "reduction_pct": 4.19377104179655,
+      "baseline_process_medians_ms": [
+        26.260828,
+        26.387606,
+        26.04111
+      ],
+      "current_process_medians_ms": [
+        25.070228,
+        26.516718,
+        25.159509
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "string_build",
+      "baseline_median_ms": 2.88844,
+      "current_median_ms": 2.219621,
+      "reduction_pct": 23.15502485770866,
+      "baseline_process_medians_ms": [
+        2.88844,
+        2.870365,
+        2.943629
+      ],
+      "current_process_medians_ms": [
+        2.219621,
+        2.259272,
+        2.159286
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "binary_trees",
+      "baseline_median_ms": 130.033611,
+      "current_median_ms": 111.456002,
+      "reduction_pct": 14.28677467089644,
+      "baseline_process_medians_ms": [
+        130.033611,
+        132.675267,
+        129.773214
+      ],
+      "current_process_medians_ms": [
+        110.959258,
+        115.576422,
+        111.456002
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "fib_recursive",
+      "baseline_median_ms": 30.669719,
+      "current_median_ms": 30.610331,
+      "reduction_pct": 0.19363724851865122,
+      "baseline_process_medians_ms": [
+        30.432172,
+        30.781816,
+        30.669719
+      ],
+      "current_process_medians_ms": [
+        31.000049,
+        30.610331,
+        30.006162
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "spectral_norm",
+      "baseline_median_ms": 28.50648,
+      "current_median_ms": 28.80386,
+      "reduction_pct": -1.043201405434836,
+      "baseline_process_medians_ms": [
+        28.50648,
+        29.891146,
+        28.367372
+      ],
+      "current_process_medians_ms": [
+        29.248184,
+        28.80386,
+        28.207681
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "python_calls_1000",
+      "baseline_median_ms": 1.491698,
+      "current_median_ms": 1.002977,
+      "reduction_pct": 32.76273079403472,
+      "baseline_process_medians_ms": [
+        1.481107,
+        1.491698,
+        1.533307
+      ],
+      "current_process_medians_ms": [
+        0.999373,
+        1.050278,
+        1.002977
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "typed_arith",
+      "baseline_median_ms": 0.995987,
+      "current_median_ms": 1.01232,
+      "reduction_pct": -1.639880841818232,
+      "baseline_process_medians_ms": [
+        0.989084,
+        1.056865,
+        0.995987
+      ],
+      "current_process_medians_ms": [
+        1.01232,
+        1.062621,
+        0.967094
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "typed_branch",
+      "baseline_median_ms": 6.652897,
+      "current_median_ms": 3.711199,
+      "reduction_pct": 44.216797584571054,
+      "baseline_process_medians_ms": [
+        6.602863,
+        6.652897,
+        6.684194
+      ],
+      "current_process_medians_ms": [
+        3.8193,
+        3.711199,
+        3.581107
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "schema_version": 1,
+      "label": "base",
+      "revision": "aba5633",
+      "python": "3.13.15",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 33.748295,
+        "sieve": 29.589373,
+        "string_build": 3.071981,
+        "binary_trees": 133.919473,
+        "fib_recursive": 34.378982,
+        "spectral_norm": 32.076706,
+        "python_calls_1000": 1.44122,
+        "typed_arith": 1.339784,
+        "typed_branch": 7.979338
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "current",
+      "revision": "worktree",
+      "python": "3.13.15",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 33.950387,
+        "sieve": 27.73193,
+        "string_build": 2.738921,
+        "binary_trees": 118.304772,
+        "fib_recursive": 34.134367,
+        "spectral_norm": 31.582638,
+        "python_calls_1000": 0.964917,
+        "typed_arith": 1.144564,
+        "typed_branch": 4.226175
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "current",
+      "revision": "worktree",
+      "python": "3.13.15",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 34.117955,
+        "sieve": 27.757518,
+        "string_build": 2.650771,
+        "binary_trees": 118.013134,
+        "fib_recursive": 33.620506,
+        "spectral_norm": 32.199977,
+        "python_calls_1000": 0.918075,
+        "typed_arith": 1.12259,
+        "typed_branch": 4.321229
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "base",
+      "revision": "aba5633",
+      "python": "3.13.15",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 34.814394,
+        "sieve": 29.687587,
+        "string_build": 3.247675,
+        "binary_trees": 134.37102,
+        "fib_recursive": 33.956857,
+        "spectral_norm": 31.320493,
+        "python_calls_1000": 1.478705,
+        "typed_arith": 1.184679,
+        "typed_branch": 8.094492
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "base",
+      "revision": "aba5633",
+      "python": "3.13.15",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 34.913358,
+        "sieve": 29.79749,
+        "string_build": 3.153388,
+        "binary_trees": 139.5834,
+        "fib_recursive": 34.162542,
+        "spectral_norm": 32.013454,
+        "python_calls_1000": 1.430129,
+        "typed_arith": 1.122304,
+        "typed_branch": 8.03679
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "current",
+      "revision": "worktree",
+      "python": "3.13.15",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 34.275358,
+        "sieve": 27.495782,
+        "string_build": 2.721199,
+        "binary_trees": 118.631941,
+        "fib_recursive": 33.753353,
+        "spectral_norm": 32.056653,
+        "python_calls_1000": 1.012241,
+        "typed_arith": 1.237847,
+        "typed_branch": 4.397274
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "base",
+      "revision": "aba5633",
+      "python": "3.14.7",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 25.466199,
+        "sieve": 26.260828,
+        "string_build": 2.88844,
+        "binary_trees": 130.033611,
+        "fib_recursive": 30.432172,
+        "spectral_norm": 28.50648,
+        "python_calls_1000": 1.481107,
+        "typed_arith": 0.989084,
+        "typed_branch": 6.602863
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "current",
+      "revision": "worktree",
+      "python": "3.14.7",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 25.227432,
+        "sieve": 25.070228,
+        "string_build": 2.219621,
+        "binary_trees": 110.959258,
+        "fib_recursive": 31.000049,
+        "spectral_norm": 29.248184,
+        "python_calls_1000": 0.999373,
+        "typed_arith": 1.01232,
+        "typed_branch": 3.8193
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "current",
+      "revision": "worktree",
+      "python": "3.14.7",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 26.211644,
+        "sieve": 26.516718,
+        "string_build": 2.259272,
+        "binary_trees": 115.576422,
+        "fib_recursive": 30.610331,
+        "spectral_norm": 28.80386,
+        "python_calls_1000": 1.050278,
+        "typed_arith": 1.062621,
+        "typed_branch": 3.711199
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "base",
+      "revision": "aba5633",
+      "python": "3.14.7",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 25.306509,
+        "sieve": 26.387606,
+        "string_build": 2.870365,
+        "binary_trees": 132.675267,
+        "fib_recursive": 30.781816,
+        "spectral_norm": 29.891146,
+        "python_calls_1000": 1.491698,
+        "typed_arith": 1.056865,
+        "typed_branch": 6.652897
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "base",
+      "revision": "aba5633",
+      "python": "3.14.7",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 25.490554,
+        "sieve": 26.04111,
+        "string_build": 2.943629,
+        "binary_trees": 129.773214,
+        "fib_recursive": 30.669719,
+        "spectral_norm": 28.367372,
+        "python_calls_1000": 1.533307,
+        "typed_arith": 0.995987,
+        "typed_branch": 6.684194
+      }
+    },
+    {
+      "schema_version": 1,
+      "label": "current",
+      "revision": "worktree",
+      "python": "3.14.7",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "method": "median elapsed milliseconds; Python GC disabled only during timed samples",
+      "validation": "Expected workload result checked on every execution",
+      "median_ms": {
+        "table_mix": 25.538149,
+        "sieve": 25.159509,
+        "string_build": 2.159286,
+        "binary_trees": 111.456002,
+        "fib_recursive": 30.006162,
+        "spectral_norm": 28.207681,
+        "python_calls_1000": 1.002977,
+        "typed_arith": 0.967094,
+        "typed_branch": 3.581107
+      }
+    }
+  ]
+}

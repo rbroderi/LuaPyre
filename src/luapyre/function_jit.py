@@ -9,7 +9,7 @@ from .bytecode import Closure, Ins, Op, Proto
 from .errors import LuaRuntimeError
 from .opdispatch import _float_divide, _float_modulo
 from .range_analysis import analyze_integer_ranges
-from .table import LuaTable, _ABSENT, _hash_key
+from .table import LuaTable, _ABSENT, _NUM, _hash_key
 from .typed_ir import TypedIRCompiler, _reads, _writes
 from .values import lua_equal, static_value_type, type_matches
 
@@ -127,13 +127,17 @@ def _one_argument_materialized_call_runner(
 ):
     """Fuse frame recycling into the common one-argument call entry."""
 
-    expected = compiled.proto.param_types[0].name
+    proto = compiled.proto
+    expected = proto.param_types[0].name
+    pool = compiled.frame_pool
+    compiled_runner = compiled.runner
+    env_reg = proto.env_reg
 
     def run(vm, frames, closure, args, dest, want, budget, meter):
         if len(frames) >= vm.max_frames:
             raise LuaRuntimeError("stack overflow")
-        pool = compiled.frame_pool
-        if pool:
+        reused = bool(pool)
+        if reused:
             child = pool.pop()
             value = args[0] if args else None
             if not trusted_args and not type_matches(expected, value):
@@ -142,8 +146,8 @@ def _one_argument_materialized_call_runner(
                     f"got {static_value_type(value).name}"
                 )
             child.regs[0] = value
-            if compiled.proto.env_reg >= 0:
-                child.regs[compiled.proto.env_reg] = closure.env
+            if env_reg >= 0:
+                child.regs[env_reg] = closure.env
             child.closure = closure
             child.pc = 0
             child.return_reg = dest
@@ -160,13 +164,14 @@ def _one_argument_materialized_call_runner(
                 validate_args=not trusted_args,
             )
         frames.append(child)
-        status, values = compiled.runner(vm, frames, child, budget, meter)
+        status, values = compiled_runner(vm, frames, child, budget, meter)
         if status == _FUNC_RETURN:
             if not frames or frames[-1] is not child:
                 raise RuntimeError("compiled function stack mismatch")
             frames.pop()
             vm.jit.function_executions += 1
-            if len(pool) < min(128, vm.max_frames):
+            pool_size = len(pool)
+            if pool_size < 128 and pool_size < vm.max_frames:
                 pool.append(child)
             return _FUNC_RETURN, values
         vm.jit.function_suspends += 1
@@ -717,7 +722,23 @@ class TypedFunctionJITMixin:
                 elif op is Op.SETTABLE:
                     deopt(lines, f"not isinstance({a}, _LuaTable) or {a}.metatable is not None", pc, indent)
                     deopt(lines, f"{b} is None or (type({b}) is float and _isnan({b}))", pc, indent)
-                    lines.extend([f"{indent}used += 1", f"{indent}{a}.rawset({b}, {c})"])
+                    key = known_constants.get(ins.b, _ABSENT)
+                    token = _hash_key(key) if key is not _ABSENT else None
+                    if key is not _ABSENT and token is not None and not (
+                        token[0] is _NUM
+                        and type(token[1]) is int
+                        and token[1] >= 1
+                    ):
+                        token_name = f"_key_token_{pc}"
+                        constant_tokens[token_name] = token
+                        lines.extend(
+                            [
+                                f"{indent}used += 1",
+                                f"{indent}{a}.rawset_prehashed({b}, {token_name}, {c})",
+                            ]
+                        )
+                    else:
+                        lines.extend([f"{indent}used += 1", f"{indent}{a}.rawset({b}, {c})"])
                 elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                     symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[op]
                     lines.extend(

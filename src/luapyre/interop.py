@@ -26,6 +26,9 @@ class LuaFunction:
     _leaf_cache: list[object] = field(
         default_factory=lambda: [None], compare=False, repr=False
     )
+    _adapter_cache: list[object] = field(
+        default_factory=lambda: [None], compare=False, repr=False
+    )
 
     def __call__(
         self,
@@ -33,6 +36,16 @@ class LuaFunction:
         return_type: object = None,
         fuel: int | None = None,
     ) -> Any:
+        adapter = self._adapter_cache[0]
+        if adapter is None:
+            adapter = self._runtime._make_bound_adapter(
+                self._value, self._leaf_cache
+            )
+            if adapter is None:
+                adapter = False
+            self._adapter_cache[0] = adapter
+        if adapter is not False:
+            return adapter(args, return_type, fuel)
         return self._runtime._call_bound(
             self._value,
             args,

@@ -122,6 +122,27 @@ class TypedIRLoopJITMixin:
             # guard/deopt side exit.
             return [f"{indent}used += 1"]
 
+        if op is Op.CONCAT and frame.proto.jit_fully_typed:
+            left = site.value_for(ins.b).type_name
+            right = site.value_for(ins.c).type_name
+            if left == right == "string" or item.specialization == "bytes":
+                out = []
+                if left != "string" or right != "string":
+                    out.append(
+                        f"{indent}if not isinstance(_r{ins.b}, bytes) or not isinstance(_r{ins.c}, bytes):"
+                    )
+                    out.extend(
+                        f"{indent}    {line.strip()}"
+                        for line in self._ir_deopt_lines(registers, plan, pc, "")
+                    )
+                out.extend(
+                    [
+                        f"{indent}used += 1",
+                        f"{indent}_r{ins.a} = _r{ins.b} + _r{ins.c}",
+                    ]
+                )
+                return out
+
         if op is Op.GETUPVAL:
             # Non-virtual GETUPVAL shapes are not part of the first IR backend.
             # Fail closed so the prior tiers/interpreter keep exact behavior.

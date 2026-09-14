@@ -63,7 +63,9 @@ class SuperPythonJIT(
     earlier exact tier or the interpreter.
     """
 
-    _IR_PRIMARY_OPS = frozenset({Op.GETUPVAL, Op.GETTABLE, Op.SETTABLE})
+    _IR_PRIMARY_OPS = frozenset(
+        {Op.GETUPVAL, Op.GETTABLE, Op.SETTABLE, Op.CONCAT}
+    )
 
     def _compile_loop(self, frame, start_pc: int, backedge_pc: int):
         if frame.proto.jit_fully_typed:

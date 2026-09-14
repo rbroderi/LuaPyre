@@ -26,6 +26,7 @@ from .stdlib_package import install_package_library
 from .table import LuaTable
 from .threadvm import LuaThread
 from .interop import LuaFunction, LuaInt
+from .jit import DEOPT
 from .typed_parser import TypedParser
 from .typesys import ANY
 from .values import MultiValue, i64, truthy
@@ -561,6 +562,94 @@ class LuaRuntime:
             if len(self._python_call_cache) > max(16, self.source_cache_size):
                 self._python_call_cache.popitem(last=False)
         return self._from_lua(result, return_type)
+
+    def _make_bound_adapter(self, function, leaf_cache):
+        """Create the common fixed one-integer Python entry once per binding."""
+        if (
+            not isinstance(function, Closure)
+            or not hasattr(self.vm, "call_compiled_leaf")
+        ):
+            return None
+        proto = function.proto
+        if (
+            not proto.jit_fully_typed
+            or proto.is_vararg
+            or proto.param_count != 1
+            or proto.param_types[0].name != "integer"
+        ):
+            return None
+
+        vm = self.vm
+        minimum = -(1 << 63)
+        maximum = (1 << 63) - 1
+
+        def call(args, return_type, fuel):
+            if len(args) != 1 or type(args[0]) is not int:
+                return self._call_bound(
+                    function,
+                    args,
+                    return_type=return_type,
+                    fuel=fuel,
+                    leaf_cache=leaf_cache,
+                )
+            value = args[0]
+            if not minimum <= value <= maximum:
+                raise OverflowError("LuaInt result is outside signed 64-bit range")
+            if (
+                not vm.jit.enabled
+                or vm._active_frames is not None
+                or vm.hooks_active()
+                or vm.max_frames < 2
+            ):
+                return self._call_bound(
+                    function,
+                    args,
+                    return_type=return_type,
+                    fuel=fuel,
+                    leaf_cache=leaf_cache,
+                )
+            cached = leaf_cache[0]
+            if cached is not None and cached[0] is proto:
+                compiled = cached[1]
+            else:
+                compiled = vm.jit.get_leaf(proto)
+                leaf_cache[0] = (proto, compiled)
+            budget = vm.default_fuel if fuel is None else fuel
+            if compiled is None or budget < compiled.instruction_cost + 4:
+                return self._call_bound(
+                    function,
+                    args,
+                    return_type=return_type,
+                    fuel=fuel,
+                    leaf_cache=leaf_cache,
+                )
+            values = compiled.direct_runner(vm, function, args)
+            if values is DEOPT:
+                return self._call_bound(
+                    function,
+                    args,
+                    return_type=return_type,
+                    fuel=fuel,
+                    leaf_cache=leaf_cache,
+                )
+            vm.jit.stats.leaf_executions += 1
+            vm.jit.stats.leaf_frame_elisions += 1
+            vm.jit.stats.python_direct_entries += 1
+            vm.gc.safepoint(values)
+            result = (
+                None if not values
+                else values[0] if len(values) == 1
+                else values
+            )
+            if return_type is None and (
+                result is None or type(result) in (bool, int, float)
+            ):
+                return result
+            if return_type is int and type(result) is int:
+                return result
+            return self._from_lua(result, return_type)
+
+        return call
 
     def set_output_sink(self, sink=None) -> None:
         """Replace the byte-oriented sink used by Lua ``print``."""

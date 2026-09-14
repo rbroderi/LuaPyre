@@ -151,7 +151,6 @@ class StructuredTypedLoopJITMixin:
             lines.extend(self._spill_lines(registers, indent))
 
         max_cost = len(prefix) + 1 + max(len(first), len(second)) + 1
-        lines.append(f"    while budget - used >= {max_cost}:")
 
         def deopt(condition, pc, cost, indent):
             lines.append(f"{indent}if {condition}:")
@@ -229,19 +228,63 @@ class StructuredTypedLoopJITMixin:
                 known_types[ins.a] = result_type
             return known_types
 
-        prefix_types = emit(prefix, "        ", {})
-        condition = f"not (_r{branch.b} is None or _r{branch.b} is False)"
-        if branch.op is Op.JMPIFNOT:
-            condition = f"not ({condition})"
-        lines.append(f"        if {condition}:")
-        emit(second, "            ", prefix_types, len(prefix) + 1)
-        lines.append(f"            used += {len(prefix) + 1 + len(second) + 1}")
-        lines.append("        else:")
-        emit(first_body, "            ", prefix_types, len(prefix) + 1)
-        # Charge the executed prefix, branch, arm, optional JMP, and backedge
-        # once per path. Side exits above include the exact partial-path cost.
-        lines.append(f"            used += {len(prefix) + 1 + len(first) + 1}")
         idx, limit, step = f"_r{loop_ins.a}", f"_r{loop_ins.b}", f"_r{loop_ins.c}"
+        range_proven = all(
+            ranges.range_at(start_pc, reg) is not None
+            for reg in (loop_ins.a, loop_ins.b, loop_ins.c)
+        ) and not any(
+            ins.op is not Op.GUARD
+            and ins.a in (loop_ins.a, loop_ins.b, loop_ins.c)
+            for _pc, ins in (*prefix, *first_body, *second)
+        )
+        entry_types = (
+            {
+                loop_ins.a: "integer",
+                loop_ins.b: "integer",
+                loop_ins.c: "integer",
+            }
+            if range_proven
+            else {}
+        )
+
+        def emit_body(indent: str):
+            prefix_types = emit(prefix, indent, entry_types)
+            condition = f"not (_r{branch.b} is None or _r{branch.b} is False)"
+            if branch.op is Op.JMPIFNOT:
+                condition = f"not ({condition})"
+            lines.append(f"{indent}if {condition}:")
+            emit(second, indent + "    ", prefix_types, len(prefix) + 1)
+            lines.append(
+                f"{indent}    used += {len(prefix) + 1 + len(second) + 1}"
+            )
+            lines.append(f"{indent}else:")
+            emit(first_body, indent + "    ", prefix_types, len(prefix) + 1)
+            # Charge the executed prefix, branch, arm, optional JMP, and
+            # backedge once per path. Side exits include the exact partial cost.
+            lines.append(
+                f"{indent}    used += {len(prefix) + 1 + len(first) + 1}"
+            )
+
+        if range_proven:
+            lines.extend(
+                [
+                    f"    _total = (({limit} - {idx}) // {step} + 1) if {step} > 0 else (({idx} - {limit}) // -{step} + 1)",
+                    f"    if _integer_loop and _total > 0 and budget >= _total * {max_cost}:",
+                    f"        for _loop_value in range({idx}, {idx} + _total * {step}, {step}):",
+                    f"            {idx} = _loop_value",
+                ]
+            )
+            emit_body("            ")
+            spill("        ")
+            lines.extend(
+                [
+                    f"        frame.pc = {backedge_pc + 1}",
+                    "        return used, True",
+                ]
+            )
+
+        lines.append(f"    while budget - used >= {max_cost}:")
+        emit_body("        ")
         lines.extend([
             f"        _next = {idx} + {step}",
             f"        if (_integer_loop and (_next < _INT_MIN or _next > _INT_MAX)) or ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",

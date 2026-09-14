@@ -104,7 +104,9 @@ class AstPythonJIT(RegionPythonJIT):
         for offset, ins in enumerate(body):
             pc = start_pc + offset
             specialization = None
-            if ins.op in (Op.ADD, Op.SUB, Op.MUL, Op.MOD, Op.EQ, Op.LT, Op.LE):
+            if ins.op in (
+                Op.ADD, Op.SUB, Op.MUL, Op.MOD, Op.CONCAT, Op.EQ, Op.LT, Op.LE
+            ):
                 specialization = self._profile_binary(frame.regs, ins)
             lowered.append(
                 IRInstruction(pc, ins, specialization, ranges.overflow_free(pc))

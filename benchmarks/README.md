@@ -87,6 +87,10 @@ For performance comparisons, compare runs on the same runner class and Python ve
 - `speed_033_ab.py` measures the accepted 0.33 targets plus arithmetic and
   branch controls. Run it in separate processes against each checkout with the
   same Python executable, affinity, hash seed, warmups, and sample count.
+- `speed_034_ab.py` adds string construction and sieve to the 0.33 corpus and
+  measures the accepted 0.34 string, GC, control-flow, table-write, and Python
+  entry paths. The committed result uses three paired processes per Python
+  version with fixed affinity and `PYTHONHASHSEED=0`.
 - `python_headroom.py` compares nine algorithms against reduced-contract direct
   Python implementations. Use `PYTHONPATH=src PYTHONHASHSEED=0`, `--revision`,
   `--json`, and optionally `--python-first` or repeated `--case` selections.
