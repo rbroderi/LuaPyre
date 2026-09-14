@@ -47,6 +47,11 @@ def _jit_gettable(vm, frames, frame, ins, regs, constants):
     if type(key) is int and key >= 1:
         regs[ins.a] = obj.rawget(key)
         return None
+    # Integral floats share integer array storage. A hash-only PIC hit would
+    # lose their values, including when a sparse key later migrates to array.
+    if type(key) is float and key >= 1 and key.is_integer():
+        regs[ins.a] = obj.rawget(int(key))
+        return None
     token = vm._ic_hash_key(key)
     if token is None:
         return vm._gettable(frames, frame, obj, key, ins.a)

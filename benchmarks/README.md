@@ -68,3 +68,11 @@ For performance comparisons, compare runs on the same runner class and Python ve
 - `speed_030_ab.py` measures the 0.30 inline-guard, diamond-CFG, recursive-frame,
   constant-key table, and direct Python-entry paths. Run it from each revision
   with distinct `--label` values.
+- `speed_031_ab.py` extends those controls with constant array fields and
+  inferred/union Python return conversions. Run the same script with
+  `PYTHONPATH=<checkout>/src`, `--label`, and optional `--json` against each
+  revision. The 0.31 notes include measurements and exact test boundaries.
+- `profile_hotpaths.py` records warmed `cProfile` attribution and JIT counters
+  for the current performance plan. Use `--revision`, `--json`, and optional
+  repeated `--workload` arguments. Profiling affects timings; use the A/B tools
+  to measure actual speed changes.
