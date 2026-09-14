@@ -72,6 +72,9 @@ For performance comparisons, compare runs on the same runner class and Python ve
   inferred/union Python return conversions. Run the same script with
   `PYTHONPATH=<checkout>/src`, `--label`, and optional `--json` against each
   revision. The 0.31 notes include measurements and exact test boundaries.
+- `speed_032_ab.py` measures recursive calls, spectral norm, binary trees, and
+  table mix for the compiled-call pipeline. Use the same label/JSON workflow
+  with 7 warmups and 31 samples for release comparisons.
 - `profile_hotpaths.py` records warmed `cProfile` attribution and JIT counters
   for the current performance plan. Use `--revision`, `--json`, and optional
   repeated `--workload` arguments. Profiling affects timings; use the A/B tools

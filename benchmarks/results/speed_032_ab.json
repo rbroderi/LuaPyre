@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "python": "3.14.7",
+  "warmups": 7,
+  "repeats": 31,
+  "runs": {
+    "0.31": [
+      {
+        "fib_recursive": 46.062905,
+        "spectral_norm": 47.361919,
+        "binary_trees": 181.656695,
+        "table_mix": 27.477841
+      },
+      {
+        "fib_recursive": 46.07707,
+        "spectral_norm": 48.190605,
+        "binary_trees": 182.579805,
+        "table_mix": 27.69648
+      },
+      {
+        "fib_recursive": 47.894295,
+        "spectral_norm": 47.461412,
+        "binary_trees": 180.448834,
+        "table_mix": 27.385133
+      }
+    ],
+    "0.32": [
+      {
+        "fib_recursive": 36.30901,
+        "spectral_norm": 34.347852,
+        "binary_trees": 158.027966,
+        "table_mix": 29.181039
+      },
+      {
+        "fib_recursive": 36.231137,
+        "spectral_norm": 34.383413,
+        "binary_trees": 165.332152,
+        "table_mix": 28.244799
+      },
+      {
+        "fib_recursive": 35.606973,
+        "spectral_norm": 34.266378,
+        "binary_trees": 172.786999,
+        "table_mix": 27.675015
+      }
+    ]
+  },
+  "median_of_process_medians_ms": {
+    "0.31": {
+      "fib_recursive": 46.07707,
+      "spectral_norm": 47.461412,
+      "binary_trees": 181.656695,
+      "table_mix": 27.477841
+    },
+    "0.32": {
+      "fib_recursive": 36.231137,
+      "spectral_norm": 34.347852,
+      "binary_trees": 165.332152,
+      "table_mix": 28.244799
+    }
+  }
+}

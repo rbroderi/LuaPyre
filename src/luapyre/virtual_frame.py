@@ -17,7 +17,12 @@ _SIGN64 = 1 << 63
 _TWO64 = 1 << 64
 
 
-def compile_virtual_frame(proto: Proto) -> FunctionType | None:
+def compile_virtual_frame(
+    proto: Proto,
+    *,
+    arg_count: int | None = None,
+    trusted_args: bool = False,
+) -> FunctionType | None:
     """Compile a proven non-escaping child without allocating its Frame."""
 
     ranges = analyze_integer_ranges(proto)
@@ -43,11 +48,16 @@ def compile_virtual_frame(proto: Proto) -> FunctionType | None:
     ]
     for index in range(proto.param_count):
         expected = proto.param_types[index].name
-        lines.extend([
-            f"    _r{index} = args[{index}] if {index} < len(args) else None",
-            f"    if not _type_matches({expected!r}, _r{index}):",
-            f"        raise _LuaRuntimeError(f'argument {index + 1}: expected {expected}, got {{_static_value_type(_r{index}).name}}')",
-        ])
+        if arg_count is None:
+            value = f"args[{index}] if {index} < len(args) else None"
+        else:
+            value = f"args[{index}]" if index < arg_count else "None"
+        lines.append(f"    _r{index} = {value}")
+        if not trusted_args:
+            lines.extend([
+                f"    if not _type_matches({expected!r}, _r{index}):",
+                f"        raise _LuaRuntimeError(f'argument {index + 1}: expected {expected}, got {{_static_value_type(_r{index}).name}}')",
+            ])
     for reg in registers[proto.param_count:]:
         lines.append(f"    _r{reg} = None")
     lines.extend(["    consts = closure.proto.constants", "    used = 0", "    _pc = 0", "    _active_pc = 0", "    try:", "        while True:"])
@@ -71,37 +81,50 @@ def compile_virtual_frame(proto: Proto) -> FunctionType | None:
         terminal = proto.code[end - 1]
         is_terminal = terminal.op in _CONTROL or terminal.op in (Op.RETURN, Op.HALT)
         ordinary_end = end - 1 if is_terminal else end
+        pending_cost = 0
         for pc in range(start, ordinary_end):
             ins = proto.code[pc]
-            lines.append(f"{indent}_active_pc = {pc}")
+            # The whole block has already passed its fuel preflight.  Keep
+            # pure operations in a local batch, flushing only before an
+            # instruction that can raise a Lua error and therefore needs an
+            # exact diagnostic PC and consumed prefix.
+            if ins.op is Op.GUARD:
+                if pending_cost:
+                    lines.append(f"{indent}used += {pending_cost}")
+                    pending_cost = 0
+                lines.append(f"{indent}_active_pc = {pc}")
             a, b, c = f"_r{ins.a}", f"_r{ins.b}", f"_r{ins.c}"
             if ins.op is Op.LOADK:
-                lines.extend([f"{indent}used += 1", f"{indent}{a} = consts[{ins.b}]"])
+                lines.append(f"{indent}{a} = consts[{ins.b}]")
             elif ins.op in (Op.MOVE, Op.LOCAL):
-                lines.extend([f"{indent}used += 1", f"{indent}{a} = {b}"])
+                lines.append(f"{indent}{a} = {b}")
             elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
-                lines.append(f"{indent}used += 1")
                 if ranges.overflow_free(pc):
                     lines.append(f"{indent}{a} = {b} {symbol} {c}")
                 else:
                     lines.extend([f"{indent}_wide_{pc} = ({b} {symbol} {c}) & _MASK64", f"{indent}{a} = _wide_{pc} - _TWO64 if _wide_{pc} & _SIGN64 else _wide_{pc}"])
             elif ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[ins.op]
-                lines.extend([f"{indent}used += 1", f"{indent}{a} = float({b} {symbol} {c})"])
+                lines.append(f"{indent}{a} = float({b} {symbol} {c})")
             elif ins.op is Op.DIV:
-                lines.extend([f"{indent}used += 1", f"{indent}{a} = _float_divide({b}, {c})"])
+                lines.append(f"{indent}{a} = _float_divide({b}, {c})")
             elif ins.op is Op.NOT:
-                lines.extend([f"{indent}used += 1", f"{indent}{a} = ({b} is None or {b} is False)"])
+                lines.append(f"{indent}{a} = ({b} is None or {b} is False)")
             elif ins.op is Op.TOBOOL:
-                lines.extend([f"{indent}used += 1", f"{indent}{a} = not ({b} is None or {b} is False)"])
+                lines.append(f"{indent}{a} = not ({b} is None or {b} is False)")
             elif ins.op in (Op.LT, Op.LE):
                 symbol = "<" if ins.op is Op.LT else "<="
-                lines.extend([f"{indent}used += 1", f"{indent}{a} = {b} {symbol} {c}"])
+                lines.append(f"{indent}{a} = {b} {symbol} {c}")
             elif ins.op is Op.GUARD:
                 lines.extend([f"{indent}used += 1", f"{indent}if not _type_matches(consts[{ins.b}], {a}):", f"{indent}    raise _LuaRuntimeError(f'expected {{consts[{ins.b}]!s}}, got {{_static_value_type({a}).name}}')"])
             else:
                 return None
+            if ins.op is not Op.GUARD:
+                pending_cost += 1
+
+        if pending_cost:
+            lines.append(f"{indent}used += {pending_cost}")
 
         if is_terminal:
             pc = end - 1
