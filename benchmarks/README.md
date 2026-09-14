@@ -77,5 +77,10 @@ For performance comparisons, compare runs on the same runner class and Python ve
   with 7 warmups and 31 samples for release comparisons.
 - `profile_hotpaths.py` records warmed `cProfile` attribution and JIT counters
   for the current performance plan. Use `--revision`, `--json`, and optional
-  repeated `--workload` arguments. Profiling affects timings; use the A/B tools
+  repeated `--workload` arguments. `--executions` aggregates multiple profiled
+  executions after warmup. Profiling affects timings; use the A/B tools
   to measure actual speed changes.
+- `probe_033.py` tests isolated optimization hypotheses on the merged 0.32
+  runtime. Its patches are confined to the benchmark process; they are not
+  production changes. Results and semantic acceptance gates are documented in
+  `docs/performance-roadmap-0.33.md`.

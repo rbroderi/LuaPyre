@@ -1,0 +1,969 @@
+{
+  "schema_version": 1,
+  "runtime_revision": "3ac664934ff200e87233b66b423ee57c2c77198c",
+  "runtime_version": "0.32.0a1",
+  "method": "Three paired processes per case and Python; A/B, B/A, A/B; 7 warmups and 31 timed samples; GC disabled only during timed samples; CPU affinity and PYTHONHASHSEED held constant",
+  "interpretation": "Isolated exploratory prototypes; timings do not establish production readiness or additive speedups; retain every process result including timing outliers",
+  "summary": [
+    {
+      "python": "3.13.15",
+      "case": "spectral_tiers",
+      "baseline_median_ms": 36.312876,
+      "probe_median_ms": 34.870738,
+      "reduction_pct": 3.9714232494281085,
+      "baseline_process_medians_ms": [
+        44.304623,
+        36.312876,
+        36.159537
+      ],
+      "probe_process_medians_ms": [
+        34.870738,
+        65.81515,
+        34.656279
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "table_guards",
+      "baseline_median_ms": 38.422918,
+      "probe_median_ms": 34.675816,
+      "reduction_pct": 9.752257754083136,
+      "baseline_process_medians_ms": [
+        36.823677,
+        39.019954,
+        38.422918
+      ],
+      "probe_process_medians_ms": [
+        34.949321,
+        34.675816,
+        34.515294
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "table_allocation",
+      "baseline_median_ms": 170.278851,
+      "probe_median_ms": 147.431383,
+      "reduction_pct": 13.417678041532,
+      "baseline_process_medians_ms": [
+        170.278851,
+        173.866138,
+        169.400401
+      ],
+      "probe_process_medians_ms": [
+        147.431383,
+        146.600548,
+        148.944312
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "frame_rebind",
+      "baseline_median_ms": 39.258598,
+      "probe_median_ms": 36.641657,
+      "reduction_pct": 6.665905389693226,
+      "baseline_process_medians_ms": [
+        39.258598,
+        39.252216,
+        39.528982
+      ],
+      "probe_process_medians_ms": [
+        36.431497,
+        36.641657,
+        37.214138
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "spectral_tiers",
+      "baseline_median_ms": 34.1039,
+      "probe_median_ms": 33.25721,
+      "reduction_pct": 2.482677934195216,
+      "baseline_process_medians_ms": [
+        34.1039,
+        34.214856,
+        33.896291
+      ],
+      "probe_process_medians_ms": [
+        33.217638,
+        33.441266,
+        33.25721
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "table_guards",
+      "baseline_median_ms": 28.504112,
+      "probe_median_ms": 25.615915,
+      "reduction_pct": 10.132562628156942,
+      "baseline_process_medians_ms": [
+        28.289445,
+        29.363236,
+        28.504112
+      ],
+      "probe_process_medians_ms": [
+        25.615915,
+        25.908057,
+        25.545873
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "table_allocation",
+      "baseline_median_ms": 166.169218,
+      "probe_median_ms": 142.691335,
+      "reduction_pct": 14.128900215441822,
+      "baseline_process_medians_ms": [
+        176.122341,
+        163.571279,
+        166.169218
+      ],
+      "probe_process_medians_ms": [
+        142.691335,
+        142.298691,
+        145.675894
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "frame_rebind",
+      "baseline_median_ms": 36.077595,
+      "probe_median_ms": 34.168271,
+      "reduction_pct": 5.292270729243468,
+      "baseline_process_medians_ms": [
+        36.077595,
+        35.687023,
+        37.930854
+      ],
+      "probe_process_medians_ms": [
+        34.168271,
+        34.009682,
+        37.261588
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 73.284994,
+      "steady_median_ms": 39.258598,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "one_argument_frame",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 71.129811,
+      "steady_median_ms": 36.431497,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 89.636124,
+      "steady_median_ms": 39.252216,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "one_argument_frame",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 71.389187,
+      "steady_median_ms": 36.641657,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 76.343099,
+      "steady_median_ms": 39.528982,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "one_argument_frame",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 72.128433,
+      "steady_median_ms": 37.214138,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 89.21313,
+      "steady_median_ms": 44.304623,
+      "counter_delta": {
+        "loop_executions": 2,
+        "loop_iterations": 58,
+        "call_ic_hits": 31,
+        "table_ic_hits": 2,
+        "virtual_frame_elisions": 18000
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "prefer_structured",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 71.996326,
+      "steady_median_ms": 34.870738,
+      "counter_delta": {
+        "loop_executions": 602,
+        "loop_iterations": 17458,
+        "call_ic_hits": 631,
+        "table_ic_hits": 2
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 69.484546,
+      "steady_median_ms": 36.312876,
+      "counter_delta": {
+        "loop_executions": 2,
+        "loop_iterations": 58,
+        "call_ic_hits": 31,
+        "table_ic_hits": 2,
+        "virtual_frame_elisions": 18000
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "prefer_structured",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 75.293701,
+      "steady_median_ms": 65.81515,
+      "counter_delta": {
+        "loop_executions": 602,
+        "loop_iterations": 17458,
+        "call_ic_hits": 631,
+        "table_ic_hits": 2
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 75.348702,
+      "steady_median_ms": 36.159537,
+      "counter_delta": {
+        "loop_executions": 2,
+        "loop_iterations": 58,
+        "call_ic_hits": 31,
+        "table_ic_hits": 2,
+        "virtual_frame_elisions": 18000
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "prefer_structured",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 81.049563,
+      "steady_median_ms": 34.656279,
+      "counter_delta": {
+        "loop_executions": 602,
+        "loop_iterations": 17458,
+        "call_ic_hits": 631,
+        "table_ic_hits": 2
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 329.444886,
+      "steady_median_ms": 170.278851,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "fresh_table_adoption",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 290.886604,
+      "steady_median_ms": 147.431383,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 289.163265,
+      "steady_median_ms": 173.866138,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "fresh_table_adoption",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 277.412032,
+      "steady_median_ms": 146.600548,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 292.991419,
+      "steady_median_ms": 169.400401,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "fresh_table_adoption",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 266.354607,
+      "steady_median_ms": 148.944312,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 71.50548,
+      "steady_median_ms": 36.823677,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "literal_guards",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 77.318834,
+      "steady_median_ms": 34.949321,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 82.307238,
+      "steady_median_ms": 39.019954,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "literal_guards",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 80.501387,
+      "steady_median_ms": 34.675816,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "baseline",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 77.691377,
+      "steady_median_ms": 38.422918,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "literal_guards",
+      "python": "3.13.15",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 71.955279,
+      "steady_median_ms": 34.515294,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 70.088759,
+      "steady_median_ms": 36.077595,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "one_argument_frame",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 65.125385,
+      "steady_median_ms": 34.168271,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 73.606294,
+      "steady_median_ms": 35.687023,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "one_argument_frame",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 71.92274,
+      "steady_median_ms": 34.009682,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 67.213941,
+      "steady_median_ms": 37.930854,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "frame_rebind",
+      "workload": "fib_recursive",
+      "variant": "one_argument_frame",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 74.400342,
+      "steady_median_ms": 37.261588,
+      "counter_delta": {
+        "call_ic_hits": 3
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 73.025607,
+      "steady_median_ms": 34.1039,
+      "counter_delta": {
+        "loop_executions": 2,
+        "loop_iterations": 58,
+        "call_ic_hits": 31,
+        "table_ic_hits": 2,
+        "virtual_frame_elisions": 18000
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "prefer_structured",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 69.625557,
+      "steady_median_ms": 33.217638,
+      "counter_delta": {
+        "loop_executions": 602,
+        "loop_iterations": 17458,
+        "call_ic_hits": 631,
+        "table_ic_hits": 2
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 76.730785,
+      "steady_median_ms": 34.214856,
+      "counter_delta": {
+        "loop_executions": 2,
+        "loop_iterations": 58,
+        "call_ic_hits": 31,
+        "table_ic_hits": 2,
+        "virtual_frame_elisions": 18000
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "prefer_structured",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 69.055704,
+      "steady_median_ms": 33.441266,
+      "counter_delta": {
+        "loop_executions": 602,
+        "loop_iterations": 17458,
+        "call_ic_hits": 631,
+        "table_ic_hits": 2
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 82.034418,
+      "steady_median_ms": 33.896291,
+      "counter_delta": {
+        "loop_executions": 2,
+        "loop_iterations": 58,
+        "call_ic_hits": 31,
+        "table_ic_hits": 2,
+        "virtual_frame_elisions": 18000
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "spectral_tiers",
+      "workload": "spectral_norm",
+      "variant": "prefer_structured",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 76.587759,
+      "steady_median_ms": 33.25721,
+      "counter_delta": {
+        "loop_executions": 602,
+        "loop_iterations": 17458,
+        "call_ic_hits": 631,
+        "table_ic_hits": 2
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 268.318018,
+      "steady_median_ms": 176.122341,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "fresh_table_adoption",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 255.619943,
+      "steady_median_ms": 142.691335,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 284.617199,
+      "steady_median_ms": 163.571279,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "fresh_table_adoption",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 286.015069,
+      "steady_median_ms": 142.298691,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 292.217496,
+      "steady_median_ms": 166.169218,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_allocation",
+      "workload": "binary_trees",
+      "variant": "fresh_table_adoption",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 258.780639,
+      "steady_median_ms": 145.675894,
+      "counter_delta": {
+        "call_ic_hits": 60
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 64.733297,
+      "steady_median_ms": 28.289445,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "literal_guards",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 65.598772,
+      "steady_median_ms": 25.615915,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 72.428422,
+      "steady_median_ms": 29.363236,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "literal_guards",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 69.983945,
+      "steady_median_ms": 25.908057,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "baseline",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 60.548936,
+      "steady_median_ms": 28.504112,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    },
+    {
+      "case": "table_guards",
+      "workload": "table_mix",
+      "variant": "literal_guards",
+      "python": "3.14.7",
+      "affinity_cpu": 0,
+      "hash_seed": "0",
+      "warmups": 7,
+      "repeats": 31,
+      "cold_run_ms": 62.360509,
+      "steady_median_ms": 25.545873,
+      "counter_delta": {
+        "loop_executions": 3,
+        "loop_iterations": 24665
+      },
+      "validation": "Expected benchmark result checked on every execution; no conformance claim for the probes"
+    }
+  ]
+}

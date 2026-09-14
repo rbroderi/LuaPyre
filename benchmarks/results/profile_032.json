@@ -1,0 +1,1333 @@
+{
+  "schema_version": 1,
+  "revision": "3ac664934ff200e87233b66b423ee57c2c77198c",
+  "python": "3.14.7",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "warmups": 7,
+  "profiled_executions": 3,
+  "method": "7 warmups, then 3 cProfile execution(s); GC remains enabled",
+  "interpretation": "Call counts and attribution are diagnostic; profiled timings are not speed measurements",
+  "workloads": [
+    {
+      "name": "typed_arith",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.0032820299999999996,
+      "counters": {
+        "loop_executions": 3,
+        "loop_iterations": 89997
+      },
+      "by_self": [
+        {
+          "file": "<luapyre-structured-loop>",
+          "line": 1,
+          "function": "_jit_structured_loop",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.002894977,
+          "cumulative_seconds": 0.00289602
+        },
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.000153232,
+          "cumulative_seconds": 0.003240232
+        },
+        {
+          "file": "gc.py",
+          "line": 369,
+          "function": "adopt",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 4.2714000000000005e-05,
+          "cumulative_seconds": 7.0202e-05
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'disable' of '_lsprof.Profiler' objects>",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 3.0638e-05,
+          "cumulative_seconds": 3.0638e-05
+        },
+        {
+          "file": "profile_hotpaths.py",
+          "line": 38,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.4204000000000002e-05,
+          "cumulative_seconds": 0.003255083
+        },
+        {
+          "file": "vm.py",
+          "line": 60,
+          "function": "proto",
+          "calls": 144,
+          "primitive_calls": 144,
+          "self_seconds": 1.3074e-05,
+          "cumulative_seconds": 1.3074e-05
+        },
+        {
+          "file": "jitvm.py",
+          "line": 304,
+          "function": "_jit_backedge",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.1378e-05,
+          "cumulative_seconds": 0.0029096580000000003
+        },
+        {
+          "file": "jitvm.py",
+          "line": 21,
+          "function": "_jit_forloop",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.1358e-05,
+          "cumulative_seconds": 0.0029255920000000003
+        },
+        {
+          "file": "opdispatch.py",
+          "line": 853,
+          "function": "_return",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 9.196000000000001e-06,
+          "cumulative_seconds": 2.1170000000000002e-05
+        },
+        {
+          "file": "vm.py",
+          "line": 457,
+          "function": "_forprep",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 9.076000000000001e-06,
+          "cumulative_seconds": 1.3129e-05
+        }
+      ]
+    },
+    {
+      "name": "typed_calls",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.004194824000000001,
+      "counters": {
+        "loop_executions": 3,
+        "loop_iterations": 23997,
+        "call_ic_hits": 3
+      },
+      "by_self": [
+        {
+          "file": "<luapyre-structured-loop>",
+          "line": 1,
+          "function": "_jit_structured_loop",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.003630157,
+          "cumulative_seconds": 0.003631637
+        },
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.000134057,
+          "cumulative_seconds": 0.004152193
+        },
+        {
+          "file": "vm.py",
+          "line": 60,
+          "function": "proto",
+          "calls": 198,
+          "primitive_calls": 198,
+          "self_seconds": 8.1958e-05,
+          "cumulative_seconds": 8.1958e-05
+        },
+        {
+          "file": "gc.py",
+          "line": 369,
+          "function": "adopt",
+          "calls": 6,
+          "primitive_calls": 6,
+          "self_seconds": 3.2144e-05,
+          "cumulative_seconds": 7.8946e-05
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'disable' of '_lsprof.Profiler' objects>",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 3.1094000000000004e-05,
+          "cumulative_seconds": 3.1094000000000004e-05
+        },
+        {
+          "file": "optimizing_jitvm.py",
+          "line": 131,
+          "function": "_invoke",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 2.5356000000000003e-05,
+          "cumulative_seconds": 5.4675e-05
+        },
+        {
+          "file": "jitvm.py",
+          "line": 158,
+          "function": "_invoke_site",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.6724e-05,
+          "cumulative_seconds": 7.832700000000001e-05
+        },
+        {
+          "file": "jitvm.py",
+          "line": 21,
+          "function": "_jit_forloop",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.5613e-05,
+          "cumulative_seconds": 0.003664127
+        },
+        {
+          "file": "profile_hotpaths.py",
+          "line": 38,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.4567000000000001e-05,
+          "cumulative_seconds": 0.004167419
+        },
+        {
+          "file": "opdispatch.py",
+          "line": 789,
+          "function": "_call",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.3456000000000001e-05,
+          "cumulative_seconds": 0.00016615100000000002
+        }
+      ]
+    },
+    {
+      "name": "typed_branch",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.030587344,
+      "counters": {
+        "loop_executions": 3,
+        "loop_iterations": 89997
+      },
+      "by_self": [
+        {
+          "file": "<luapyre-structured-cfg-loop>",
+          "line": 1,
+          "function": "_jit_structured_cfg_loop",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.030026868,
+          "cumulative_seconds": 0.030027106
+        },
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.000162439,
+          "cumulative_seconds": 0.030513569
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'disable' of '_lsprof.Profiler' objects>",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 5.4848e-05,
+          "cumulative_seconds": 5.4848e-05
+        },
+        {
+          "file": "gc.py",
+          "line": 369,
+          "function": "adopt",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 5.1602000000000005e-05,
+          "cumulative_seconds": 9.520600000000001e-05
+        },
+        {
+          "file": "profile_hotpaths.py",
+          "line": 38,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 2.2574e-05,
+          "cumulative_seconds": 0.030537176000000003
+        },
+        {
+          "file": "jitvm.py",
+          "line": 304,
+          "function": "_jit_backedge",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.8784000000000002e-05,
+          "cumulative_seconds": 0.030048933000000003
+        },
+        {
+          "file": "vm.py",
+          "line": 60,
+          "function": "proto",
+          "calls": 216,
+          "primitive_calls": 216,
+          "self_seconds": 1.8152000000000002e-05,
+          "cumulative_seconds": 1.8152000000000002e-05
+        },
+        {
+          "file": "opdispatch.py",
+          "line": 853,
+          "function": "_return",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.5212000000000001e-05,
+          "cumulative_seconds": 3.7117000000000004e-05
+        },
+        {
+          "file": "threadvm.py",
+          "line": 291,
+          "function": "_return",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.3164000000000001e-05,
+          "cumulative_seconds": 2.0037e-05
+        },
+        {
+          "file": "gc.py",
+          "line": 360,
+          "function": "account_bytes",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.1700000000000001e-05,
+          "cumulative_seconds": 2.1982e-05
+        }
+      ]
+    },
+    {
+      "name": "typed_global_read",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.0045834,
+      "counters": {
+        "loop_executions": 3,
+        "loop_iterations": 89997,
+        "table_ic_hits": 6
+      },
+      "by_self": [
+        {
+          "file": "<luapyre-structured-loop>",
+          "line": 1,
+          "function": "_jit_structured_loop",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.004096094000000001,
+          "cumulative_seconds": 0.004098537
+        },
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.00014973000000000002,
+          "cumulative_seconds": 0.004530229
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'disable' of '_lsprof.Profiler' objects>",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 4.1927e-05,
+          "cumulative_seconds": 4.1927e-05
+        },
+        {
+          "file": "gc.py",
+          "line": 369,
+          "function": "adopt",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 2.6099000000000002e-05,
+          "cumulative_seconds": 5.7511000000000006e-05
+        },
+        {
+          "file": "jitvm.py",
+          "line": 75,
+          "function": "_jit_settable",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 2.5032e-05,
+          "cumulative_seconds": 5.9965000000000006e-05
+        },
+        {
+          "file": "profile_hotpaths.py",
+          "line": 38,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.6835e-05,
+          "cumulative_seconds": 0.0045478440000000005
+        },
+        {
+          "file": "vm.py",
+          "line": 60,
+          "function": "proto",
+          "calls": 204,
+          "primitive_calls": 204,
+          "self_seconds": 1.6829e-05,
+          "cumulative_seconds": 1.6829e-05
+        },
+        {
+          "file": "jitvm.py",
+          "line": 304,
+          "function": "_jit_backedge",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.3346e-05,
+          "cumulative_seconds": 0.004114981
+        },
+        {
+          "file": "inline_cache.py",
+          "line": 84,
+          "function": "table_site",
+          "calls": 6,
+          "primitive_calls": 6,
+          "self_seconds": 1.1433e-05,
+          "cumulative_seconds": 1.7563e-05
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.len>",
+          "calls": 81,
+          "primitive_calls": 81,
+          "self_seconds": 1.1179000000000001e-05,
+          "cumulative_seconds": 1.1179000000000001e-05
+        }
+      ]
+    },
+    {
+      "name": "typed_const_field",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.013896701999999995,
+      "counters": {
+        "loop_executions": 3,
+        "loop_iterations": 89997
+      },
+      "by_self": [
+        {
+          "file": "<luapyre-structured-loop>",
+          "line": 1,
+          "function": "_jit_structured_loop",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.013308917,
+          "cumulative_seconds": 0.013311065
+        },
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.000170504,
+          "cumulative_seconds": 0.013832658000000001
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'disable' of '_lsprof.Profiler' objects>",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 4.7763e-05,
+          "cumulative_seconds": 4.7763e-05
+        },
+        {
+          "file": "gc.py",
+          "line": 369,
+          "function": "adopt",
+          "calls": 6,
+          "primitive_calls": 6,
+          "self_seconds": 4.4958000000000006e-05,
+          "cumulative_seconds": 0.000103404
+        },
+        {
+          "file": "profile_hotpaths.py",
+          "line": 38,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 2.1199e-05,
+          "cumulative_seconds": 0.013854629
+        },
+        {
+          "file": "vm.py",
+          "line": 60,
+          "function": "proto",
+          "calls": 231,
+          "primitive_calls": 231,
+          "self_seconds": 1.9918e-05,
+          "cumulative_seconds": 1.9918e-05
+        },
+        {
+          "file": "jitvm.py",
+          "line": 304,
+          "function": "_jit_backedge",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.6128000000000002e-05,
+          "cumulative_seconds": 0.013330207
+        },
+        {
+          "file": "jitvm.py",
+          "line": 75,
+          "function": "_jit_settable",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.4606e-05,
+          "cumulative_seconds": 5.0946e-05
+        },
+        {
+          "file": "gc.py",
+          "line": 349,
+          "function": "_threshold",
+          "calls": 9,
+          "primitive_calls": 9,
+          "self_seconds": 1.2582e-05,
+          "cumulative_seconds": 1.7206e-05
+        },
+        {
+          "file": "inline_cache.py",
+          "line": 84,
+          "function": "table_site",
+          "calls": 6,
+          "primitive_calls": 6,
+          "self_seconds": 1.2280000000000001e-05,
+          "cumulative_seconds": 1.8577000000000002e-05
+        }
+      ]
+    },
+    {
+      "name": "fib_recursive",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.425688933,
+      "counters": {
+        "call_ic_hits": 9
+      },
+      "by_self": [
+        {
+          "file": "<luapyre-ast-function>",
+          "line": 1,
+          "function": "_jit_ast_function",
+          "calls": 65670,
+          "primitive_calls": 6,
+          "self_seconds": 0.134681359,
+          "cumulative_seconds": 0.424016041
+        },
+        {
+          "file": "function_jit.py",
+          "line": 94,
+          "function": "run",
+          "calls": 65664,
+          "primitive_calls": 12,
+          "self_seconds": 0.119162771,
+          "cumulative_seconds": 0.423960657
+        },
+        {
+          "file": "optimizing_jitvm.py",
+          "line": 79,
+          "function": "_acquire_compiled_frame",
+          "calls": 65670,
+          "primitive_calls": 65670,
+          "self_seconds": 0.049210791000000004,
+          "cumulative_seconds": 0.066839983
+        },
+        {
+          "file": "optimizing_jitvm.py",
+          "line": 120,
+          "function": "_release_compiled_frame",
+          "calls": 65670,
+          "primitive_calls": 65670,
+          "self_seconds": 0.042131763,
+          "cumulative_seconds": 0.07117042800000001
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.len>",
+          "calls": 197143,
+          "primitive_calls": 197143,
+          "self_seconds": 0.02397178,
+          "cumulative_seconds": 0.02397178
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'pop' of 'list' objects>",
+          "calls": 131367,
+          "primitive_calls": 131367,
+          "self_seconds": 0.019559056000000002,
+          "cumulative_seconds": 0.019559056000000002
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'append' of 'list' objects>",
+          "calls": 131396,
+          "primitive_calls": 131396,
+          "self_seconds": 0.015770103,
+          "cumulative_seconds": 0.015770103
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.min>",
+          "calls": 65679,
+          "primitive_calls": 65679,
+          "self_seconds": 0.013333379000000001,
+          "cumulative_seconds": 0.013333379000000001
+        },
+        {
+          "file": "vm.py",
+          "line": 60,
+          "function": "proto",
+          "calls": 65956,
+          "primitive_calls": 65956,
+          "self_seconds": 0.006282459000000001,
+          "cumulative_seconds": 0.006282459000000001
+        },
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.00029100400000000003,
+          "cumulative_seconds": 0.42559143600000005
+        }
+      ]
+    },
+    {
+      "name": "sieve",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.3814488120000002,
+      "counters": {
+        "loop_executions": 3,
+        "loop_iterations": 12411
+      },
+      "by_self": [
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.10033167900000001,
+          "cumulative_seconds": 0.380506418
+        },
+        {
+          "file": "table.py",
+          "line": 82,
+          "function": "rawset",
+          "calls": 24261,
+          "primitive_calls": 24261,
+          "self_seconds": 0.044948638000000006,
+          "cumulative_seconds": 0.096044048
+        },
+        {
+          "file": "<luapyre-typed-ir-region>",
+          "line": 1,
+          "function": "_jit_ast_loop",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.037769884000000004,
+          "cumulative_seconds": 0.11204609500000001
+        },
+        {
+          "file": "vm.py",
+          "line": 60,
+          "function": "proto",
+          "calls": 277677,
+          "primitive_calls": 277677,
+          "self_seconds": 0.022602362,
+          "cumulative_seconds": 0.022602362
+        },
+        {
+          "file": "jitvm.py",
+          "line": 104,
+          "function": "_jit_cfg_branch",
+          "calls": 15003,
+          "primitive_calls": 15003,
+          "self_seconds": 0.017582840000000002,
+          "cumulative_seconds": 0.045438563
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.len>",
+          "calls": 138579,
+          "primitive_calls": 138579,
+          "self_seconds": 0.015345851,
+          "cumulative_seconds": 0.015345851
+        },
+        {
+          "file": "gc.py",
+          "line": 428,
+          "function": "table_write_barrier",
+          "calls": 24261,
+          "primitive_calls": 24261,
+          "self_seconds": 0.012972658000000001,
+          "cumulative_seconds": 0.012972658000000001
+        },
+        {
+          "file": "jitvm.py",
+          "line": 240,
+          "function": "_trace_transition",
+          "calls": 15003,
+          "primitive_calls": 15003,
+          "self_seconds": 0.012805878000000001,
+          "cumulative_seconds": 0.020573404
+        },
+        {
+          "file": "gc.py",
+          "line": 349,
+          "function": "_threshold",
+          "calls": 12996,
+          "primitive_calls": 12996,
+          "self_seconds": 0.010832759,
+          "cumulative_seconds": 0.016032559000000002
+        },
+        {
+          "file": "table.py",
+          "line": 49,
+          "function": "rawget",
+          "calls": 14997,
+          "primitive_calls": 14997,
+          "self_seconds": 0.009497468,
+          "cumulative_seconds": 0.014130502000000001
+        }
+      ]
+    },
+    {
+      "name": "binary_trees",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 1.885938364,
+      "counters": {
+        "call_ic_hits": 180
+      },
+      "by_self": [
+        {
+          "file": "gc.py",
+          "line": 369,
+          "function": "adopt",
+          "calls": 91911,
+          "primitive_calls": 91911,
+          "self_seconds": 0.238229514,
+          "cumulative_seconds": 0.607345671
+        },
+        {
+          "file": "<luapyre-ast-function>",
+          "line": 1,
+          "function": "_jit_ast_function",
+          "calls": 45990,
+          "primitive_calls": 90,
+          "self_seconds": 0.197848724,
+          "cumulative_seconds": 0.49312798
+        },
+        {
+          "file": "function_jit.py",
+          "line": 94,
+          "function": "run",
+          "calls": 91800,
+          "primitive_calls": 360,
+          "self_seconds": 0.18136802400000002,
+          "cumulative_seconds": 2.101328465
+        },
+        {
+          "file": "table.py",
+          "line": 82,
+          "function": "rawset",
+          "calls": 91980,
+          "primitive_calls": 91980,
+          "self_seconds": 0.13871080200000002,
+          "cumulative_seconds": 0.511911307
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.isinstance>",
+          "calls": 874422,
+          "primitive_calls": 874422,
+          "self_seconds": 0.11549411400000001,
+          "cumulative_seconds": 0.11549411400000001
+        },
+        {
+          "file": "optimizing_jitvm.py",
+          "line": 79,
+          "function": "_acquire_compiled_frame",
+          "calls": 91980,
+          "primitive_calls": 91980,
+          "self_seconds": 0.10002236,
+          "cumulative_seconds": 0.150723441
+        },
+        {
+          "file": "gc.py",
+          "line": 349,
+          "function": "_threshold",
+          "calls": 91905,
+          "primitive_calls": 91905,
+          "self_seconds": 0.07815142600000001,
+          "cumulative_seconds": 0.12068183
+        },
+        {
+          "file": "table.py",
+          "line": 13,
+          "function": "_hash_key",
+          "calls": 138060,
+          "primitive_calls": 138060,
+          "self_seconds": 0.07568024100000001,
+          "cumulative_seconds": 0.092212946
+        },
+        {
+          "file": "optimizing_jitvm.py",
+          "line": 120,
+          "function": "_release_compiled_frame",
+          "calls": 91980,
+          "primitive_calls": 91980,
+          "self_seconds": 0.070151434,
+          "cumulative_seconds": 0.109725713
+        },
+        {
+          "file": "gc.py",
+          "line": 333,
+          "function": "_object_size",
+          "calls": 46005,
+          "primitive_calls": 46005,
+          "self_seconds": 0.06668671100000001,
+          "cumulative_seconds": 0.107749619
+        }
+      ]
+    },
+    {
+      "name": "table_mix",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.2288323879999999,
+      "counters": {
+        "loop_executions": 15,
+        "loop_iterations": 89985
+      },
+      "by_self": [
+        {
+          "file": "<luapyre-typed-ir-region>",
+          "line": 1,
+          "function": "_jit_ast_loop",
+          "calls": 12,
+          "primitive_calls": 12,
+          "self_seconds": 0.175781289,
+          "cumulative_seconds": 0.218782576
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.len>",
+          "calls": 180423,
+          "primitive_calls": 180423,
+          "self_seconds": 0.019000796,
+          "cumulative_seconds": 0.019000796
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.isinstance>",
+          "calls": 162063,
+          "primitive_calls": 162063,
+          "self_seconds": 0.016738714000000002,
+          "cumulative_seconds": 0.016738714000000002
+        },
+        {
+          "file": "values.py",
+          "line": 149,
+          "function": "type_matches",
+          "calls": 72000,
+          "primitive_calls": 72000,
+          "self_seconds": 0.01281961,
+          "cumulative_seconds": 0.01281961
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'append' of 'list' objects>",
+          "calls": 18060,
+          "primitive_calls": 18060,
+          "self_seconds": 0.0021287090000000003,
+          "cumulative_seconds": 0.0021287090000000003
+        },
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.0008310030000000001,
+          "cumulative_seconds": 0.258388444
+        },
+        {
+          "file": "profile_hotpaths.py",
+          "line": 38,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.00020862900000000002,
+          "cumulative_seconds": 0.258598639
+        },
+        {
+          "file": "vm.py",
+          "line": 60,
+          "function": "proto",
+          "calls": 1359,
+          "primitive_calls": 1359,
+          "self_seconds": 0.000116996,
+          "cumulative_seconds": 0.000116996
+        },
+        {
+          "file": "jitvm.py",
+          "line": 304,
+          "function": "_jit_backedge",
+          "calls": 24,
+          "primitive_calls": 24,
+          "self_seconds": 0.00011014000000000001,
+          "cumulative_seconds": 0.25634411100000004
+        },
+        {
+          "file": "jitvm.py",
+          "line": 21,
+          "function": "_jit_forloop",
+          "calls": 27,
+          "primitive_calls": 27,
+          "self_seconds": 7.7625e-05,
+          "cumulative_seconds": 0.25647164100000003
+        }
+      ]
+    },
+    {
+      "name": "string_build",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.028624748999999994,
+      "counters": {
+        "loop_executions": 3,
+        "loop_iterations": 6897
+      },
+      "by_self": [
+        {
+          "file": "<luapyre-typed-ir-region>",
+          "line": 1,
+          "function": "_jit_ast_loop",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.021374523000000003,
+          "cumulative_seconds": 0.028096107000000002
+        },
+        {
+          "file": "opdispatch.py",
+          "line": 78,
+          "function": "_to_lua_string",
+          "calls": 18000,
+          "primitive_calls": 18000,
+          "self_seconds": 0.003423015,
+          "cumulative_seconds": 0.004926947
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.isinstance>",
+          "calls": 36027,
+          "primitive_calls": 36027,
+          "self_seconds": 0.003306596,
+          "cumulative_seconds": 0.003306596
+        },
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.00016541100000000002,
+          "cumulative_seconds": 0.028555128000000003
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'disable' of '_lsprof.Profiler' objects>",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 4.9496e-05,
+          "cumulative_seconds": 4.9496e-05
+        },
+        {
+          "file": "vm.py",
+          "line": 60,
+          "function": "proto",
+          "calls": 219,
+          "primitive_calls": 219,
+          "self_seconds": 3.0501e-05,
+          "cumulative_seconds": 3.0501e-05
+        },
+        {
+          "file": "gc.py",
+          "line": 369,
+          "function": "adopt",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 2.7214e-05,
+          "cumulative_seconds": 5.8405e-05
+        },
+        {
+          "file": "profile_hotpaths.py",
+          "line": 38,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 2.2842000000000003e-05,
+          "cumulative_seconds": 0.028579028000000003
+        },
+        {
+          "file": "jitvm.py",
+          "line": 304,
+          "function": "_jit_backedge",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 2.1749e-05,
+          "cumulative_seconds": 0.028120822
+        },
+        {
+          "file": "opdispatch.py",
+          "line": 853,
+          "function": "_return",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 1.4086e-05,
+          "cumulative_seconds": 3.2768e-05
+        }
+      ]
+    },
+    {
+      "name": "spectral_norm",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.20393138700000002,
+      "counters": {
+        "loop_executions": 6,
+        "loop_iterations": 174,
+        "compile_failures": 1,
+        "call_ic_hits": 93,
+        "table_ic_hits": 6,
+        "virtual_frame_elisions": 54000
+      },
+      "by_self": [
+        {
+          "file": "<luapyre-ast-function>",
+          "line": 1,
+          "function": "_jit_ast_function",
+          "calls": 30,
+          "primitive_calls": 30,
+          "self_seconds": 0.08138975500000001,
+          "cumulative_seconds": 0.138420331
+        },
+        {
+          "file": "<luapyre-virtual-frame>",
+          "line": 1,
+          "function": "_run",
+          "calls": 54000,
+          "primitive_calls": 54000,
+          "self_seconds": 0.065448831,
+          "cumulative_seconds": 0.099151109
+        },
+        {
+          "file": "opdispatch.py",
+          "line": 231,
+          "function": "_float_divide",
+          "calls": 108003,
+          "primitive_calls": 108003,
+          "self_seconds": 0.02849638,
+          "cumulative_seconds": 0.02849638
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.len>",
+          "calls": 113528,
+          "primitive_calls": 113528,
+          "self_seconds": 0.01136084,
+          "cumulative_seconds": 0.01136084
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.isinstance>",
+          "calls": 56988,
+          "primitive_calls": 56988,
+          "self_seconds": 0.006487643,
+          "cumulative_seconds": 0.006487643
+        },
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.001322098,
+          "cumulative_seconds": 0.28804037600000004
+        },
+        {
+          "file": "optimizing_jitvm.py",
+          "line": 131,
+          "function": "_invoke",
+          "calls": 93,
+          "primitive_calls": 93,
+          "self_seconds": 0.0006620700000000001,
+          "cumulative_seconds": 0.28070414
+        },
+        {
+          "file": "range_analysis.py",
+          "line": 126,
+          "function": "analyze_integer_ranges",
+          "calls": 4,
+          "primitive_calls": 4,
+          "self_seconds": 0.000653535,
+          "cumulative_seconds": 0.001550729
+        },
+        {
+          "file": "gc.py",
+          "line": 369,
+          "function": "adopt",
+          "calls": 93,
+          "primitive_calls": 93,
+          "self_seconds": 0.0005398800000000001,
+          "cumulative_seconds": 0.001453906
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'append' of 'list' objects>",
+          "calls": 2586,
+          "primitive_calls": 2586,
+          "self_seconds": 0.00042381300000000004,
+          "cumulative_seconds": 0.00042381300000000004
+        }
+      ]
+    },
+    {
+      "name": "coroutines",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.11483325999999998,
+      "counters": {
+        "call_ic_hits": 1209,
+        "table_ic_hits": 2418,
+        "coroutine_executions": 603,
+        "coroutine_yields": 600,
+        "coroutine_instructions": 64830
+      },
+      "by_self": [
+        {
+          "file": "jitvm.py",
+          "line": 369,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.020419609000000002,
+          "cumulative_seconds": 0.11587805000000001
+        },
+        {
+          "file": "<luapyre-coroutine-jit>",
+          "line": 1,
+          "function": "_run",
+          "calls": 603,
+          "primitive_calls": 603,
+          "self_seconds": 0.018975547000000002,
+          "cumulative_seconds": 0.031571994
+        },
+        {
+          "file": "jitvm.py",
+          "line": 40,
+          "function": "_jit_gettable",
+          "calls": 2418,
+          "primitive_calls": 2418,
+          "self_seconds": 0.005892308000000001,
+          "cumulative_seconds": 0.017071104
+        },
+        {
+          "file": "vm.py",
+          "line": 60,
+          "function": "proto",
+          "calls": 51987,
+          "primitive_calls": 51987,
+          "self_seconds": 0.0046086040000000005,
+          "cumulative_seconds": 0.0046086040000000005
+        },
+        {
+          "file": "values.py",
+          "line": 87,
+          "function": "lua_equal",
+          "calls": 6603,
+          "primitive_calls": 6603,
+          "self_seconds": 0.004564119,
+          "cumulative_seconds": 0.004650952
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.len>",
+          "calls": 26013,
+          "primitive_calls": 26013,
+          "self_seconds": 0.003612669,
+          "cumulative_seconds": 0.003612669
+        },
+        {
+          "file": "opdispatch.py",
+          "line": 789,
+          "function": "_call",
+          "calls": 1209,
+          "primitive_calls": 1209,
+          "self_seconds": 0.003540744,
+          "cumulative_seconds": 0.064834349
+        },
+        {
+          "file": "vm.py",
+          "line": 502,
+          "function": "_forloop",
+          "calls": 6000,
+          "primitive_calls": 6000,
+          "self_seconds": 0.003499593,
+          "cumulative_seconds": 0.003499593
+        },
+        {
+          "file": "gcvm.py",
+          "line": 129,
+          "function": "_host_values",
+          "calls": 1209,
+          "primitive_calls": 1209,
+          "self_seconds": 0.003407981,
+          "cumulative_seconds": 0.045400366000000004
+        },
+        {
+          "file": "threadvm.py",
+          "line": 200,
+          "function": "_invoke",
+          "calls": 1209,
+          "primitive_calls": 1209,
+          "self_seconds": 0.003186135,
+          "cumulative_seconds": 0.050322274
+        }
+      ]
+    },
+    {
+      "name": "python_calls_1000",
+      "profiled_executions": 3,
+      "total_profiled_seconds": 0.031816118000000004,
+      "counters": {
+        "leaf_executions": 3000,
+        "leaf_frame_elisions": 3000,
+        "python_direct_entries": 3000
+      },
+      "by_self": [
+        {
+          "file": "runtime.py",
+          "line": 468,
+          "function": "call",
+          "calls": 3000,
+          "primitive_calls": 3000,
+          "self_seconds": 0.008841301000000001,
+          "cumulative_seconds": 0.028393482
+        },
+        {
+          "file": "optimizing_jitvm.py",
+          "line": 43,
+          "function": "call_compiled_leaf",
+          "calls": 3000,
+          "primitive_calls": 3000,
+          "self_seconds": 0.0074101110000000005,
+          "cumulative_seconds": 0.014169492
+        },
+        {
+          "file": "interop.py",
+          "line": 27,
+          "function": "__call__",
+          "calls": 3000,
+          "primitive_calls": 3000,
+          "self_seconds": 0.002150069,
+          "cumulative_seconds": 0.030543551000000002
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.isinstance>",
+          "calls": 15000,
+          "primitive_calls": 15000,
+          "self_seconds": 0.0018999560000000002,
+          "cumulative_seconds": 0.0018999560000000002
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.len>",
+          "calls": 12000,
+          "primitive_calls": 12000,
+          "self_seconds": 0.001603583,
+          "cumulative_seconds": 0.001603583
+        },
+        {
+          "file": "runtime.py",
+          "line": 106,
+          "function": "_to_lua",
+          "calls": 3000,
+          "primitive_calls": 3000,
+          "self_seconds": 0.00155213,
+          "cumulative_seconds": 0.00193507
+        },
+        {
+          "file": "<luapyre-dense-jit-leaf-direct>",
+          "line": 1,
+          "function": "_jit_leaf_direct",
+          "calls": 3000,
+          "primitive_calls": 3000,
+          "self_seconds": 0.0014430150000000002,
+          "cumulative_seconds": 0.002000941
+        },
+        {
+          "file": "jit.py",
+          "line": 621,
+          "function": "get_leaf",
+          "calls": 3000,
+          "primitive_calls": 3000,
+          "self_seconds": 0.001442837,
+          "cumulative_seconds": 0.002326161
+        },
+        {
+          "file": "profile_hotpaths.py",
+          "line": 31,
+          "function": "run",
+          "calls": 3,
+          "primitive_calls": 3,
+          "self_seconds": 0.001222542,
+          "cumulative_seconds": 0.031766093
+        },
+        {
+          "file": "runtime.py",
+          "line": 253,
+          "function": "_from_lua",
+          "calls": 3000,
+          "primitive_calls": 3000,
+          "self_seconds": 0.001180616,
+          "cumulative_seconds": 0.001180616
+        }
+      ]
+    }
+  ]
+}
