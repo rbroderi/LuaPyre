@@ -366,6 +366,13 @@ class LuaGC:
         if self.debt >= self._threshold():
             self.pending = True
 
+    def _register_fresh(self, value) -> None:
+        """Attach one newly allocated object with no outgoing Lua references."""
+        value._gc_owner = self
+        value._gc_age = _GC_NEW
+        self.stats.allocations += 1
+        self.account_bytes(self._object_size(value))
+
     def adopt(self, value) -> None:
         """Attach a newly reachable Lua object graph to this collector."""
         # Primitive Lua values dominate table writes.  Reject them before

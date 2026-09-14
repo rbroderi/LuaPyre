@@ -57,7 +57,7 @@ class GarbageCollectedVM(CoroutineVM):
         roots = frames or self._active_frames or ()
         self.gc.safepoint(roots)
         table = LuaTable()
-        self.gc.adopt(table)
+        self.gc._register_fresh(table)
         return table
 
     def _new_cell(self, value=None, frames=()):

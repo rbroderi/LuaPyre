@@ -84,3 +84,6 @@ For performance comparisons, compare runs on the same runner class and Python ve
   runtime. Its patches are confined to the benchmark process; they are not
   production changes. Results and semantic acceptance gates are documented in
   `docs/performance-roadmap-0.33.md`.
+- `speed_033_ab.py` measures the accepted 0.33 targets plus arithmetic and
+  branch controls. Run it in separate processes against each checkout with the
+  same Python executable, affinity, hash seed, warmups, and sample count.

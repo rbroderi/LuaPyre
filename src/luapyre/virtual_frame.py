@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 from types import FunctionType
 
+from .ast_backend import inline_type_guards
 from .bytecode import Op, Proto
 from .errors import LuaRuntimeError
 from .function_jit import _FUNC_RETURN, _FUNC_SUSPEND
@@ -117,7 +119,8 @@ def compile_virtual_frame(
                 symbol = "<" if ins.op is Op.LT else "<="
                 lines.append(f"{indent}{a} = {b} {symbol} {c}")
             elif ins.op is Op.GUARD:
-                lines.extend([f"{indent}used += 1", f"{indent}if not _type_matches(consts[{ins.b}], {a}):", f"{indent}    raise _LuaRuntimeError(f'expected {{consts[{ins.b}]!s}}, got {{_static_value_type({a}).name}}')"])
+                expected = proto.constants[ins.b]
+                lines.extend([f"{indent}used += 1", f"{indent}if not _type_matches({expected!r}, {a}):", f"{indent}    raise _LuaRuntimeError(f'expected {expected!s}, got {{_static_value_type({a}).name}}')"])
             else:
                 return None
             if ins.op is not Op.GUARD:
@@ -177,5 +180,6 @@ def compile_virtual_frame(
         "_SIGN64": _SIGN64, "_TWO64": _TWO64,
         "_INT_MIN": -(1 << 63), "_INT_MAX": (1 << 63) - 1,
     }
-    exec(compile("\n".join(lines), "<luapyre-virtual-frame>", "exec"), namespace)
+    tree = inline_type_guards(ast.parse("\n".join(lines)))
+    exec(compile(tree, "<luapyre-virtual-frame>", "exec"), namespace)
     return namespace["_run"]

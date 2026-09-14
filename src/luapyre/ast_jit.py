@@ -635,7 +635,7 @@ class AstPythonJIT(RegionPythonJIT):
                 )
             out.extend([f"{indent}used += 1", f"{indent}{a} = {b} {symbol} {c}"])
         elif op is Op.GUARD:
-            deopt(f"not _type_matches(consts[{ins.b}], {a})")
+            deopt(f"not _type_matches({frame.proto.constants[ins.b]!r}, {a})")
             out.append(f"{indent}used += 1")
         elif op is Op.CALL:
             call_key = expected_calls.get(pc)

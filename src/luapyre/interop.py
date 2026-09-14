@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, NewType
 
 if TYPE_CHECKING:
@@ -23,6 +23,9 @@ class LuaFunction:
     _runtime: LuaRuntime
     _value: object
     name: str = "?"
+    _leaf_cache: list[object] = field(
+        default_factory=lambda: [None], compare=False, repr=False
+    )
 
     def __call__(
         self,
@@ -30,11 +33,12 @@ class LuaFunction:
         return_type: object = None,
         fuel: int | None = None,
     ) -> Any:
-        return self._runtime.call(
-            self,
-            *args,
+        return self._runtime._call_bound(
+            self._value,
+            args,
             return_type=return_type,
             fuel=fuel,
+            leaf_cache=self._leaf_cache,
         )
 
     @property

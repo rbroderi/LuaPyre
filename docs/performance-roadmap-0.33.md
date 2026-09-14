@@ -1,7 +1,21 @@
 # Performance opportunities after 0.32
 
-Status: investigation and implementation plan. Runtime source is unchanged.
+Status: implemented by the 0.33 performance tranche. Accepted measurements and
+semantic boundaries are recorded in [`speed-0.33.md`](speed-0.33.md).
 Baseline: merged 0.32 commit `3ac664934ff200e87233b66b423ee57c2c77198c`.
+
+## Resolution
+
+0.33 accepted constant guard lowering, direct registration of fresh tables,
+fused one-argument materialized call entries, cached bound Python leaf adapters,
+and whole-function inlining of safe small upvalue callees. Nonzero constant
+divisors inside those inlined callees use direct converted division.
+
+The structured table/modulo prototype was rejected after production A/B runs:
+it showed no improvement on Python 3.13 and made table mix 6.2% slower on Python
+3.14. Table mix instead improves through guard lowering. Broader structured-loop
+coverage remains future work and must use a representation that beats the
+existing typed AST region backend.
 
 Three small changes have promising unprofiled results on both supported Python
 versions: expose constant type guards to the shared AST inliner, register fresh
