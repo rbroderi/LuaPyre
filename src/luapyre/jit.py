@@ -51,6 +51,7 @@ class IRLoop:
 class JITStats:
     loop_compiles: int = 0
     loop_executions: int = 0
+    loop_entry_executions: int = 0
     loop_iterations: int = 0
     leaf_compiles: int = 0
     leaf_executions: int = 0

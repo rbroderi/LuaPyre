@@ -12,7 +12,8 @@ from .jit_policy import TYPED_JIT_LOOP_BODY_OPS
 from .opdispatch import _float_divide, _float_modulo, _float_power, _shift, _to_lua_string
 from .range_analysis import analyze_integer_ranges
 from .region_jit import RegionPythonJIT
-from .table import LuaTable
+from .table import LuaTable, _ABSENT, _NUM
+from .typed_ir import _cfg_targets, _reads, _writes
 from .values import coerce_lua_integer, lua_equal, static_value_type, type_matches
 
 
@@ -208,6 +209,132 @@ class AstPythonJIT(RegionPythonJIT):
             for desc in child.upvalues
             if desc.kind == "local"
         }
+
+    @staticmethod
+    def _sparse_table_registers(
+        frame, ir: IRLoop
+    ) -> dict[int, int]:
+        """Map safe table aliases to one sparse-integer storage owner.
+
+        This is deliberately narrower than general escape analysis: the
+        observed table must already be hash-only integer-to-boolean storage,
+        and the region may only copy its aliases and perform compatible table
+        reads/writes. Runtime guards still protect every dynamic key/value.
+        """
+        if any(item.ins.op is Op.CALL for item in ir.body.instructions):
+            return {}
+        access_regs = {
+            item.ins.b if item.ins.op is Op.GETTABLE else item.ins.a
+            for item in ir.body.instructions
+            if item.ins.op in (Op.GETTABLE, Op.SETTABLE)
+        }
+        groups: dict[int, set[int]] = {}
+        tables: dict[int, LuaTable] = {}
+        for reg in access_regs:
+            value = frame.regs[reg]
+            if not isinstance(value, LuaTable):
+                continue
+            identity = id(value)
+            groups.setdefault(identity, set()).add(reg)
+            tables[identity] = value
+        if not groups:
+            return {}
+        # Include only aliases connected to an access through explicit register
+        # copies. This finds the stable local behind compiler-generated table
+        # temporaries without treating unrelated stale registers as aliases.
+        for identity, aliases in groups.items():
+            changed = True
+            while changed:
+                changed = False
+                for item in ir.body.instructions:
+                    ins = item.ins
+                    if ins.op not in (Op.MOVE, Op.LOCAL):
+                        continue
+                    if ins.a in aliases or ins.b in aliases:
+                        for reg in (ins.a, ins.b):
+                            if (
+                                reg not in aliases
+                                and id(frame.regs[reg]) == identity
+                            ):
+                                aliases.add(reg)
+                                changed = True
+
+        result: dict[int, int] = {}
+        code = frame.proto.code
+        live = [set() for _ in range(len(code) + 1)]
+        changed = True
+        while changed:
+            changed = False
+            for pc in range(len(code) - 1, -1, -1):
+                outgoing: set[int] = set()
+                for target in _cfg_targets(code[pc], pc + 1):
+                    if 0 <= target <= len(code):
+                        outgoing.update(live[target])
+                incoming = set(_reads(code[pc])) | (
+                    outgoing - set(_writes(code[pc]))
+                )
+                if incoming != live[pc]:
+                    live[pc] = incoming
+                    changed = True
+        writes_a = frozenset(
+            {
+                Op.LOADK, Op.MOVE, Op.LOCAL, Op.NEWTABLE, Op.GETTABLE,
+                Op.ADD, Op.ADD_I, Op.ADD_F, Op.SUB, Op.SUB_I, Op.SUB_F,
+                Op.MUL, Op.MUL_I, Op.MUL_F, Op.DIV, Op.IDIV, Op.MOD,
+                Op.POW, Op.BAND, Op.BOR, Op.BXOR, Op.SHL, Op.SHR,
+                Op.CONCAT, Op.EQ, Op.LT, Op.LE, Op.NEG, Op.NOT,
+                Op.TOBOOL, Op.LEN, Op.BNOT,
+            }
+        )
+        for identity, aliases in groups.items():
+            table = tables[identity]
+            if (
+                aliases.intersection(live[ir.exit_pc])
+                or table.metatable is not None
+                or table.array
+                or table._deleted_successors is not None
+                or table._sparse_int is not None
+                or not table.hash
+            ):
+                continue
+            compatible = True
+            for token, (_key, value) in table.hash.items():
+                if not (
+                    isinstance(token, tuple)
+                    and len(token) == 2
+                    and token[0] is _NUM
+                    and type(token[1]) is int
+                    and token[1] >= 2
+                    and type(value) is bool
+                ):
+                    compatible = False
+                    break
+            if not compatible:
+                continue
+            for item in ir.body.instructions:
+                ins, op = item.ins, item.ins.op
+                if op is Op.GETTABLE and ins.b in aliases:
+                    key = frame.regs[ins.c]
+                    if type(key) is not int or key < 2:
+                        compatible = False
+                        break
+                elif op is Op.SETTABLE and ins.a in aliases:
+                    key, value = frame.regs[ins.b], frame.regs[ins.c]
+                    if type(key) is not int or key < 2 or type(value) is not bool:
+                        compatible = False
+                        break
+                elif op in (Op.MOVE, Op.LOCAL) and ins.a in aliases:
+                    if ins.b not in aliases:
+                        compatible = False
+                        break
+                elif op in writes_a and ins.a in aliases:
+                    compatible = False
+                    break
+            if compatible:
+                owner = min(aliases)
+                for reg in aliases:
+                    result[reg] = owner
+        return result
 
     @staticmethod
     def _spill_lines(registers: tuple[int, ...], indent: str) -> list[str]:
@@ -444,7 +571,10 @@ class AstPythonJIT(RegionPythonJIT):
         captured: set[int],
         indent: str,
         expected_calls: dict[int, tuple[str, str]],
+        sparse_tables: dict[int, int] | None = None,
     ) -> list[str] | None:
+        if sparse_tables is None:
+            sparse_tables = {}
         ins, pc, op = item.ins, item.pc, item.ins.op
         a, b, c = self._reg(ins.a), self._reg(ins.b), self._reg(ins.c)
         out: list[str] = []
@@ -476,11 +606,49 @@ class AstPythonJIT(RegionPythonJIT):
             out.append(f"{indent}{a} = vm._new_table()")
         elif op is Op.GETTABLE:
             deopt(f"not isinstance({b}, _LuaTable) or {b}.metatable is not None")
-            out.extend([f"{indent}used += 1", f"{indent}{a} = {b}.rawget({c})"])
+            owner = sparse_tables.get(ins.b)
+            if owner is None:
+                out.extend([f"{indent}used += 1", f"{indent}{a} = {b}.rawget({c})"])
+            else:
+                sparse = f"_sparse_{owner}"
+                root = self._reg(owner)
+                item = f"_sparse_item_{pc}"
+                out.extend(
+                    [
+                        f"{indent}used += 1",
+                        f"{indent}if {sparse} is not None and {b} is {root} and type({c}) is int and {c} >= 2:",
+                        f"{indent}    {item} = {sparse}.get({c}, _ABSENT)",
+                        f"{indent}    {a} = None if {item} is _ABSENT else {item}",
+                        f"{indent}else:",
+                        f"{indent}    {a} = {b}.rawget({c})",
+                    ]
+                )
         elif op is Op.SETTABLE:
             deopt(f"not isinstance({a}, _LuaTable) or {a}.metatable is not None")
             deopt(f"{b} is None or (type({b}) is float and _isnan({b}))")
-            out.extend([f"{indent}used += 1", f"{indent}{a}.rawset({b}, {c})"])
+            owner = sparse_tables.get(ins.a)
+            if owner is None:
+                out.extend([f"{indent}used += 1", f"{indent}{a}.rawset({b}, {c})"])
+            else:
+                sparse = f"_sparse_{owner}"
+                root = self._reg(owner)
+                collector = f"_sparse_gc_{pc}"
+                out.extend(
+                    [
+                        f"{indent}used += 1",
+                        f"{indent}if {sparse} is not None and {a} is {root} and type({b}) is int and {b} >= 2 and type({c}) is bool:",
+                        f"{indent}    {a}.version += 1",
+                        f"{indent}    if {b} not in {sparse}:",
+                        f"{indent}        {collector} = {a}._gc_owner",
+                        f"{indent}        if {collector} is not None:",
+                        f"{indent}            {collector}.account_bytes(32)",
+                        f"{indent}    {sparse}[{b}] = {c}",
+                        f"{indent}else:",
+                        f"{indent}    {a}.rawset({b}, {c})",
+                        f"{indent}    if {a} is {root}:",
+                        f"{indent}        {sparse} = {root}._sparse_int",
+                    ]
+                )
         elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
             symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[op]
             out.append(f"{indent}used += 1")
@@ -673,6 +841,7 @@ class AstPythonJIT(RegionPythonJIT):
         ir, blocks = lowered
         registers = self._used_registers(ir)
         captured = self._captured_registers(frame.proto)
+        sparse_tables = self._sparse_table_registers(frame, ir)
         if captured.intersection(registers):
             # Captured register replacement has subtle open-cell identity rules.
             # Leave those loops on the proven 0.14/Tier-0 paths for now.
@@ -709,6 +878,19 @@ class AstPythonJIT(RegionPythonJIT):
         ]
         for reg in registers:
             lines.append(f"    _r{reg} = regs[{reg}]")
+        for owner in sorted(set(sparse_tables.values())):
+            table = self._reg(owner)
+            sparse = f"_sparse_{owner}"
+            lines.extend(
+                [
+                    f"    {sparse} = {table}._sparse_int",
+                    f"    if {sparse} is None and not {table}.array and not {table}.hash and {table}._deleted_successors is None:",
+                    f"        {sparse} = {{}}",
+                    f"        {table}._sparse_int = {sparse}",
+                    f"        if {table}._gc_owner is not None:",
+                    f"            {table}._gc_owner.account_bytes(_SPARSE_DICT_BYTES)",
+                ]
+            )
         lines.append("    _state = 0")
 
         block_names = tuple(f"_jump_{index}" for index in range(len(blocks)))
@@ -735,6 +917,7 @@ class AstPythonJIT(RegionPythonJIT):
                     captured=captured,
                     indent=indent,
                     expected_calls=expected_calls,
+                    sparse_tables=sparse_tables,
                 )
                 if emitted is None:
                     return None
@@ -870,10 +1053,12 @@ class AstPythonJIT(RegionPythonJIT):
             "_INT_MAX": _INT_MAX,
             "_MASK64": _MASK64,
             "_SIGN64": _SIGN64,
+            "_SPARSE_DICT_BYTES": __import__("sys").getsizeof({}),
             "_TWO64": _TWO64,
             "_NUM_TYPES": (int, float),
             "_LuaRuntimeError": LuaRuntimeError,
             "_LuaTable": LuaTable,
+            "_ABSENT": _ABSENT,
             "_coerce_lua_integer": coerce_lua_integer,
             "_float_divide": _float_divide,
             "_float_modulo": _float_modulo,

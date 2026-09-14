@@ -89,6 +89,7 @@ class TypedIRLoopJITMixin:
         captured: set[int],
         indent: str,
         expected_calls: dict[int, tuple[str, str]],
+        sparse_tables: dict[int, int] | None = None,
     ) -> list[str] | None:
         site = plan.instruction(item.pc)
         if site is None:
@@ -100,6 +101,7 @@ class TypedIRLoopJITMixin:
                 captured=captured,
                 indent=indent,
                 expected_calls=expected_calls,
+                sparse_tables=sparse_tables,
             )
 
         ins, pc, op = item.ins, item.pc, item.ins.op
@@ -268,6 +270,7 @@ class TypedIRLoopJITMixin:
             captured=captured,
             indent=indent,
             expected_calls=expected_calls,
+            sparse_tables=sparse_tables,
         )
 
     def _compile_ast_loop(self, frame, start_pc: int, backedge_pc: int):
@@ -288,6 +291,7 @@ class TypedIRLoopJITMixin:
                 register_set.add(item.ins.a)
         registers = tuple(sorted(register_set))
         captured = self._captured_registers(frame.proto)
+        sparse_tables = self._sparse_table_registers(frame, ir)
         if captured.intersection(registers):
             return None
 
@@ -337,6 +341,19 @@ class TypedIRLoopJITMixin:
         ]
         for reg in registers:
             lines.append(f"    _r{reg} = regs[{reg}]")
+        for owner in sorted(set(sparse_tables.values())):
+            table = self._reg(owner)
+            sparse = f"_sparse_{owner}"
+            lines.extend(
+                [
+                    f"    {sparse} = {table}._sparse_int",
+                    f"    if {sparse} is None and not {table}.array and not {table}.hash and {table}._deleted_successors is None:",
+                    f"        {sparse} = {{}}",
+                    f"        {table}._sparse_int = {sparse}",
+                    f"        if {table}._gc_owner is not None:",
+                    f"            {table}._gc_owner.account_bytes(_SPARSE_DICT_BYTES)",
+                ]
+            )
 
         # Loop-invariant global reads are an IR optimization, not a Python AST
         # peephole. The backend performs the proven access exactly once per JIT
@@ -417,6 +434,7 @@ class TypedIRLoopJITMixin:
                     captured=captured,
                     indent=indent,
                     expected_calls=expected_calls,
+                    sparse_tables=sparse_tables,
                 )
                 if emitted is None:
                     return None
@@ -528,6 +546,7 @@ class TypedIRLoopJITMixin:
             "_INT_MAX": _INT_MAX,
             "_MASK64": _MASK64,
             "_SIGN64": _SIGN64,
+            "_SPARSE_DICT_BYTES": __import__("sys").getsizeof({}),
             "_TWO64": _TWO64,
             "_NUM_TYPES": (int, float),
             "_LuaRuntimeError": LuaRuntimeError,
