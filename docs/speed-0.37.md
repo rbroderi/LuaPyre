@@ -54,6 +54,57 @@ dominate this reduced-contract comparison. It is not evidence that table
 iteration still has quadratic scaling. Direct Python omits Lua fuel, iterator
 protocol, multiple values, callability checks, and table semantics.
 
+## Native Lua 5.5 and Python lower bounds
+
+The reusable [`native_headroom.py`](../benchmarks/native_headroom.py) harness
+also compares the nine established algorithms with native Lua 5.5 and direct
+Python. Native execution uses the untyped version of the same Lua source
+through Lupa 2.8's pinned `lupa.lua55` runtime. The Python functions preserve
+the algorithm but omit Lua fuel, values, tables, metatables, stack/debug state,
+GC, dynamic guards, and other runtime contracts; they are engineering lower
+bounds, not equivalent implementations or promised attainable speeds.
+
+Each result is the median of three process medians on one isolated CPU. The
+three implementations occupy each position once in a Latin-square order, with
+seven warmups and 31 checked samples. Python GC is disabled during timing while
+both Lua collectors remain active. Each sample crosses Python once to invoke
+the workload; the explicit 1,000-call case crosses the boundary 1,000 times.
+
+| Workload | Python | LuaPyre | Native Lua 5.5 | Python lower bound | vs native | vs Python |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Typed arithmetic | 3.13.15 | 0.994 ms | 0.126 ms | 0.726 ms | 7.87× | 1.37× |
+| Typed arithmetic | 3.14.7 | 0.722 ms | 0.126 ms | 0.489 ms | 5.73× | 1.48× |
+| Typed branch | 3.13.15 | 2.215 ms | 0.263 ms | 1.460 ms | 8.43× | 1.52× |
+| Typed branch | 3.14.7 | 1.856 ms | 0.301 ms | 1.143 ms | 6.16× | 1.62× |
+| Recursive Fibonacci | 3.13.15 | 30.326 ms | 0.317 ms | 0.791 ms | 95.62× | 38.33× |
+| Recursive Fibonacci | 3.14.7 | 24.270 ms | 0.324 ms | 0.620 ms | 74.87× | 39.17× |
+| Binary trees | 3.13.15 | 102.174 ms | 1.751 ms | 2.106 ms | 58.37× | 48.51× |
+| Binary trees | 3.14.7 | 86.256 ms | 1.761 ms | 1.981 ms | 48.98× | 43.53× |
+| Sieve | 3.13.15 | 23.015 ms | 0.197 ms | 0.586 ms | 116.85× | 39.25× |
+| Sieve | 3.14.7 | 19.681 ms | 0.194 ms | 0.509 ms | 101.48× | 38.67× |
+| Table mix | 3.13.15 | 29.971 ms | 0.587 ms | 3.331 ms | 51.09× | 9.00× |
+| Table mix | 3.14.7 | 22.066 ms | 0.586 ms | 2.508 ms | 37.66× | 8.80× |
+| String build | 3.13.15 | 0.549 ms | 1.171 ms | 0.381 ms | **0.47×** | 1.44× |
+| String build | 3.14.7 | 0.523 ms | 1.167 ms | 0.372 ms | **0.45×** | 1.41× |
+| Spectral norm | 3.13.15 | 28.717 ms | 0.832 ms | 2.004 ms | 34.51× | 14.33× |
+| Spectral norm | 3.14.7 | 23.595 ms | 0.836 ms | 2.407 ms | 28.21× | 9.80× |
+| 1,000 Python calls | 3.13.15 | 0.675 ms | 0.200 ms | 0.051 ms | 3.38× | 13.30× |
+| 1,000 Python calls | 3.14.7 | 0.598 ms | 0.197 ms | 0.041 ms | 3.04× | 14.70× |
+
+The results split the remaining work cleanly. Straight typed loops are already
+within 1.37–1.62× of reduced-contract Python, so their 5.73–8.43× native-Lua
+gap is primarily the ceiling of executing the loop as Python. Recursive frame
+creation and Lua table semantics dominate Fibonacci, binary trees, sieve, and
+spectral norm. The Python-to-Lua boundary is about 3× native Lua but already
+far below the cost of 1,000 ordinary Python calls through the full LuaPyre
+contract. String construction is the exception: LuaPyre is about 2.1–2.2×
+faster than native Lua for this repeated-concatenation shape.
+
+Raw samples and per-process medians are retained in
+[`native_headroom_037_313.json`](../benchmarks/results/native_headroom_037_313.json)
+and
+[`native_headroom_037_314.json`](../benchmarks/results/native_headroom_037_314.json).
+
 ## Rejected and deferred work
 
 A conservative fixed-point constant analysis across whole-function blocks was
