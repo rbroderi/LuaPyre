@@ -37,12 +37,16 @@ class StructuredTypedLoopJITMixin:
             Op.LOADK,
             Op.MOVE,
             Op.LOCAL,
+            Op.GETUPVAL,
             Op.GETTABLE,
             Op.SETTABLE,
+            Op.ADD,
             Op.ADD_I,
             Op.ADD_F,
+            Op.SUB,
             Op.SUB_I,
             Op.SUB_F,
+            Op.MUL,
             Op.MUL_I,
             Op.MUL_F,
             Op.DIV,
@@ -307,12 +311,16 @@ class StructuredTypedLoopJITMixin:
             Op.LOADK,
             Op.MOVE,
             Op.LOCAL,
+            Op.GETUPVAL,
+            Op.ADD,
             Op.ADD_I,
             Op.ADD_F,
             Op.SUB_I,
             Op.SUB_F,
             Op.MUL_I,
             Op.MUL_F,
+            Op.SUB,
+            Op.MUL,
             Op.DIV,
             Op.NOT,
             Op.TOBOOL,
@@ -356,6 +364,7 @@ class StructuredTypedLoopJITMixin:
             return None
 
         calls: dict[int, tuple[Closure, tuple[tuple[int, object], ...]]] = {}
+        call_upvalues: dict[int, int] = {}
         child_ranges = {}
         extra_cost = 0
         for pc, ins in zip(range(start_pc, backedge_pc), body):
@@ -369,8 +378,17 @@ class StructuredTypedLoopJITMixin:
                 return None
             # Hoisting the callee guard is valid only if the loop body cannot
             # overwrite the register containing the function object.
-            if any(self._writes_register(other, ins.b) for other in body):
+            producers = [
+                other for other in body
+                if self._writes_register(other, ins.b)
+            ]
+            if any(other.op is not Op.GETUPVAL for other in producers):
                 return None
+            if producers:
+                upvalue_indexes = {other.b for other in producers}
+                if len(upvalue_indexes) != 1:
+                    return None
+                call_upvalues[pc] = next(iter(upvalue_indexes))
             calls[pc] = (fn, sequence)
             child_ranges[pc] = analyze_integer_ranges(fn.proto)
             extra_cost += len(sequence)
@@ -380,6 +398,7 @@ class StructuredTypedLoopJITMixin:
             "def _jit_structured_loop(vm, frame, budget):",
             "    regs = frame.regs",
             "    consts = frame.proto.constants",
+            "    upvalues = frame.closure.upvalues",
             "    used = 0",
         ]
         for reg in registers:
@@ -428,6 +447,10 @@ class StructuredTypedLoopJITMixin:
             # the transient Closure keeps the compiled loop valid across runs.
             namespace[expected] = closure.proto
             function_reg = body[pc - start_pc].b
+            if pc in call_upvalues:
+                lines.append(
+                    f"    _r{function_reg} = upvalues[{call_upvalues[pc]}].value"
+                )
             lines.append(
                 f"    if not isinstance(_r{function_reg}, _Closure) or _r{function_reg}.proto is not {expected}:"
             )
@@ -439,6 +462,18 @@ class StructuredTypedLoopJITMixin:
                 ]
             )
             namespace[f"_consts_{pc}"] = closure.proto.constants
+
+        if calls:
+            lines.append(
+                "    if vm._active_frames is None or len(vm._active_frames) >= vm.max_frames:"
+            )
+            lines.extend(self._spill_lines(registers, "        "))
+            lines.extend(
+                [
+                    f"        frame.pc = {start_pc}",
+                    "        return 0, False",
+                ]
+            )
 
         # Plain table reads cannot re-enter Lua. Without writes or calls, their
         # constant fields remain stable for this invocation of the loop runner.
@@ -489,7 +524,10 @@ class StructuredTypedLoopJITMixin:
                 f"{indent}    return {completed_cost} + {cost}, False",
             ])
 
+        typed_plan = TypedIRCompiler(proto).compile((tuple(enumerate(proto.code)),))
         known_constants: dict[int, object] = {}
+        known_types: dict[int, str] = {}
+        numeric_types = {"integer", "integer_lua", "float"}
         for offset, ins in enumerate(body):
             pc = start_pc + offset
             cost = offset + prior_child_cost
@@ -501,12 +539,22 @@ class StructuredTypedLoopJITMixin:
             if ins.op is Op.LOADK:
                 lines.append(f"{indent}{a} = consts[{ins.b}]")
                 known_constants[ins.a] = proto.constants[ins.b]
+                known_types[ins.a] = static_value_type(proto.constants[ins.b]).name
             elif ins.op in (Op.MOVE, Op.LOCAL):
                 lines.append(f"{indent}{a} = {b}")
                 if ins.b in known_constants:
                     known_constants[ins.a] = known_constants[ins.b]
                 else:
                     known_constants.pop(ins.a, None)
+                source_type = known_types.get(ins.b)
+                if source_type is not None:
+                    known_types[ins.a] = source_type
+                else:
+                    known_types.pop(ins.a, None)
+            elif ins.op is Op.GETUPVAL:
+                lines.append(f"{indent}{a} = upvalues[{ins.b}].value")
+                known_constants.pop(ins.a, None)
+                known_types.pop(ins.a, None)
             elif ins.op is Op.GETTABLE:
                 array_name = table_arrays[ins.b]
                 key = known_constants.get(ins.c, _ABSENT)
@@ -542,11 +590,13 @@ class StructuredTypedLoopJITMixin:
                     lines.append(f"{indent}else:")
                     lines.append(f"{indent}    {a} = {b}.rawget(_key_{pc})")
                 known_constants.pop(ins.a, None)
+                known_types.pop(ins.a, None)
             elif ins.op is Op.SETTABLE:
                 guard(f"{b} is None or (type({b}) is float and {b} != {b})", pc, cost)
                 lines.append(f"{indent}{a}.rawset({b}, {c})")
             elif ins.op is Op.GUARD:
                 guard(f"not _type_matches({proto.constants[ins.b]!r}, {a})", pc, cost)
+                known_types[ins.a] = str(proto.constants[ins.b])
             elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                 symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
                 expression = f"{b} {symbol} {c}"
@@ -554,16 +604,38 @@ class StructuredTypedLoopJITMixin:
                     lines.append(f"{indent}{a} = {expression}")
                 else:
                     lines.extend(self._i64_lines(a, expression, str(pc), indent))
+                known_types[ins.a] = "integer"
             elif ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                 symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[ins.op]
                 lines.append(f"{indent}{a} = float({b} {symbol} {c})")
+                known_types[ins.a] = "float"
+            elif ins.op in (Op.ADD, Op.SUB, Op.MUL):
+                site = typed_plan.instruction(pc)
+                left_type = known_types.get(ins.b, site.value_for(ins.b).type_name)
+                right_type = known_types.get(ins.c, site.value_for(ins.c).type_name)
+                if left_type not in numeric_types or right_type not in numeric_types:
+                    return None
+                symbol = {Op.ADD: "+", Op.SUB: "-", Op.MUL: "*"}[ins.op]
+                expression = f"{b} {symbol} {c}"
+                if left_type in ("integer", "integer_lua") and right_type in ("integer", "integer_lua"):
+                    if ranges.overflow_free(pc):
+                        lines.append(f"{indent}{a} = {expression}")
+                    else:
+                        lines.extend(self._i64_lines(a, expression, str(pc), indent))
+                    known_types[ins.a] = "integer"
+                else:
+                    lines.append(f"{indent}{a} = float({expression})")
+                    known_types[ins.a] = "float"
             elif ins.op is Op.DIV:
                 guard(f"type({b}) not in (int, float) or type({c}) not in (int, float)", pc, cost)
                 lines.append(f"{indent}{a} = _float_divide({b}, {c})")
+                known_types[ins.a] = "float"
             elif ins.op is Op.NOT:
                 lines.append(f"{indent}{a} = ({b} is None or {b} is False)")
+                known_types[ins.a] = "boolean"
             elif ins.op is Op.TOBOOL:
                 lines.append(f"{indent}{a} = not ({b} is None or {b} is False)")
+                known_types[ins.a] = "boolean"
             elif ins.op is Op.CALL:
                 closure, sequence = calls[pc]
                 prefix = f"_inl_{pc}_"
@@ -578,7 +650,15 @@ class StructuredTypedLoopJITMixin:
                         else "None"
                     )
                     expected_type = closure.proto.param_types[arg_index].name
-                    guard(f"not _type_matches({expected_type!r}, {value})", pc, cost)
+                    actual_type = known_types.get(ins.c + arg_index)
+                    accepts = (
+                        actual_type == expected_type
+                        or expected_type == "number" and actual_type in numeric_types
+                        or expected_type in ("integer", "integer_lua")
+                        and actual_type in ("integer", "integer_lua")
+                    )
+                    if not accepts:
+                        guard(f"not _type_matches({expected_type!r}, {value})", pc, cost)
                     lines.append(f"{indent}{r(arg_index)} = {value}")
                 returned: list[str] | None = None
                 for child_pc, child_ins in sequence:
@@ -638,6 +718,10 @@ class StructuredTypedLoopJITMixin:
                         )
                         lines.append(f"{indent}_r{ins.a + result_index} = {value}")
                         known_constants.pop(ins.a + result_index, None)
+                        if result_index < len(closure.proto.return_types):
+                            known_types[ins.a + result_index] = closure.proto.return_types[result_index].name
+                        else:
+                            known_types.pop(ins.a + result_index, None)
                 prior_child_cost += len(sequence)
             else:
                 return None

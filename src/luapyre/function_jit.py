@@ -10,6 +10,7 @@ from .errors import LuaRuntimeError
 from .opdispatch import _float_divide, _float_modulo
 from .range_analysis import analyze_integer_ranges
 from .table import LuaTable, _ABSENT, _hash_key
+from .typed_ir import TypedIRCompiler, _reads, _writes
 from .values import lua_equal, static_value_type, type_matches
 
 
@@ -77,6 +78,46 @@ class CompiledAstFunction:
 
 
 @dataclass(frozen=True, slots=True)
+class CompiledCallEntry:
+    """Final execution target for one compiled Proto and argument shape."""
+
+    proto: Proto
+    runner: FunctionType
+    virtual: bool
+    arg_count: int | None
+    trusted_args: bool
+
+
+def _materialized_call_runner(compiled: CompiledAstFunction, *, trusted_args: bool):
+    """Build the stable real-Frame entry used when virtualization is unsafe."""
+
+    def run(vm, frames, closure, args, dest, want, budget, meter):
+        if len(frames) >= vm.max_frames:
+            raise LuaRuntimeError("stack overflow")
+        child = vm._acquire_compiled_frame(
+            compiled,
+            closure,
+            args,
+            dest,
+            want,
+            validate_args=not trusted_args,
+        )
+        frames.append(child)
+        status, values = compiled.runner(vm, frames, child, budget, meter)
+        if status == _FUNC_RETURN:
+            if not frames or frames[-1] is not child:
+                raise RuntimeError("compiled function stack mismatch")
+            frames.pop()
+            vm.jit.function_executions += 1
+            vm._release_compiled_frame(compiled, child)
+            return _FUNC_RETURN, values
+        vm.jit.function_suspends += 1
+        return _FUNC_SUSPEND, None
+
+    return run
+
+
+@dataclass(frozen=True, slots=True)
 class _FunctionBlock:
     start: int
     end: int
@@ -97,7 +138,9 @@ class TypedFunctionJITMixin:
         super().__init__(*args, **kwargs)
         self._function_hot: dict[int, tuple[Proto, int]] = {}
         self._function_cache: dict[int, tuple[Proto, CompiledAstFunction | None]] = {}
-        self._virtual_frame_cache: dict[int, tuple[Proto, FunctionType | None]] = {}
+        self._call_entry_cache: dict[
+            tuple[int, int | None, bool], tuple[Proto, CompiledCallEntry]
+        ] = {}
         self.function_compiles = 0
         self.function_executions = 0
         self.function_suspends = 0
@@ -206,41 +249,41 @@ class TypedFunctionJITMixin:
         meter: list[int],
         compiled: CompiledAstFunction,
     ):
-        if len(frames) >= vm.max_frames:
-            raise LuaRuntimeError("stack overflow")
-        ident = id(closure.proto)
-        virtual_entry = self._virtual_frame_cache.get(ident)
-        if virtual_entry is not None and virtual_entry[0] is closure.proto:
-            virtual = virtual_entry[1]
-        else:
-            # Import lazily: virtual_frame depends on this module's status
-            # constants.  The compiled result, including refusal, is permanent
-            # for an immutable Proto.
-            from .virtual_frame import compile_virtual_frame
+        entry = self.get_call_entry(compiled, arg_count=len(args))
+        return entry.runner(vm, frames, closure, args, dest, want, budget, meter)
 
-            virtual = compile_virtual_frame(closure.proto)
-            self._virtual_frame_cache[ident] = (closure.proto, virtual)
-        if virtual is not None:
-            return virtual(vm, frames, closure, args, dest, want, budget, meter)
-        acquire = getattr(vm, "_acquire_compiled_frame", None)
-        child = (
-            acquire(compiled, closure, args, dest, want)
-            if acquire is not None
-            else vm._new_frame(closure, list(args), dest, want)
+    def get_call_entry(
+        self,
+        compiled: CompiledAstFunction,
+        *,
+        arg_count: int | None = None,
+        trusted_args: bool = False,
+    ) -> CompiledCallEntry:
+        """Resolve virtualization and adapters once for a stable call shape."""
+
+        proto = compiled.proto
+        key = (id(proto), arg_count, trusted_args)
+        cached = self._call_entry_cache.get(key)
+        if cached is not None and cached[0] is proto:
+            return cached[1]
+        from .virtual_frame import compile_virtual_frame
+
+        runner = compile_virtual_frame(
+            proto,
+            arg_count=arg_count,
+            trusted_args=trusted_args,
         )
-        frames.append(child)
-        status, values = compiled.runner(vm, frames, child, budget, meter)
-        if status == _FUNC_RETURN:
-            if not frames or frames[-1] is not child:
-                raise RuntimeError("compiled function stack mismatch")
-            frames.pop()
-            self.function_executions += 1
-            release = getattr(vm, "_release_compiled_frame", None)
-            if release is not None:
-                release(compiled, child)
-            return _FUNC_RETURN, values
-        self.function_suspends += 1
-        return _FUNC_SUSPEND, None
+        entry = CompiledCallEntry(
+            proto,
+            runner if runner is not None else _materialized_call_runner(
+                compiled, trusted_args=trusted_args
+            ),
+            runner is not None,
+            arg_count,
+            trusted_args,
+        )
+        self._call_entry_cache[key] = (proto, entry)
+        return entry
 
     def _compile_ast_function(self, proto: Proto) -> CompiledAstFunction | None:
         blocks = self._function_blocks(proto)
@@ -254,14 +297,50 @@ class TypedFunctionJITMixin:
         registers = tuple(range(max(1, proto.register_count)))
         ranges = analyze_integer_ranges(proto)
         block_index = {block.start: index for index, block in enumerate(blocks)}
+        typed_plan = TypedIRCompiler(proto).compile(
+            tuple(block.instructions for block in blocks)
+        )
+
+        # Continuation liveness is used only at successful compiled-child
+        # boundaries.  All side exits retain the full diagnostic spill.
+        live_in = [set() for _ in range(len(proto.code) + 1)]
+        changed = True
+        while changed:
+            changed = False
+            for pc in range(len(proto.code) - 1, -1, -1):
+                ins = proto.code[pc]
+                if ins.op in (Op.RETURN, Op.HALT):
+                    successors = ()
+                elif ins.op is Op.JMP:
+                    successors = (ins.a,)
+                elif ins.op in (Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL):
+                    successors = (ins.a, pc + 1)
+                elif ins.op in (Op.FORPREP, Op.FORLOOP, Op.JFORLOOP):
+                    successors = (ins.d, pc + 1)
+                else:
+                    successors = (pc + 1,)
+                out: set[int] = set()
+                for successor in successors:
+                    if 0 <= successor < len(live_in):
+                        out.update(live_in[successor])
+                value = set(_reads(ins)) | (out - set(_writes(ins)))
+                if value != live_in[pc]:
+                    live_in[pc] = value
+                    changed = True
+
+        diagnostic_live: list[set[int]] = [set() for _ in live_in]
+        for _name, reg, start, end in proto.debug_locals:
+            for pc in range(max(0, start), min(len(diagnostic_live), end + 1)):
+                diagnostic_live[pc].add(reg)
 
         def state_for(pc: int) -> int:
             if pc == len(proto.code):
                 return _FUNC_RETURN
             return block_index[pc]
 
-        def spill(indent: str) -> list[str]:
-            return [f"{indent}regs[{reg}] = _r{reg}" for reg in registers]
+        def spill(indent: str, subset=None) -> list[str]:
+            selected = registers if subset is None else sorted(subset)
+            return [f"{indent}regs[{reg}] = _r{reg}" for reg in selected]
 
         def suspend(pc: int, indent: str) -> list[str]:
             return [
@@ -362,20 +441,31 @@ class TypedFunctionJITMixin:
             )
             ordinary = block.instructions[:-1] if terminal_control else block.instructions
 
+            batchable = {
+                Op.LOADK, Op.MOVE, Op.LOCAL, Op.GETUPVAL,
+                Op.ADD_I, Op.SUB_I, Op.MUL_I,
+                Op.ADD_F, Op.SUB_F, Op.MUL_F,
+                Op.NOT, Op.TOBOOL,
+            }
+            pending_cost = 0
+
             for pc, ins in ordinary:
                 op = ins.op
+                if op not in batchable and pending_cost:
+                    lines.append(f"{indent}used += {pending_cost}")
+                    pending_cost = 0
                 a, b, c = f"_r{ins.a}", f"_r{ins.b}", f"_r{ins.c}"
                 if op is Op.LOADK:
-                    lines.extend([f"{indent}used += 1", f"{indent}{a} = consts[{ins.b}]"])
+                    lines.append(f"{indent}{a} = consts[{ins.b}]")
                     known_constants[ins.a] = proto.constants[ins.b]
                 elif op in (Op.MOVE, Op.LOCAL):
-                    lines.extend([f"{indent}used += 1", f"{indent}{a} = {b}"])
+                    lines.append(f"{indent}{a} = {b}")
                     if ins.b in known_constants:
                         known_constants[ins.a] = known_constants[ins.b]
                     else:
                         known_constants.pop(ins.a, None)
                 elif op is Op.GETUPVAL:
-                    lines.extend([f"{indent}used += 1", f"{indent}{a} = upvalues[{ins.b}].value"])
+                    lines.append(f"{indent}{a} = upvalues[{ins.b}].value")
                 elif op is Op.SETUPVAL:
                     lines.extend([
                         f"{indent}used += 1",
@@ -417,7 +507,6 @@ class TypedFunctionJITMixin:
                     lines.extend([f"{indent}used += 1", f"{indent}{a}.rawset({b}, {c})"])
                 elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                     symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[op]
-                    lines.append(f"{indent}used += 1")
                     lines.extend(
                         i64(
                             a, f"{b} {symbol} {c}", str(pc), indent,
@@ -426,7 +515,7 @@ class TypedFunctionJITMixin:
                     )
                 elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                     symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[op]
-                    lines.extend([f"{indent}used += 1", f"{indent}{a} = float({b} {symbol} {c})"])
+                    lines.append(f"{indent}{a} = float({b} {symbol} {c})")
                 elif op in (Op.ADD, Op.SUB, Op.MUL):
                     symbol = {Op.ADD: "+", Op.SUB: "-", Op.MUL: "*"}[op]
                     deopt(lines, f"type({b}) not in _NUM_TYPES or type({c}) not in _NUM_TYPES", pc, indent)
@@ -449,9 +538,9 @@ class TypedFunctionJITMixin:
                     lines.append(f"{indent}else:")
                     lines.append(f"{indent}    {a} = _float_modulo({b}, {c})")
                 elif op is Op.NOT:
-                    lines.extend([f"{indent}used += 1", f"{indent}{a} = not _truthy({b})"])
+                    lines.append(f"{indent}{a} = not _truthy({b})")
                 elif op is Op.TOBOOL:
-                    lines.extend([f"{indent}used += 1", f"{indent}{a} = _truthy({b})"])
+                    lines.append(f"{indent}{a} = _truthy({b})")
                 elif op is Op.EQ:
                     deopt(
                         lines,
@@ -482,16 +571,38 @@ class TypedFunctionJITMixin:
                     lines.append(f"{indent}_fn_{pc} = {b}")
                     cache_name = f"_call_target_{pc}"
                     call_target_caches.setdefault(cache_name, [None, None])
+                    call_site = typed_plan.instruction(pc)
+                    actual_types = tuple(
+                        call_site.value_for(ins.c + i).type_name
+                        for i in range(ins.d)
+                    )
+                    accepted_names = {
+                        "integer": ("Any", "integer", "integer_lua", "number"),
+                        "integer_lua": ("Any", "integer", "integer_lua", "number"),
+                        "float": ("Any", "float", "number"),
+                        "number": ("Any", "number"),
+                    }
+                    trust_terms = []
+                    for index, actual in enumerate(actual_types):
+                        accepted = accepted_names.get(actual, ("Any", actual))
+                        trust_terms.append(
+                            f"_compiled_{pc}.proto.param_types[{index}].name in {accepted!r}"
+                        )
+                    trusted_expr = " and ".join(
+                        [f"_compiled_{pc}.proto.param_count == {ins.d}", *trust_terms]
+                    )
                     lines.extend([
                         f"{indent}_target_cache_{pc} = {cache_name}",
                         f"{indent}if _fn_{pc} is _target_cache_{pc}[0]:",
-                        f"{indent}    _compiled_{pc} = _target_cache_{pc}[1]",
+                        f"{indent}    _entry_{pc} = _target_cache_{pc}[1]",
                         f"{indent}else:",
                         f"{indent}    _compiled_{pc} = vm.jit.get_compiled_function(_fn_{pc}) if isinstance(_fn_{pc}, _Closure) else None",
+                        f"{indent}    _trusted_{pc} = ({trusted_expr}) if _compiled_{pc} is not None else False",
+                        f"{indent}    _entry_{pc} = vm.jit.get_call_entry(_compiled_{pc}, arg_count={ins.d}, trusted_args=_trusted_{pc}) if _compiled_{pc} is not None else None",
                         f"{indent}    _target_cache_{pc}[0] = _fn_{pc}",
-                        f"{indent}    _target_cache_{pc}[1] = _compiled_{pc}",
+                        f"{indent}    _target_cache_{pc}[1] = _entry_{pc}",
                     ])
-                    lines.append(f"{indent}if _compiled_{pc} is None:")
+                    lines.append(f"{indent}if _entry_{pc} is None:")
                     lines.extend(f"{indent}    {line.strip()}" for line in suspend(pc, ""))
                     lines.append(f"{indent}used += 1")
                     # Flush the parent's exact instruction count before the
@@ -500,29 +611,46 @@ class TypedFunctionJITMixin:
                     # fuel exactly without a per-op mutable-list increment.
                     lines.append(f"{indent}meter[0] += used")
                     lines.append(f"{indent}used = 0")
-                    lines.extend(spill(indent))
+                    outputs = set(range(ins.a, ins.a + max(0, ins.e))) if ins.e > 0 else set()
+                    call_spill = (live_in[pc + 1] | diagnostic_live[pc + 1]) - outputs
+                    lines.extend(spill(indent, call_spill))
+                    for output_reg in sorted(
+                        outputs & (live_in[pc + 1] | diagnostic_live[pc + 1])
+                    ):
+                        lines.append(f"{indent}regs[{output_reg}] = None")
                     lines.append(f"{indent}frame.pc = {pc + 1}")
                     args = ", ".join(f"_r{ins.c + i}" for i in range(ins.d))
                     if ins.d == 1:
                         args += ","
                     lines.append(
-                        f"{indent}_status_{pc}, _values_{pc} = vm.jit.run_compiled_child(vm, frames, frame, _fn_{pc}, ({args}), {ins.a}, {ins.e}, budget, meter, _compiled_{pc})"
+                        f"{indent}_status_{pc}, _values_{pc} = _entry_{pc}.runner(vm, frames, _fn_{pc}, ({args}), {ins.a}, {ins.e}, budget, meter)"
                     )
                     lines.append(f"{indent}if _status_{pc} == _FUNC_SUSPEND:")
                     lines.append(f"{indent}    return _FUNC_SUSPEND")
                     if ins.e > 0:
                         for value_index in range(ins.e):
-                            lines.append(
-                                f"{indent}_r{ins.a + value_index} = _values_{pc}[{value_index}] if {value_index} < len(_values_{pc}) else None"
-                            )
+                            if ins.e == 1:
+                                lines.append(
+                                    f"{indent}_r{ins.a} = _values_{pc}[0] if _values_{pc} else None"
+                                )
+                            else:
+                                lines.append(
+                                    f"{indent}_r{ins.a + value_index} = _values_{pc}[{value_index}] if {value_index} < len(_values_{pc}) else None"
+                                )
                 else:
                     return None
+
+                if op in batchable:
+                    pending_cost += 1
 
                 if op is Op.CALL and ins.e > 0:
                     for result_reg in range(ins.a, ins.a + ins.e):
                         known_constants.pop(result_reg, None)
                 elif op not in (Op.LOADK, Op.MOVE, Op.LOCAL, Op.GETTABLE) and self._function_writes_register(ins, ins.a):
                     known_constants.pop(ins.a, None)
+
+            if pending_cost:
+                lines.append(f"{indent}used += {pending_cost}")
 
             if terminal_control:
                 ins = terminal_ins

@@ -121,7 +121,9 @@ class DirectCallIRFunctionJITMixin:
             namespace[f"_child_{site.pc}"] = proto.children[site.child_index]
             escape = escape_by_pc[site.pc]
             if escape.virtual_frame:
-                virtual = compile_virtual_frame(proto.children[site.child_index])
+                virtual = compile_virtual_frame(
+                    proto.children[site.child_index], arg_count=site.arg_count
+                )
                 if virtual is None:
                     return super()._compile_ast_function(proto)
                 namespace[f"_virtual_{site.pc}"] = virtual
@@ -266,10 +268,15 @@ class DirectCallIRFunctionJITMixin:
                 lines.append(f"    if _status_{pc} == _FUNC_SUSPEND:")
                 lines.append("        return _FUNC_SUSPEND, None")
                 for index in range(site.result_count):
-                    lines.append(
-                        f"    _r{site.result_base + index} = _values_{pc}[{index}] "
-                        f"if {index} < len(_values_{pc}) else None"
-                    )
+                    if site.result_count == 1:
+                        lines.append(
+                            f"    _r{site.result_base} = _values_{pc}[0] if _values_{pc} else None"
+                        )
+                    else:
+                        lines.append(
+                            f"    _r{site.result_base + index} = _values_{pc}[{index}] "
+                            f"if {index} < len(_values_{pc}) else None"
+                        )
                 if escape.virtual_multivalue:
                     lines.extend(
                         [

@@ -1,7 +1,7 @@
 # Performance plan after 0.31
 
-Status: proposed implementation work. The 0.31 runtime is published in PR #42;
-this plan does not implement the next tranche.
+Status: implemented by the 0.32 performance tranche. Measurements and the
+accepted semantic boundaries are recorded in [`speed-0.32.md`](speed-0.32.md).
 
 ## Decision and evidence
 
