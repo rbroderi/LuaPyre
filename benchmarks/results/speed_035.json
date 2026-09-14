@@ -1,0 +1,314 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "f9399f8a239b15603741918f8c6effaff51c5183",
+  "candidate_revision": "working tree before final commit",
+  "method": "Three paired processes per case and Python; A/B, B/A, A/B; 7 warmups and 31 timed samples; CPU affinity and PYTHONHASHSEED held constant",
+  "summary": [
+    {
+      "python": "3.13.15",
+      "case": "table_mix",
+      "baseline_median_ms": 35.264992,
+      "current_median_ms": 34.372308,
+      "reduction_pct": 2.5313602793387924,
+      "baseline_process_medians_ms": [
+        35.383526,
+        34.060996,
+        35.264992
+      ],
+      "current_process_medians_ms": [
+        34.348504,
+        34.818498,
+        34.372308
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "sieve",
+      "baseline_median_ms": 28.765145,
+      "current_median_ms": 27.896526,
+      "reduction_pct": 3.0196927566330674,
+      "baseline_process_medians_ms": [
+        29.172384,
+        28.765145,
+        27.746405
+      ],
+      "current_process_medians_ms": [
+        27.894749,
+        27.896526,
+        29.220983
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "string_build",
+      "baseline_median_ms": 2.624506,
+      "current_median_ms": 0.601755,
+      "reduction_pct": 77.0716851095025,
+      "baseline_process_medians_ms": [
+        2.650875,
+        2.624506,
+        2.585706
+      ],
+      "current_process_medians_ms": [
+        0.69939,
+        0.587603,
+        0.601755
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "binary_trees",
+      "baseline_median_ms": 120.809299,
+      "current_median_ms": 119.240631,
+      "reduction_pct": 1.2984662712098036,
+      "baseline_process_medians_ms": [
+        120.809299,
+        122.486255,
+        116.878654
+      ],
+      "current_process_medians_ms": [
+        129.064701,
+        118.406077,
+        119.240631
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "fib_recursive",
+      "baseline_median_ms": 34.092357,
+      "current_median_ms": 34.135129,
+      "reduction_pct": -0.12545920482998393,
+      "baseline_process_medians_ms": [
+        34.092357,
+        34.527744,
+        33.350532
+      ],
+      "current_process_medians_ms": [
+        35.645839,
+        34.135129,
+        33.419124
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "spectral_norm",
+      "baseline_median_ms": 31.631057,
+      "current_median_ms": 31.674054,
+      "reduction_pct": -0.13593285864586593,
+      "baseline_process_medians_ms": [
+        31.635381,
+        31.631057,
+        31.267778
+      ],
+      "current_process_medians_ms": [
+        32.240418,
+        31.674054,
+        30.867576
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "python_calls_1000",
+      "baseline_median_ms": 0.931427,
+      "current_median_ms": 0.759046,
+      "reduction_pct": 18.50719380048034,
+      "baseline_process_medians_ms": [
+        0.952503,
+        0.919866,
+        0.931427
+      ],
+      "current_process_medians_ms": [
+        0.759046,
+        0.737145,
+        0.77335
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "typed_arith",
+      "baseline_median_ms": 1.164417,
+      "current_median_ms": 1.133472,
+      "reduction_pct": 2.6575530930929383,
+      "baseline_process_medians_ms": [
+        1.244724,
+        1.164417,
+        1.091902
+      ],
+      "current_process_medians_ms": [
+        1.188248,
+        1.085525,
+        1.133472
+      ]
+    },
+    {
+      "python": "3.13.15",
+      "case": "typed_branch",
+      "baseline_median_ms": 4.269649,
+      "current_median_ms": 2.199513,
+      "reduction_pct": 48.484922296891384,
+      "baseline_process_medians_ms": [
+        4.14706,
+        4.337031,
+        4.269649
+      ],
+      "current_process_medians_ms": [
+        2.2384,
+        2.199513,
+        2.092279
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "table_mix",
+      "baseline_median_ms": 25.429516,
+      "current_median_ms": 25.230274,
+      "reduction_pct": 0.7835068508578699,
+      "baseline_process_medians_ms": [
+        25.369565,
+        25.5834,
+        25.429516
+      ],
+      "current_process_medians_ms": [
+        25.25583,
+        25.023978,
+        25.230274
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "sieve",
+      "baseline_median_ms": 24.889863,
+      "current_median_ms": 24.726966,
+      "reduction_pct": 0.6544712600467002,
+      "baseline_process_medians_ms": [
+        24.889863,
+        25.150155,
+        24.664233
+      ],
+      "current_process_medians_ms": [
+        24.4016,
+        24.790509,
+        24.726966
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "string_build",
+      "baseline_median_ms": 2.249164,
+      "current_median_ms": 0.590596,
+      "reduction_pct": 73.74153240937521,
+      "baseline_process_medians_ms": [
+        2.204608,
+        2.249164,
+        2.251825
+      ],
+      "current_process_medians_ms": [
+        0.586617,
+        0.593944,
+        0.590596
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "binary_trees",
+      "baseline_median_ms": 110.635479,
+      "current_median_ms": 112.486795,
+      "reduction_pct": -1.6733474801514592,
+      "baseline_process_medians_ms": [
+        110.008869,
+        115.122379,
+        110.635479
+      ],
+      "current_process_medians_ms": [
+        116.704734,
+        110.996966,
+        112.486795
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "fib_recursive",
+      "baseline_median_ms": 30.06384,
+      "current_median_ms": 30.116511,
+      "reduction_pct": -0.17519718040010904,
+      "baseline_process_medians_ms": [
+        29.990707,
+        30.321436,
+        30.06384
+      ],
+      "current_process_medians_ms": [
+        31.071618,
+        29.891132,
+        30.116511
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "spectral_norm",
+      "baseline_median_ms": 28.358289,
+      "current_median_ms": 28.305691,
+      "reduction_pct": 0.18547663436253048,
+      "baseline_process_medians_ms": [
+        28.358289,
+        28.317051,
+        28.832551
+      ],
+      "current_process_medians_ms": [
+        28.305691,
+        28.012155,
+        29.103239
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "python_calls_1000",
+      "baseline_median_ms": 1.01229,
+      "current_median_ms": 0.803957,
+      "reduction_pct": 20.580367286054383,
+      "baseline_process_medians_ms": [
+        1.021482,
+        1.01229,
+        0.975719
+      ],
+      "current_process_medians_ms": [
+        0.803957,
+        0.789797,
+        0.822592
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "typed_arith",
+      "baseline_median_ms": 0.989577,
+      "current_median_ms": 0.983898,
+      "reduction_pct": 0.5738815675788735,
+      "baseline_process_medians_ms": [
+        0.989577,
+        1.006978,
+        0.952016
+      ],
+      "current_process_medians_ms": [
+        0.98323,
+        0.983898,
+        1.000787
+      ]
+    },
+    {
+      "python": "3.14.7",
+      "case": "typed_branch",
+      "baseline_median_ms": 3.648391,
+      "current_median_ms": 2.002918,
+      "reduction_pct": 45.10133371121681,
+      "baseline_process_medians_ms": [
+        3.662825,
+        3.648391,
+        3.553119
+      ],
+      "current_process_medians_ms": [
+        2.002918,
+        2.16356,
+        2.001753
+      ]
+    }
+  ]
+}

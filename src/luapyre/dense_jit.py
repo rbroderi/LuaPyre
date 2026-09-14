@@ -10,6 +10,7 @@ from .jit_codegen import (
     generated_namespace,
     optimize_generated_ast,
     promote_constant_registers,
+    unwrap_scalar_return,
 )
 from .range_analysis import analyze_integer_ranges
 from .table import LuaTable
@@ -181,34 +182,60 @@ class DenseEmitterJITMixin:
         tree = optimize_generated_ast(ast.parse("\n".join(lines)))
         tree = promote_constant_registers(tree, spill_returns=False)
         exec(compile(tree, "<luapyre-dense-jit-leaf>", "exec"), namespace)
-        direct_lines = [
-            "def _jit_leaf_direct(vm, closure, args):",
-            f"    regs = [None] * {max(1, proto.register_count)}",
-        ]
-        for index in range(proto.param_count):
-            direct_lines.append(
-                f"    regs[{index}] = args[{index}] if {index} < len(args) else None"
-            )
-        if proto.env_reg >= 0:
-            direct_lines.append(f"    regs[{proto.env_reg}] = closure.env")
-        direct_lines.extend(
-            [
-                "    consts = closure.proto.constants",
-                "    cells = {}",
-                *lines[4:],
-            ]
-        )
+        direct_lines = ["def _jit_leaf_direct(vm, closure, args):"]
+        direct_lines.append("    consts = closure.proto.constants")
+        if any(item.ins.op is Op.LOCAL for item in sequence):
+            direct_lines.append("    cells = {}")
+        direct_lines.extend(lines[4:])
         direct_tree = optimize_generated_ast(ast.parse("\n".join(direct_lines)))
-        direct_tree = promote_constant_registers(direct_tree, spill_returns=False)
+        direct_initial = {
+            index: ast.parse(
+                f"args[{index}] if {index} < len(args) else None", mode="eval"
+            ).body
+            for index in range(proto.param_count)
+        }
+        if proto.env_reg >= 0:
+            direct_initial[proto.env_reg] = ast.parse("closure.env", mode="eval").body
+        direct_tree = promote_constant_registers(
+            direct_tree, spill_returns=False, direct_initial=direct_initial
+        )
         exec(
             compile(direct_tree, "<luapyre-dense-jit-leaf-direct>", "exec"),
             namespace,
         )
+        scalar_runner = None
+        if (
+            proto.param_count == 1
+            and proto.param_types
+            and proto.param_types[0].name == "integer"
+            and return_ins.ins.b == 1
+        ):
+            scalar_lines = ["def _jit_leaf_scalar(vm, closure, value):"]
+            scalar_lines.append("    consts = closure.proto.constants")
+            if any(item.ins.op is Op.LOCAL for item in sequence):
+                scalar_lines.append("    cells = {}")
+            scalar_lines.extend(lines[4:])
+            scalar_tree = optimize_generated_ast(ast.parse("\n".join(scalar_lines)))
+            scalar_initial = {0: ast.Name(id="value", ctx=ast.Load())}
+            if proto.env_reg >= 0:
+                scalar_initial[proto.env_reg] = ast.parse(
+                    "closure.env", mode="eval"
+                ).body
+            scalar_tree = promote_constant_registers(
+                scalar_tree, spill_returns=False, direct_initial=scalar_initial
+            )
+            scalar_tree = unwrap_scalar_return(scalar_tree)
+            exec(
+                compile(scalar_tree, "<luapyre-dense-jit-leaf-scalar>", "exec"),
+                namespace,
+            )
+            scalar_runner = namespace["_jit_leaf_scalar"]
         return CompiledLeaf(
             proto,
             cost,
             namespace["_jit_leaf"],
             namespace["_jit_leaf_direct"],
+            scalar_runner,
         )
 
     @staticmethod

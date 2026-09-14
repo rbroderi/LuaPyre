@@ -623,6 +623,28 @@ class LuaRuntime:
                     fuel=fuel,
                     leaf_cache=leaf_cache,
                 )
+            scalar_runner = compiled.scalar_runner
+            if scalar_runner is not None:
+                result = scalar_runner(vm, function, value)
+                if result is DEOPT:
+                    return self._call_bound(
+                        function,
+                        args,
+                        return_type=return_type,
+                        fuel=fuel,
+                        leaf_cache=leaf_cache,
+                    )
+                vm.jit.stats.leaf_executions += 1
+                vm.jit.stats.leaf_frame_elisions += 1
+                vm.jit.stats.python_direct_entries += 1
+                vm.gc.safepoint()
+                if return_type is None and (
+                    result is None or type(result) in (bool, int, float)
+                ):
+                    return result
+                if return_type is int and type(result) is int:
+                    return result
+                return self._from_lua(result, return_type)
             values = compiled.direct_runner(vm, function, args)
             if values is DEOPT:
                 return self._call_bound(

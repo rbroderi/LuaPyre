@@ -91,6 +91,9 @@ For performance comparisons, compare runs on the same runner class and Python ve
   measures the accepted 0.34 string, GC, control-flow, table-write, and Python
   entry paths. The committed result uses three paired processes per Python
   version with fixed affinity and `PYTHONHASHSEED=0`.
+- `speed_035_ab.py` retains that nine-workload corpus while measuring scalar
+  leaf allocation removal, uniform-cost diamond accounting, and structured
+  string diamonds against 0.34.
 - `python_headroom.py` compares nine algorithms against reduced-contract direct
   Python implementations. Use `PYTHONPATH=src PYTHONHASHSEED=0`, `--revision`,
   `--json`, and optionally `--python-first` or repeated `--case` selections.
