@@ -97,4 +97,11 @@ For performance comparisons, compare runs on the same runner class and Python ve
   Every result is checked. Ratios include Lua semantic and representation
   costs; they are not guaranteed available speedups or a mathematical limit.
   The results, interpretation, and next implementation priorities are in
-  [`performance-roadmap-0.34.md`](../docs/performance-roadmap-0.34.md).
+  [`performance-roadmap-0.35.md`](../docs/performance-roadmap-0.35.md), with the
+  earlier comparison retained in the 0.34 roadmap.
+- `inspect_codegen.py` captures final generated AST/source, selects hot
+  generated functions using checked profiled executions, and records generic
+  and warmed adaptive opcode counts plus pooled frame/register-slot counts.
+  Use `--revision`, `--json`, and optional `--case` or `--include-source`.
+  Counts are diagnostic: static bytecode counts are not dynamic instruction
+  frequencies, and pool slots do not measure transitive heap retention.

@@ -1,6 +1,8 @@
 # Toward the Python performance limit: 0.34 and beyond
 
 Status: implemented by [`speed-0.34.md`](speed-0.34.md).
+Accepted scope, unfinished structural work, and updated priorities are recorded
+in [`performance-roadmap-0.35.md`](performance-roadmap-0.35.md).
 Baseline: published 0.33 commit `a32af2e59200381c8cd80cebbda5ff0fd1f1344e`.
 The measurements used local commit `8728eab`; both commits have tree
 `2628ebcbc29b50bd35c1dc9b7838b435bfcde70d`. Publication through the authenticated

@@ -4,6 +4,9 @@
 It emits simpler Python for proven hot paths and relies on CPython's adaptive
 specialization. It does not generate Python bytecode directly.
 
+Remaining gaps against direct Python, fresh profiles, and the next ordered
+experiments are in [`performance-roadmap-0.35.md`](performance-roadmap-0.35.md).
+
 ## Changes
 
 1. **Concatenate proven strings directly.** Fully typed or guarded byte-string
