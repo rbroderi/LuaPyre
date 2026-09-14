@@ -96,6 +96,7 @@ class CompiledLeaf:
     instruction_cost: int
     runner: FunctionType
     direct_runner: FunctionType
+    scalar_runner: FunctionType | None = None
 
 
 _LOOP_BODY_OPS = JIT_LOOP_BODY_OPS

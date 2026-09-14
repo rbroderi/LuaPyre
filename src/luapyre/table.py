@@ -124,6 +124,32 @@ class LuaTable:
                 collector.account_bytes(32)
             self.hash[h] = (key, value)
 
+    def rawset_prehashed(self, key, token, value):
+        """Set a compiler-validated non-array constant key."""
+        if value is None and token in self.hash:
+            entries = list(self.items())
+            for index, (current, _item) in enumerate(entries):
+                if _hash_key(current) == token:
+                    successor = (
+                        entries[index + 1][0]
+                        if index + 1 < len(entries)
+                        else None
+                    )
+                    self._deleted_successors[token] = successor
+                    break
+        elif value is not None:
+            self._deleted_successors.pop(token, None)
+        self.version += 1
+        collector = self._gc_owner
+        if collector is not None:
+            collector.table_write_barrier(self, key, value)
+        if value is None:
+            self.hash.pop(token, None)
+        else:
+            if collector is not None and token not in self.hash:
+                collector.account_bytes(32)
+            self.hash[token] = (key, value)
+
     def successor_after_deleted(self, key):
         """Find a surviving successor for a key deleted during traversal."""
         seen = set()

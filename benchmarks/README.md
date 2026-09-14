@@ -77,5 +77,34 @@ For performance comparisons, compare runs on the same runner class and Python ve
   with 7 warmups and 31 samples for release comparisons.
 - `profile_hotpaths.py` records warmed `cProfile` attribution and JIT counters
   for the current performance plan. Use `--revision`, `--json`, and optional
-  repeated `--workload` arguments. Profiling affects timings; use the A/B tools
+  repeated `--workload` arguments. `--executions` aggregates multiple profiled
+  executions after warmup. Profiling affects timings; use the A/B tools
   to measure actual speed changes.
+- `probe_033.py` tests isolated optimization hypotheses on the merged 0.32
+  runtime. Its patches are confined to the benchmark process; they are not
+  production changes. Results and semantic acceptance gates are documented in
+  `docs/performance-roadmap-0.33.md`.
+- `speed_033_ab.py` measures the accepted 0.33 targets plus arithmetic and
+  branch controls. Run it in separate processes against each checkout with the
+  same Python executable, affinity, hash seed, warmups, and sample count.
+- `speed_034_ab.py` adds string construction and sieve to the 0.33 corpus and
+  measures the accepted 0.34 string, GC, control-flow, table-write, and Python
+  entry paths. The committed result uses three paired processes per Python
+  version with fixed affinity and `PYTHONHASHSEED=0`.
+- `speed_035_ab.py` retains that nine-workload corpus while measuring scalar
+  leaf allocation removal, uniform-cost diamond accounting, and structured
+  string diamonds against 0.34.
+- `python_headroom.py` compares nine algorithms against reduced-contract direct
+  Python implementations. Use `PYTHONPATH=src PYTHONHASHSEED=0`, `--revision`,
+  `--json`, and optionally `--python-first` or repeated `--case` selections.
+  Every result is checked. Ratios include Lua semantic and representation
+  costs; they are not guaranteed available speedups or a mathematical limit.
+  The results, interpretation, and next implementation priorities are in
+  [`performance-roadmap-0.35.md`](../docs/performance-roadmap-0.35.md), with the
+  earlier comparison retained in the 0.34 roadmap.
+- `inspect_codegen.py` captures final generated AST/source, selects hot
+  generated functions using checked profiled executions, and records generic
+  and warmed adaptive opcode counts plus pooled frame/register-slot counts.
+  Use `--revision`, `--json`, and optional `--case` or `--include-source`.
+  Counts are diagnostic: static bytecode counts are not dynamic instruction
+  frequencies, and pool slots do not measure transitive heap retention.

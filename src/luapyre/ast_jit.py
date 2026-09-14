@@ -104,7 +104,9 @@ class AstPythonJIT(RegionPythonJIT):
         for offset, ins in enumerate(body):
             pc = start_pc + offset
             specialization = None
-            if ins.op in (Op.ADD, Op.SUB, Op.MUL, Op.MOD, Op.EQ, Op.LT, Op.LE):
+            if ins.op in (
+                Op.ADD, Op.SUB, Op.MUL, Op.MOD, Op.CONCAT, Op.EQ, Op.LT, Op.LE
+            ):
                 specialization = self._profile_binary(frame.regs, ins)
             lowered.append(
                 IRInstruction(pc, ins, specialization, ranges.overflow_free(pc))
@@ -635,7 +637,7 @@ class AstPythonJIT(RegionPythonJIT):
                 )
             out.extend([f"{indent}used += 1", f"{indent}{a} = {b} {symbol} {c}"])
         elif op is Op.GUARD:
-            deopt(f"not _type_matches(consts[{ins.b}], {a})")
+            deopt(f"not _type_matches({frame.proto.constants[ins.b]!r}, {a})")
             out.append(f"{indent}used += 1")
         elif op is Op.CALL:
             call_key = expected_calls.get(pc)

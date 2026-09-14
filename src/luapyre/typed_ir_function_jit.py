@@ -511,9 +511,10 @@ class TypedIRFunctionJITMixin:
                     lines.extend([f"{indent}used += 1", f"{indent}{a} = {b} {symbol} {c}"])
                 elif op is Op.GUARD:
                     lines.append(f"{indent}used += 1")
-                    lines.append(f"{indent}if not _type_matches(consts[{ins.b}], {a}):")
+                    expected = proto.constants[ins.b]
+                    lines.append(f"{indent}if not _type_matches({expected!r}, {a}):")
                     lines.append(
-                        f"{indent}    raise _LuaRuntimeError(f\"expected {{consts[{ins.b}]!s}}, got {{_static_value_type({a}).name}}\")"
+                        f"{indent}    raise _LuaRuntimeError(f\"expected {expected!s}, got {{_static_value_type({a}).name}}\")"
                     )
                 else:
                     return super()._compile_ast_function(proto)

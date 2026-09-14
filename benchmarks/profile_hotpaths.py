@@ -42,13 +42,14 @@ def prepare(name):
     return runtime, run
 
 
-def profile(name, warmups):
+def profile(name, warmups, executions=1):
     runtime, run = prepare(name)
     for _ in range(warmups):
         run()
     before = asdict(runtime.jit_stats)
     profiler = cProfile.Profile()
-    profiler.runcall(run)
+    for _ in range(executions):
+        profiler.runcall(run)
     after = asdict(runtime.jit_stats)
     stats = pstats.Stats(profiler)
     records = [
@@ -60,6 +61,7 @@ def profile(name, warmups):
     ]
     return dict(
         name=name,
+        profiled_executions=executions,
         total_profiled_seconds=stats.total_tt,
         counters={key: value - before[key] for key, value in after.items()
                   if isinstance(value, int) and value != before[key]},
@@ -72,18 +74,22 @@ def main():
     parser.add_argument("--json", type=Path, required=True)
     parser.add_argument("--revision", required=True, help="Source revision being profiled")
     parser.add_argument("--warmups", type=int, default=5)
+    parser.add_argument("--executions", type=int, default=1)
     parser.add_argument("--workload", action="append", choices=DEFAULT_WORKLOADS)
     args = parser.parse_args()
     if args.warmups < 1:
         parser.error("warmups must be positive")
-    results = [profile(name, args.warmups) for name in args.workload or DEFAULT_WORKLOADS]
+    if args.executions < 1:
+        parser.error("executions must be positive")
+    results = [profile(name, args.warmups, args.executions) for name in args.workload or DEFAULT_WORKLOADS]
     args.json.write_text(json.dumps(dict(
         schema_version=1,
         revision=args.revision,
         python=platform.python_version(),
         platform=platform.platform(),
         warmups=args.warmups,
-        method="Five warmups by default, then one cProfile execution; GC remains enabled",
+        profiled_executions=args.executions,
+        method=f"{args.warmups} warmups, then {args.executions} cProfile execution(s); GC remains enabled",
         interpretation="Call counts and attribution are diagnostic; profiled timings are not speed measurements",
         workloads=results,
     ), indent=2) + "\n")

@@ -470,9 +470,12 @@ class _RegisterCollector(ast.NodeVisitor):
 
 
 class _PromoteConstantRegisters(ast.NodeTransformer):
-    def __init__(self, registers: tuple[int, ...], *, spill_returns: bool) -> None:
+    def __init__(
+        self, registers: tuple[int, ...], *, spill_returns: bool, spill_deopt: bool
+    ) -> None:
         self.registers = registers
         self.spill_returns = spill_returns
+        self.spill_deopt = spill_deopt
 
     @staticmethod
     def _register_name(index: int, ctx) -> ast.Name:
@@ -527,12 +530,17 @@ class _PromoteConstantRegisters(ast.NodeTransformer):
     def visit_Return(self, node: ast.Return):
         node = self.generic_visit(node)
         is_deopt = isinstance(node.value, ast.Name) and node.value.id == "_DEOPT"
-        if self.spill_returns or is_deopt:
+        if self.spill_returns or (self.spill_deopt and is_deopt):
             return [*self._spill(node), node]
         return node
 
 
-def promote_constant_registers(tree: ast.AST, *, spill_returns: bool) -> ast.AST:
+def promote_constant_registers(
+    tree: ast.AST,
+    *,
+    spill_returns: bool,
+    direct_initial: dict[int, ast.expr] | None = None,
+) -> ast.AST:
     """Turn constant ``regs[n]`` traffic into fast locals in generated code."""
     collector = _RegisterCollector()
     collector.visit(tree)
@@ -540,31 +548,68 @@ def promote_constant_registers(tree: ast.AST, *, spill_returns: bool) -> ast.AST
     if not registers:
         return tree
 
-    tree = _PromoteConstantRegisters(registers, spill_returns=spill_returns).visit(tree)
+    tree = _PromoteConstantRegisters(
+        registers,
+        spill_returns=spill_returns,
+        spill_deopt=direct_initial is None,
+    ).visit(tree)
     function = next((node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)), None)
     if function is None:
         return tree
-    insert_at = next(
-        (
-            index + 1
-            for index, stmt in enumerate(function.body)
-            if isinstance(stmt, ast.Assign)
-            and any(isinstance(target, ast.Name) and target.id == "regs" for target in stmt.targets)
-        ),
-        0,
-    )
+    if direct_initial is None:
+        insert_at = next(
+            (
+                index + 1
+                for index, stmt in enumerate(function.body)
+                if isinstance(stmt, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == "regs" for target in stmt.targets)
+            ),
+            0,
+        )
+    else:
+        function.body = [
+            stmt
+            for stmt in function.body
+            if not (
+                isinstance(stmt, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "regs"
+                    for target in stmt.targets
+                )
+            )
+        ]
+        insert_at = 0
     loads = [
         ast.Assign(
             targets=[ast.Name(id=f"_r{index}", ctx=ast.Store())],
-            value=ast.Subscript(
-                value=ast.Name(id="regs", ctx=ast.Load()),
-                slice=ast.Constant(index),
-                ctx=ast.Load(),
+            value=(
+                ast.Subscript(
+                    value=ast.Name(id="regs", ctx=ast.Load()),
+                    slice=ast.Constant(index),
+                    ctx=ast.Load(),
+                )
+                if direct_initial is None
+                else direct_initial.get(index, ast.Constant(None))
             ),
         )
         for index in registers
     ]
     function.body[insert_at:insert_at] = loads
+    ast.fix_missing_locations(tree)
+    return tree
+
+
+class _UnwrapScalarReturn(ast.NodeTransformer):
+    def visit_Return(self, node: ast.Return):
+        node = self.generic_visit(node)
+        if isinstance(node.value, ast.Tuple) and len(node.value.elts) == 1:
+            node.value = node.value.elts[0]
+        return node
+
+
+def unwrap_scalar_return(tree: ast.AST) -> ast.AST:
+    """Use a scalar result ABI while preserving the distinct DEOPT sentinel."""
+    tree = _UnwrapScalarReturn().visit(tree)
     ast.fix_missing_locations(tree)
     return tree
 

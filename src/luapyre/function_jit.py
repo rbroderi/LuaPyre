@@ -9,7 +9,7 @@ from .bytecode import Closure, Ins, Op, Proto
 from .errors import LuaRuntimeError
 from .opdispatch import _float_divide, _float_modulo
 from .range_analysis import analyze_integer_ranges
-from .table import LuaTable, _ABSENT, _hash_key
+from .table import LuaTable, _ABSENT, _NUM, _hash_key
 from .typed_ir import TypedIRCompiler, _reads, _writes
 from .values import lua_equal, static_value_type, type_matches
 
@@ -91,6 +91,11 @@ class CompiledCallEntry:
 def _materialized_call_runner(compiled: CompiledAstFunction, *, trusted_args: bool):
     """Build the stable real-Frame entry used when virtualization is unsafe."""
 
+    if compiled.proto.param_count == 1:
+        return _one_argument_materialized_call_runner(
+            compiled, trusted_args=trusted_args
+        )
+
     def run(vm, frames, closure, args, dest, want, budget, meter):
         if len(frames) >= vm.max_frames:
             raise LuaRuntimeError("stack overflow")
@@ -110,6 +115,64 @@ def _materialized_call_runner(compiled: CompiledAstFunction, *, trusted_args: bo
             frames.pop()
             vm.jit.function_executions += 1
             vm._release_compiled_frame(compiled, child)
+            return _FUNC_RETURN, values
+        vm.jit.function_suspends += 1
+        return _FUNC_SUSPEND, None
+
+    return run
+
+
+def _one_argument_materialized_call_runner(
+    compiled: CompiledAstFunction, *, trusted_args: bool
+):
+    """Fuse frame recycling into the common one-argument call entry."""
+
+    proto = compiled.proto
+    expected = proto.param_types[0].name
+    pool = compiled.frame_pool
+    compiled_runner = compiled.runner
+    env_reg = proto.env_reg
+
+    def run(vm, frames, closure, args, dest, want, budget, meter):
+        if len(frames) >= vm.max_frames:
+            raise LuaRuntimeError("stack overflow")
+        reused = bool(pool)
+        if reused:
+            child = pool.pop()
+            value = args[0] if args else None
+            if not trusted_args and not type_matches(expected, value):
+                raise LuaRuntimeError(
+                    f"argument 1: expected {expected}, "
+                    f"got {static_value_type(value).name}"
+                )
+            child.regs[0] = value
+            if env_reg >= 0:
+                child.regs[env_reg] = closure.env
+            child.closure = closure
+            child.pc = 0
+            child.return_reg = dest
+            child.return_want = want
+            if vm.debug_hooks_enabled:
+                child.hook_call_values = tuple(args[:1])
+        else:
+            child = vm._acquire_compiled_frame(
+                compiled,
+                closure,
+                args,
+                dest,
+                want,
+                validate_args=not trusted_args,
+            )
+        frames.append(child)
+        status, values = compiled_runner(vm, frames, child, budget, meter)
+        if status == _FUNC_RETURN:
+            if not frames or frames[-1] is not child:
+                raise RuntimeError("compiled function stack mismatch")
+            frames.pop()
+            vm.jit.function_executions += 1
+            pool_size = len(pool)
+            if pool_size < 128 and pool_size < vm.max_frames:
+                pool.append(child)
             return _FUNC_RETURN, values
         vm.jit.function_suspends += 1
         return _FUNC_SUSPEND, None
@@ -141,6 +204,7 @@ class TypedFunctionJITMixin:
         self._call_entry_cache: dict[
             tuple[int, int | None, bool], tuple[Proto, CompiledCallEntry]
         ] = {}
+        self._compiling_closures: dict[int, Closure] = {}
         self.function_compiles = 0
         self.function_executions = 0
         self.function_suspends = 0
@@ -214,7 +278,11 @@ class TypedFunctionJITMixin:
         cached = self._function_cache.get(ident)
         if cached is not None and cached[0] is proto:
             return cached[1]
-        compiled = self._compile_ast_function(proto)
+        self._compiling_closures[ident] = closure
+        try:
+            compiled = self._compile_ast_function(proto)
+        finally:
+            self._compiling_closures.pop(ident, None)
         self._function_cache[ident] = (proto, compiled)
         if compiled is not None:
             self.function_compiles += 1
@@ -300,6 +368,7 @@ class TypedFunctionJITMixin:
         typed_plan = TypedIRCompiler(proto).compile(
             tuple(block.instructions for block in blocks)
         )
+        compiling_closure = self._compiling_closures.get(id(proto))
 
         # Continuation liveness is used only at successful compiled-child
         # boundaries.  All side exits retain the full diagnostic spill.
@@ -426,10 +495,147 @@ class TypedFunctionJITMixin:
 
         constant_tokens: dict[str, object] = {}
         call_target_caches: dict[str, list[object | None]] = {}
+
+        def leaf_sequence(closure: Closure):
+            child = closure.proto
+            if (
+                not child.jit_fully_typed
+                or child.is_vararg
+                or child.upvalues
+                or child.children
+            ):
+                return None
+            allowed = {
+                Op.LOADK, Op.MOVE, Op.LOCAL,
+                Op.ADD, Op.ADD_I, Op.ADD_F,
+                Op.SUB, Op.SUB_I, Op.SUB_F,
+                Op.MUL, Op.MUL_I, Op.MUL_F,
+                Op.DIV, Op.MOD, Op.NOT, Op.TOBOOL,
+                Op.RETURN,
+            }
+            sequence = []
+            for child_pc, child_ins in enumerate(child.code):
+                if child_ins.op not in allowed:
+                    return None
+                sequence.append((child_pc, child_ins))
+                if child_ins.op is Op.RETURN:
+                    break
+            if not sequence or sequence[-1][1].op is not Op.RETURN:
+                return None
+            return tuple(sequence) if len(sequence) <= 24 else None
+
+        def emit_inline_leaf(
+            out: list[str], pc: int, ins: Ins, closure: Closure, indent: str
+        ) -> bool:
+            sequence = leaf_sequence(closure)
+            if sequence is None:
+                return False
+            child = closure.proto
+            expected_proto = f"_inline_proto_{pc}"
+            child_consts = f"_inline_consts_{pc}"
+            constant_tokens[expected_proto] = child
+            constant_tokens[child_consts] = child.constants
+            fn = f"_r{ins.b}"
+            out.append(
+                f"{indent}if not isinstance({fn}, _Closure) or {fn}.proto is not {expected_proto}:"
+            )
+            out.extend(f"{indent}    {line.strip()}" for line in suspend(pc, ""))
+            total_cost = 1 + len(sequence)
+            out.append(f"{indent}if budget - meter[0] - used < {total_cost}:")
+            out.extend(f"{indent}    {line.strip()}" for line in suspend(pc, ""))
+            out.append(f"{indent}used += 1")
+            out.append(f"{indent}if len(frames) >= vm.max_frames:")
+            out.append(f"{indent}    raise _LuaRuntimeError('stack overflow')")
+            prefix = f"_inl_{pc}_r"
+            for index in range(child.param_count):
+                source = f"_r{ins.c + index}" if index < ins.d else "None"
+                expected = child.param_types[index].name
+                out.append(f"{indent}if not _type_matches({expected!r}, {source}):")
+                out.append(
+                    f"{indent}    raise _LuaRuntimeError(f'argument {index + 1}: expected {expected}, got {{_static_value_type({source}).name}}')"
+                )
+                out.append(f"{indent}{prefix}{index} = {source}")
+            child_ranges = analyze_integer_ranges(child)
+            child_constants: dict[int, object] = {}
+            returned = None
+            for child_pc, child_ins in sequence:
+                op = child_ins.op
+                out.append(f"{indent}used += 1")
+                a = f"{prefix}{child_ins.a}"
+                b = f"{prefix}{child_ins.b}"
+                c = f"{prefix}{child_ins.c}"
+                if op is Op.LOADK:
+                    out.append(f"{indent}{a} = {child_consts}[{child_ins.b}]")
+                    child_constants[child_ins.a] = child.constants[child_ins.b]
+                elif op in (Op.MOVE, Op.LOCAL):
+                    out.append(f"{indent}{a} = {b}")
+                    if child_ins.b in child_constants:
+                        child_constants[child_ins.a] = child_constants[child_ins.b]
+                    else:
+                        child_constants.pop(child_ins.a, None)
+                elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
+                    symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[op]
+                    out.extend(i64(
+                        a, f"{b} {symbol} {c}", f"inl_{pc}_{child_pc}", indent,
+                        overflow_free=child_ranges.overflow_free(child_pc),
+                    ))
+                elif op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
+                    symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[op]
+                    out.append(f"{indent}{a} = float({b} {symbol} {c})")
+                elif op in (Op.ADD, Op.SUB, Op.MUL):
+                    symbol = {Op.ADD: "+", Op.SUB: "-", Op.MUL: "*"}[op]
+                    tmp = f"_inl_{pc}_v{child_pc}"
+                    out.append(f"{indent}{tmp} = {b} {symbol} {c}")
+                    out.append(f"{indent}if type({b}) is int and type({c}) is int:")
+                    out.extend(i64(a, tmp, f"inlg_{pc}_{child_pc}", indent + "    "))
+                    out.append(f"{indent}else:")
+                    out.append(f"{indent}    {a} = {tmp}")
+                elif op is Op.DIV:
+                    divisor = child_constants.get(child_ins.c, _ABSENT)
+                    if type(divisor) in (int, float) and divisor != 0:
+                        out.append(f"{indent}{a} = float({b}) / {float(divisor)!r}")
+                    else:
+                        out.append(f"{indent}{a} = _float_divide({b}, {c})")
+                elif op is Op.MOD:
+                    out.append(f"{indent}if type({b}) is int and type({c}) is int:")
+                    out.append(f"{indent}    if {c} == 0:")
+                    out.append(f"{indent}        raise _LuaRuntimeError(\"attempt to perform 'n%0'\")")
+                    out.append(f"{indent}    {a} = {b} % {c}")
+                    out.append(f"{indent}else:")
+                    out.append(f"{indent}    {a} = _float_modulo({b}, {c})")
+                elif op is Op.NOT:
+                    out.append(f"{indent}{a} = not _truthy({b})")
+                elif op is Op.TOBOOL:
+                    out.append(f"{indent}{a} = _truthy({b})")
+                elif op is Op.EQ:
+                    out.append(f"{indent}{a} = _lua_equal({b}, {c})")
+                elif op in (Op.LT, Op.LE):
+                    symbol = "<" if op is Op.LT else "<="
+                    out.append(f"{indent}{a} = {b} {symbol} {c}")
+                elif op is Op.GUARD:
+                    expected = child.constants[child_ins.b]
+                    out.append(f"{indent}if not _type_matches({expected!r}, {a}):")
+                    out.append(
+                        f"{indent}    raise _LuaRuntimeError(f'expected {expected!s}, got {{_static_value_type({a}).name}}')"
+                    )
+                elif op is Op.RETURN:
+                    returned = [f"{prefix}{child_ins.a + i}" for i in range(child_ins.b)]
+                    break
+                if op not in (Op.LOADK, Op.MOVE, Op.LOCAL):
+                    child_constants.pop(child_ins.a, None)
+            if returned is None:
+                return False
+            if ins.e > 0:
+                for index in range(ins.e):
+                    value = returned[index] if index < len(returned) else "None"
+                    out.append(f"{indent}_r{ins.a + index} = {value}")
+            return True
+
         for block_no, block in enumerate(blocks):
             lines.append(f"    def {block_names[block_no]}():")
             indent = "        "
             known_constants: dict[int, object] = {}
+            known_closures: dict[int, Closure] = {}
             cost = len(block.instructions)
             lines.append(f"{indent}if budget - meter[0] - used < {cost}:")
             lines.extend(f"{indent}    {line.strip()}" for line in suspend(block.start, ""))
@@ -464,8 +670,20 @@ class TypedFunctionJITMixin:
                         known_constants[ins.a] = known_constants[ins.b]
                     else:
                         known_constants.pop(ins.a, None)
+                    if ins.b in known_closures:
+                        known_closures[ins.a] = known_closures[ins.b]
+                    else:
+                        known_closures.pop(ins.a, None)
                 elif op is Op.GETUPVAL:
                     lines.append(f"{indent}{a} = upvalues[{ins.b}].value")
+                    if (
+                        compiling_closure is not None
+                        and ins.b < len(compiling_closure.upvalues)
+                        and isinstance(compiling_closure.upvalues[ins.b].value, Closure)
+                    ):
+                        known_closures[ins.a] = compiling_closure.upvalues[ins.b].value
+                    else:
+                        known_closures.pop(ins.a, None)
                 elif op is Op.SETUPVAL:
                     lines.extend([
                         f"{indent}used += 1",
@@ -504,7 +722,23 @@ class TypedFunctionJITMixin:
                 elif op is Op.SETTABLE:
                     deopt(lines, f"not isinstance({a}, _LuaTable) or {a}.metatable is not None", pc, indent)
                     deopt(lines, f"{b} is None or (type({b}) is float and _isnan({b}))", pc, indent)
-                    lines.extend([f"{indent}used += 1", f"{indent}{a}.rawset({b}, {c})"])
+                    key = known_constants.get(ins.b, _ABSENT)
+                    token = _hash_key(key) if key is not _ABSENT else None
+                    if key is not _ABSENT and token is not None and not (
+                        token[0] is _NUM
+                        and type(token[1]) is int
+                        and token[1] >= 1
+                    ):
+                        token_name = f"_key_token_{pc}"
+                        constant_tokens[token_name] = token
+                        lines.extend(
+                            [
+                                f"{indent}used += 1",
+                                f"{indent}{a}.rawset_prehashed({b}, {token_name}, {c})",
+                            ]
+                        )
+                    else:
+                        lines.extend([f"{indent}used += 1", f"{indent}{a}.rawset({b}, {c})"])
                 elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                     symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[op]
                     lines.extend(
@@ -565,6 +799,13 @@ class TypedFunctionJITMixin:
                         f"{indent}    raise _LuaRuntimeError(f\"expected {{consts[{ins.b}]!s}}, got {{_static_value_type({a}).name}}\")"
                     )
                 elif op is Op.CALL:
+                    inline_target = known_closures.get(ins.b)
+                    if inline_target is not None and emit_inline_leaf(
+                        lines, pc, ins, inline_target, indent
+                    ):
+                        known_constants.pop(ins.a, None)
+                        known_closures.pop(ins.a, None)
+                        continue
                     # Do not execute a dynamic/host call inside a partially
                     # compiled function. Suspend before the CALL so Tier 0 can
                     # perform every Lua metamethod/callability check exactly.
@@ -642,6 +883,11 @@ class TypedFunctionJITMixin:
 
                 if op in batchable:
                     pending_cost += 1
+
+                if op not in (Op.LOADK, Op.MOVE, Op.LOCAL, Op.GETUPVAL, Op.CALL):
+                    known_closures.pop(ins.a, None)
+                elif op is Op.LOADK:
+                    known_closures.pop(ins.a, None)
 
                 if op is Op.CALL and ins.e > 0:
                     for result_reg in range(ins.a, ins.a + ins.e):

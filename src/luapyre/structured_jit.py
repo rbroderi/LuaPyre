@@ -120,7 +120,7 @@ class StructuredTypedLoopJITMixin:
         allowed = {
             Op.LOADK, Op.MOVE, Op.LOCAL, Op.ADD_I, Op.SUB_I, Op.MUL_I,
             Op.ADD_F, Op.SUB_F, Op.MUL_F, Op.MOD, Op.EQ, Op.LT, Op.LE,
-            Op.NOT, Op.TOBOOL, Op.GUARD,
+            Op.NOT, Op.TOBOOL, Op.GUARD, Op.CONCAT,
         }
         if any(ins.op not in allowed for _, ins in (*prefix, *first_body, *second)):
             return None
@@ -145,26 +145,46 @@ class StructuredTypedLoopJITMixin:
         ]
         for reg in registers:
             lines.append(f"    _r{reg} = regs[{reg}]")
+        written = set()
+        string_entries = set()
+        for _pc, ins in (*prefix, *first_body, *second):
+            if ins.op is Op.CONCAT:
+                for source in (ins.b, ins.c):
+                    if source not in written and isinstance(frame.regs[source], bytes):
+                        string_entries.add(source)
+            if self._writes_register(ins, ins.a):
+                written.add(ins.a)
+        if string_entries:
+            condition = " and ".join(f"isinstance(_r{reg}, bytes)" for reg in sorted(string_entries))
+            lines.append(f"    if not ({condition}):")
+            spill_lines = self._spill_lines(registers, "        ")
+            lines.extend(spill_lines)
+            lines.extend([f"        frame.pc = {start_pc}", "        return 0, False"])
         lines.append(f"    _integer_loop = type(_r{loop_ins.a}) is int and type(_r{loop_ins.c}) is int")
 
         def spill(indent: str):
             lines.extend(self._spill_lines(registers, indent))
 
         max_cost = len(prefix) + 1 + max(len(first), len(second)) + 1
-        lines.append(f"    while budget - used >= {max_cost}:")
 
-        def deopt(condition, pc, cost, indent):
+        def deopt(condition, pc, cost, indent, completed=None):
+            charged = (
+                f"{completed} * {max_cost} + {cost}"
+                if completed is not None
+                else f"used + {cost}"
+            )
             lines.append(f"{indent}if {condition}:")
             spill(indent + "    ")
             lines.extend([
                 f"{indent}    frame.pc = {pc}",
-                f"{indent}    return used + {cost}, used + {cost} > 0",
+                f"{indent}    return {charged}, {charged} > 0",
             ])
 
-        def emit(sequence, indent: str, entry_types, start_cost=0):
+        def emit(sequence, indent: str, entry_types, start_cost=0, completed=None):
             # Only facts established earlier on this very path are trusted.
             # No profile or previous iteration can prove a dynamic value type.
             known_types = dict(entry_types)
+            known_constants = {}
             numeric = {"integer", "integer_lua", "float", "number"}
             for offset, (pc, ins) in enumerate(sequence):
                 cost = start_cost + offset
@@ -172,11 +192,17 @@ class StructuredTypedLoopJITMixin:
                 left, right = known_types.get(ins.b), known_types.get(ins.c)
                 result_type = None
                 if ins.op is Op.LOADK:
-                    lines.append(f"{indent}{a} = consts[{ins.b}]")
-                    result_type = static_value_type(proto.constants[ins.b]).name
+                    value = proto.constants[ins.b]
+                    expression = repr(value) if type(value) in (type(None), bool, int, bytes) else f"consts[{ins.b}]"
+                    lines.append(f"{indent}{a} = {expression}")
+                    result_type = static_value_type(value).name
+                    known_constants[ins.a] = value
                 elif ins.op in (Op.MOVE, Op.LOCAL):
-                    lines.append(f"{indent}{a} = {b}")
+                    if ins.a != ins.b:
+                        lines.append(f"{indent}{a} = {b}")
                     result_type = left
+                    if ins.b in known_constants:
+                        known_constants[ins.a] = known_constants[ins.b]
                 elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                     symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
                     expression = f"{b} {symbol} {c}"
@@ -195,8 +221,10 @@ class StructuredTypedLoopJITMixin:
                         checks.append(f"type({b}) is not int")
                     if right not in ("integer", "integer_lua"):
                         checks.append(f"type({c}) is not int")
-                    checks.append(f"{c} == 0")
-                    deopt(" or ".join(checks), pc, cost, indent)
+                    if ins.c not in known_constants or known_constants[ins.c] == 0:
+                        checks.append(f"{c} == 0")
+                    if checks:
+                        deopt(" or ".join(checks), pc, cost, indent, completed)
                     lines.append(f"{indent}{a} = {b} % {c}")
                     result_type = "integer"
                 elif ins.op is Op.EQ:
@@ -205,12 +233,12 @@ class StructuredTypedLoopJITMixin:
                     elif left == right == "boolean":
                         lines.append(f"{indent}{a} = {b} is {c}")
                     else:
-                        deopt(f"isinstance({b}, _LuaTable) and isinstance({c}, _LuaTable) and {b} is not {c} and ({b}.metatable is not None or {c}.metatable is not None)", pc, cost, indent)
+                        deopt(f"isinstance({b}, _LuaTable) and isinstance({c}, _LuaTable) and {b} is not {c} and ({b}.metatable is not None or {c}.metatable is not None)", pc, cost, indent, completed)
                         lines.append(f"{indent}{a} = _lua_equal({b}, {c})")
                     result_type = "boolean"
                 elif ins.op in (Op.LT, Op.LE):
                     if not (left in numeric and right in numeric or left == right == "string"):
-                        deopt(f"not ((type({b}) in _NUM_TYPES and type({c}) in _NUM_TYPES) or (isinstance({b}, bytes) and isinstance({c}, bytes)))", pc, cost, indent)
+                        deopt(f"not ((type({b}) in _NUM_TYPES and type({c}) in _NUM_TYPES) or (isinstance({b}, bytes) and isinstance({c}, bytes)))", pc, cost, indent, completed)
                     symbol = "<" if ins.op is Op.LT else "<="
                     lines.append(f"{indent}{a} = {b} {symbol} {c}")
                     result_type = "boolean"
@@ -218,30 +246,108 @@ class StructuredTypedLoopJITMixin:
                     lines.append(f"{indent}{a} = ({b} is None or {b} is False)")
                     result_type = "boolean"
                 elif ins.op is Op.TOBOOL:
-                    lines.append(f"{indent}{a} = not ({b} is None or {b} is False)")
+                    if left == "boolean":
+                        if ins.a != ins.b:
+                            lines.append(f"{indent}{a} = {b}")
+                    else:
+                        lines.append(f"{indent}{a} = not ({b} is None or {b} is False)")
                     result_type = "boolean"
+                elif ins.op is Op.CONCAT:
+                    if left != "string" or right != "string":
+                        deopt(
+                            f"not (isinstance({b}, bytes) and isinstance({c}, bytes))",
+                            pc,
+                            cost,
+                            indent,
+                            completed,
+                        )
+                    lines.append(f"{indent}{a} = {b} + {c}")
+                    result_type = "string"
                 elif ins.op is Op.GUARD:
                     expected = proto.constants[ins.b]
-                    deopt(f"not _type_matches({expected!r}, {a})", pc, cost, indent)
+                    deopt(f"not _type_matches({expected!r}, {a})", pc, cost, indent, completed)
                     result_type = expected
                 else:
                     raise AssertionError(ins.op)
                 known_types[ins.a] = result_type
+                if ins.op not in (Op.LOADK, Op.MOVE, Op.LOCAL):
+                    known_constants.pop(ins.a, None)
             return known_types
 
-        prefix_types = emit(prefix, "        ", {})
-        condition = f"not (_r{branch.b} is None or _r{branch.b} is False)"
-        if branch.op is Op.JMPIFNOT:
-            condition = f"not ({condition})"
-        lines.append(f"        if {condition}:")
-        emit(second, "            ", prefix_types, len(prefix) + 1)
-        lines.append(f"            used += {len(prefix) + 1 + len(second) + 1}")
-        lines.append("        else:")
-        emit(first_body, "            ", prefix_types, len(prefix) + 1)
-        # Charge the executed prefix, branch, arm, optional JMP, and backedge
-        # once per path. Side exits above include the exact partial-path cost.
-        lines.append(f"            used += {len(prefix) + 1 + len(first) + 1}")
         idx, limit, step = f"_r{loop_ins.a}", f"_r{loop_ins.b}", f"_r{loop_ins.c}"
+        range_proven = all(
+            ranges.range_at(start_pc, reg) is not None
+            for reg in (loop_ins.a, loop_ins.b, loop_ins.c)
+        ) and not any(
+            ins.op is not Op.GUARD
+            and ins.a in (loop_ins.a, loop_ins.b, loop_ins.c)
+            for _pc, ins in (*prefix, *first_body, *second)
+        )
+        entry_types = (
+            {
+                loop_ins.a: "integer",
+                loop_ins.b: "integer",
+                loop_ins.c: "integer",
+            }
+            if range_proven
+            else {}
+        )
+        entry_types.update({reg: "string" for reg in string_entries})
+
+        uniform_cost = (
+            len(prefix) + 1 + len(second) + 1
+            if len(first) == len(second)
+            else None
+        )
+
+        def emit_body(indent: str, completed=None):
+            prefix_types = emit(prefix, indent, entry_types, completed=completed)
+            condition = (
+                f"_r{branch.b}"
+                if prefix_types.get(branch.b) == "boolean"
+                else f"not (_r{branch.b} is None or _r{branch.b} is False)"
+            )
+            if branch.op is Op.JMPIFNOT:
+                condition = f"not ({condition})"
+            lines.append(f"{indent}if {condition}:")
+            emit(second, indent + "    ", prefix_types, len(prefix) + 1, completed)
+            if completed is None:
+                lines.append(f"{indent}    used += {len(prefix) + 1 + len(second) + 1}")
+            lines.append(f"{indent}else:")
+            emit(first_body, indent + "    ", prefix_types, len(prefix) + 1, completed)
+            # Charge the executed prefix, branch, arm, optional JMP, and
+            # backedge once per path. Side exits include the exact partial cost.
+            if completed is None:
+                lines.append(f"{indent}    used += {len(prefix) + 1 + len(first) + 1}")
+
+        if range_proven:
+            lines.extend(
+                [
+                    f"    _total = (({limit} - {idx}) // {step} + 1) if {step} > 0 else (({idx} - {limit}) // -{step} + 1)",
+                    f"    if _integer_loop and _total > 0 and budget >= _total * {max_cost}:",
+                    f"        _loop_start = {idx}",
+                    f"        for _loop_value in range({idx}, {idx} + _total * {step}, {step}):",
+                    f"            {idx} = _loop_value",
+                ]
+            )
+            emit_body(
+                "            ",
+                f"((_loop_value - _loop_start) // {step})"
+                if uniform_cost is not None
+                else None,
+            )
+            if uniform_cost is not None:
+                lines.append(f"        used = _total * {uniform_cost}")
+            spill("        ")
+            lines.extend(
+                [
+                    f"        frame.pc = {backedge_pc + 1}",
+                    "        return used, True",
+                ]
+            )
+
+        lines.append(f"    while budget - used >= {max_cost}:")
+        emit_body("        ")
         lines.extend([
             f"        _next = {idx} + {step}",
             f"        if (_integer_loop and (_next < _INT_MIN or _next > _INT_MAX)) or ({step} > 0 and _next > {limit}) or ({step} < 0 and _next < {limit}):",

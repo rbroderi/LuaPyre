@@ -40,22 +40,38 @@ class OptimizingJITVM(TieredJITVM):
             enabled=jit_enabled,
         )
 
-    def call_compiled_leaf(self, closure: Closure, args: tuple, fuel=None):
+    def call_compiled_leaf(
+        self, closure: Closure, args: tuple, fuel=None, *, cache=None
+    ):
         """Enter a typed leaf directly from Python, without a bridge Proto."""
         proto = closure.proto
         if (
             not proto.jit_fully_typed
             or proto.is_vararg
+            or not self.jit.enabled
             or self._active_frames is not None
             or self.hooks_active()
             or self.max_frames < 2
         ):
             return False, None
-        for index in range(proto.param_count):
-            value = args[index] if index < len(args) else None
-            if not type_matches(proto.param_types[index].name, value):
+        param_count = proto.param_count
+        arg_count = len(args)
+        if param_count == 1:
+            value = args[0] if arg_count else None
+            if not type_matches(proto.param_types[0].name, value):
                 return False, None
-        compiled = self.jit.get_leaf(proto)
+        else:
+            for index in range(param_count):
+                value = args[index] if index < arg_count else None
+                if not type_matches(proto.param_types[index].name, value):
+                    return False, None
+        cached = cache[0] if cache is not None else None
+        if cached is not None and cached[0] is proto:
+            compiled = cached[1]
+        else:
+            compiled = self.jit.get_leaf(proto)
+            if cache is not None:
+                cache[0] = (proto, compiled)
         if compiled is None:
             return False, None
         budget = self.default_fuel if fuel is None else fuel
@@ -85,16 +101,32 @@ class OptimizingJITVM(TieredJITVM):
         if pool:
             frame = pool.pop()
             regs = frame.regs
-            for index in range(proto.param_count):
-                arg = args[index] if index < len(args) else None
+            param_count = proto.param_count
+            arg_count = len(args)
+            # One-argument functions dominate recursive call trees. This is a
+            # separate straight-line adapter so its hot path creates neither a
+            # range iterator nor a helper closure.
+            if param_count == 1:
+                arg = args[0] if arg_count else None
                 if validate_args:
-                    expected = proto.param_types[index].name
+                    expected = proto.param_types[0].name
                     if not type_matches(expected, arg):
                         raise LuaRuntimeError(
-                            f"argument {index + 1}: expected {expected}, "
+                            f"argument 1: expected {expected}, "
                             f"got {static_value_type(arg).name}"
                         )
-                regs[index] = arg
+                regs[0] = arg
+            else:
+                for index in range(param_count):
+                    arg = args[index] if index < arg_count else None
+                    if validate_args:
+                        expected = proto.param_types[index].name
+                        if not type_matches(expected, arg):
+                            raise LuaRuntimeError(
+                                f"argument {index + 1}: expected {expected}, "
+                                f"got {static_value_type(arg).name}"
+                            )
+                    regs[index] = arg
             if proto.env_reg >= 0:
                 regs[proto.env_reg] = closure.env
             frame.closure = closure

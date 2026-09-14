@@ -321,6 +321,8 @@ class LuaGC:
         self._allocated_since_major = 0
         self._last_major_bytes = 0
         self._observable = False
+        self._threshold_value = 0
+        self._refresh_threshold()
 
         # Lua keeps marked-for-finalization objects alive until their finalizer
         # has run. Strong Python references here model that internal Lua list;
@@ -346,16 +348,25 @@ class LuaGC:
         except TypeError:
             return 64
 
-    def _threshold(self) -> int:
+    def _refresh_threshold(self) -> None:
         # A Python-level semantic trace has a larger fixed cost than Lua's C
         # collector step. Amortize it over at least 64 KiB while preserving the
         # public logarithmic step-size control for larger requested intervals.
         step = max(64 * 1024, 1 << min(self.params[b"stepsize"], 30))
         if self.mode == b"generational":
             baseline = self._last_major_bytes or step
-            return max(step, baseline * self.params[b"minormul"] // 100)
-        baseline = self.stats.approximate_bytes or step
-        return max(step, baseline * self.params[b"pause"] // 100)
+            self._threshold_value = max(
+                step, baseline * self.params[b"minormul"] // 100
+            )
+        else:
+            baseline = self.stats.approximate_bytes or step
+            self._threshold_value = max(
+                step, baseline * self.params[b"pause"] // 100
+            )
+
+    def _threshold(self) -> int:
+        """Return the threshold cached at the last pacing-state mutation."""
+        return self._threshold_value
 
     def account_bytes(self, amount: int) -> None:
         if amount <= 0:
@@ -363,8 +374,15 @@ class LuaGC:
         self.debt += amount
         self._allocated_since_major += amount
         self.stats.allocated_bytes += amount
-        if self.debt >= self._threshold():
+        if self.debt >= self._threshold_value:
             self.pending = True
+
+    def _register_fresh(self, value) -> None:
+        """Attach one newly allocated object with no outgoing Lua references."""
+        value._gc_owner = self
+        value._gc_age = _GC_NEW
+        self.stats.allocations += 1
+        self.account_bytes(self._object_size(value))
 
     def adopt(self, value) -> None:
         """Attach a newly reachable Lua object graph to this collector."""
@@ -926,6 +944,7 @@ class LuaGC:
             self._last_major_bytes = self.stats.approximate_bytes
             self._allocated_since_major = 0
             self._remembered.clear()
+        self._refresh_threshold()
 
     @staticmethod
     def _estimate_bytes(values) -> int:
@@ -992,6 +1011,7 @@ class LuaGC:
         if option in (b"incremental", b"generational"):
             previous = self.mode
             self.mode = option
+            self._refresh_threshold()
             return previous
         if option == b"param":
             if not args:
@@ -1005,6 +1025,7 @@ class LuaGC:
                 if type(value) is not int or not 0 <= value <= 0x7FFFFFFE:
                     raise LuaRuntimeError("garbage-collector parameter out of range")
                 self.params[name] = value
+                self._refresh_threshold()
             return previous
 
         raise LuaRuntimeError("invalid option to 'collectgarbage'")
