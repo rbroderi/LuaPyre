@@ -3,6 +3,9 @@
 0.35 implements the measured Python-only work from the 0.35 roadmap. It keeps
 source/AST generation and deliberately does not generate CPython bytecode.
 
+Fresh post-0.35 measurements, new tests, and remaining implementation work are
+in [`performance-roadmap-0.36.md`](performance-roadmap-0.36.md).
+
 ## Changes
 
 1. **Use a scalar compiled-leaf ABI at the Python boundary.** Certified

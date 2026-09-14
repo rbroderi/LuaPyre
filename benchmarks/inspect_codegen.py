@@ -21,7 +21,7 @@ from unittest.mock import patch
 from python_headroom import REFERENCES, prepare
 
 
-def inspect_case(name, warmups, executions, top, include_source):
+def inspect_case(name, warmups, executions, top, include_source, *, prepare_case=prepare):
     sources = {}
     original_compile = builtins.compile
 
@@ -45,7 +45,7 @@ def inspect_case(name, warmups, executions, top, include_source):
         return result
 
     with patch("builtins.compile", capture):
-        runtime, run, validate = prepare(name)
+        runtime, run, validate = prepare_case(name)
         for _ in range(warmups):
             assert validate(run())
         profiler = cProfile.Profile()
@@ -110,18 +110,36 @@ def main():
     parser.add_argument("--warmups", type=int, default=7)
     parser.add_argument("--executions", type=int, default=3)
     parser.add_argument("--top", type=int, default=3)
-    parser.add_argument("--case", action="append", choices=REFERENCES)
+    parser.add_argument("--suite", choices=("headroom", "036"), default="headroom")
+    parser.add_argument("--case", action="append")
     parser.add_argument("--include-source", action="store_true")
     args = parser.parse_args()
     if min(args.warmups, args.executions, args.top) < 1:
         parser.error("warmups, executions, and top must be positive")
+    cases = REFERENCES
+    prepare_case = prepare
+    if args.suite == "036":
+        from speed_036_ab import CASES, prepare as prepare_probe, validate
+
+        cases = CASES
+
+        def prepare_case(name):
+            runtime, run, _reference = prepare_probe(name)
+            return runtime, run, lambda value: validate(CASES[name], value)
+
+    if any(name not in cases for name in args.case or ()):
+        parser.error(f"case must be one of: {', '.join(cases)}")
     rows = [
-        inspect_case(name, args.warmups, args.executions, args.top, args.include_source)
-        for name in args.case or REFERENCES
+        inspect_case(
+            name, args.warmups, args.executions, args.top,
+            args.include_source, prepare_case=prepare_case,
+        )
+        for name in args.case or cases
     ]
     args.json.write_text(json.dumps({
         "schema_version": 1,
         "revision": args.revision,
+        "suite": args.suite,
         "python": platform.python_version(),
         "platform": platform.platform(),
         "warmups": args.warmups,

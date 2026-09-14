@@ -94,6 +94,13 @@ For performance comparisons, compare runs on the same runner class and Python ve
 - `speed_035_ab.py` retains that nine-workload corpus while measuring scalar
   leaf allocation removal, uniform-cost diamond accounting, and structured
   string diamonds against 0.34.
+- `speed_036_ab.py` adds 11 isolated admission shapes: non-tail recursion,
+  record-key call continuations, dense reads and aliased writes, sparse nested
+  loops, numerical helper versus inline bodies, and integer-local / float /
+  two-integer Python calls. It records preparation, cold, warmup and steady
+  timings, raw samples, and per-phase tier counters. The committed baseline
+  uses three processes on each Python version; it does not claim a 0.36 speedup.
+  See [`performance-roadmap-0.36.md`](../docs/performance-roadmap-0.36.md).
 - `python_headroom.py` compares nine algorithms against reduced-contract direct
   Python implementations. Use `PYTHONPATH=src PYTHONHASHSEED=0`, `--revision`,
   `--json`, and optionally `--python-first` or repeated `--case` selections.
@@ -108,3 +115,4 @@ For performance comparisons, compare runs on the same runner class and Python ve
   Use `--revision`, `--json`, and optional `--case` or `--include-source`.
   Counts are diagnostic: static bytecode counts are not dynamic instruction
   frequencies, and pool slots do not measure transitive heap retention.
+  Use `--suite 036` for the new probes; the default headroom corpus is unchanged.

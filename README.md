@@ -185,6 +185,11 @@ and hook callbacks do not recursively invoke themselves.
 The [0.35 performance record](docs/speed-0.35.md) contains paired measurements,
 code-shape checks, rejected experiments, and correctness gates.
 
+The [0.36 performance roadmap](docs/performance-roadmap-0.36.md) adds fresh
+Python-headroom measurements, 11 focused speed probes, and the next ordered
+work on scalar entry, cross-block facts, nested regions, tables, and recursion.
+This planning pass leaves the runtime at 0.35.0a1.
+
 Pinned tests and workloads from real packages provide an additional
 compatibility gate. Penlight's portable upstream suite is 23/23 green,
 luatest's selected core tests are 5/5 green, LuaCov's line-scanner specs are
