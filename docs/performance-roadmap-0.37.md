@@ -7,12 +7,13 @@ flow while keeping LuaPyre entirely in Python. Continue generating lean
 Python source/AST and inspect warmed code with `dis(..., adaptive=True)`.
 Direct CPython bytecode generation is outside this plan.
 
-The planning baseline is `main` at
+The original planning baseline is `main` at
 `20fb9756cb65b55f29607aacc2ae5aa7ca80a2f4`, tree
 `f57d313df710d58258981202d934b66e99c6abd7`, after
 [PR #45](https://github.com/rbroderi/LuaPyre/pull/45). The runtime is still
 **0.35.0a1**: 0.36 added measurements, probes, and a roadmap, not a runtime
-tranche. This document adds no implementation or new performance results.
+tranche. The implemented subset and measurements are now recorded in
+[`speed-0.37.md`](speed-0.37.md); unfinished items below remain future work.
 
 The [0.36 roadmap](performance-roadmap-0.36.md) remains the detailed source
 for unfinished prerequisites. This plan can start from current main. If a
@@ -213,10 +214,12 @@ Reject the prototype if recovery or retained-memory costs erase the win.
 
 ## Planned probes and correctness coverage
 
-Extend the reusable harness into `benchmarks/speed_037_ab.py` and the code
-audit into `inspect_codegen.py --suite 037` during implementation. Add
-`tests/test_performance_037_probes.py` for deterministic semantics. These
-three additions are planned deliverables, not files implemented by this pass.
+The reusable [`speed_037_ab.py`](../benchmarks/speed_037_ab.py) harness retains
+the 0.36 probes and adds table traversal/deletion cases. The code audit now
+accepts `inspect_codegen.py --suite 037`, and
+[`test_performance_037.py`](../tests/test_performance_037.py) supplies
+deterministic semantics. The remaining rows describe coverage required when
+their deferred optimizations are attempted.
 
 | Probe family | Inputs and comparison | Required failure/mutation cases |
 | --- | --- | --- |

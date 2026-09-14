@@ -8,6 +8,7 @@ _BOOL = object()
 _NUM = object()
 _STR = object()
 _OBJ = object()
+_ITERATION_STATE = object()
 
 
 def _hash_key(key):
@@ -45,6 +46,54 @@ class LuaTable:
         self._gc_age = 0
         self._deleted_successors: dict[object, object | None] = {}
         self._reserved_bytes = 0
+
+    def _ensure_iteration_index(self) -> None:
+        state = self._deleted_successors.get(_ITERATION_STATE)
+        if state is not None and state[0] == self.version:
+            return
+        keys = tuple(key for key, _value in self.items())
+        positions = {
+            _hash_key(key): index for index, key in enumerate(keys)
+        }
+        self._deleted_successors[_ITERATION_STATE] = (self.version, keys, positions)
+        collector = self._gc_owner
+        if collector is not None and keys:
+            collector.account_bytes(40 * len(keys))
+
+    def _next_indexed_key(self, position: int):
+        keys = self._deleted_successors[_ITERATION_STATE][1]
+        while position < len(keys):
+            key = keys[position]
+            if self.rawhas(key):
+                return key
+            position += 1
+        return None
+
+    def next_item(self, key=None):
+        """Return the next raw entry without rebuilding the key order per call."""
+        self._ensure_iteration_index()
+        if key is None:
+            successor = self._next_indexed_key(0)
+        else:
+            token = _hash_key(key)
+            position = self._deleted_successors[_ITERATION_STATE][2].get(token)
+            if position is None:
+                known_deleted, successor = self.successor_after_deleted(key)
+                if not known_deleted:
+                    raise LuaRuntimeError("invalid key to 'next'")
+            elif self.rawhas(key) or token in self._deleted_successors:
+                successor = self._next_indexed_key(position + 1)
+            else:
+                raise LuaRuntimeError("invalid key to 'next'")
+        if successor is None:
+            return None
+        return successor, self.rawget(successor)
+
+    def _remember_deleted_successor(self, token) -> None:
+        self._ensure_iteration_index()
+        position = self._deleted_successors[_ITERATION_STATE][2].get(token)
+        if position is not None:
+            self._deleted_successors[token] = self._next_indexed_key(position + 1)
 
     def rawget(self, key):
         if type(key) is int and key >= 1:
@@ -85,16 +134,21 @@ class LuaTable:
         h = _hash_key(key)
         if h is None:
             raise LuaRuntimeError("table index is nil")
-        if value is None and self.rawhas(key):
-            entries = list(self.items())
-            for index, (current, _item) in enumerate(entries):
-                if _hash_key(current) == h:
-                    successor = entries[index + 1][0] if index + 1 < len(entries) else None
-                    self._deleted_successors[h] = successor
-                    break
-        elif value is not None:
+        present = False
+        if value is None:
+            present = self.rawhas(key)
+            if present:
+                self._remember_deleted_successor(h)
+        else:
             self._deleted_successors.pop(h, None)
         self.version += 1
+        if value is None and present:
+            # Deletion leaves the indexed order usable; missing keys are
+            # skipped and remain valid inputs to next().
+            state = self._deleted_successors[_ITERATION_STATE]
+            self._deleted_successors[_ITERATION_STATE] = (
+                self.version, state[1], state[2]
+            )
         collector = self._gc_owner
         if collector is not None:
             collector.table_write_barrier(self, key, value)
@@ -126,20 +180,19 @@ class LuaTable:
 
     def rawset_prehashed(self, key, token, value):
         """Set a compiler-validated non-array constant key."""
-        if value is None and token in self.hash:
-            entries = list(self.items())
-            for index, (current, _item) in enumerate(entries):
-                if _hash_key(current) == token:
-                    successor = (
-                        entries[index + 1][0]
-                        if index + 1 < len(entries)
-                        else None
-                    )
-                    self._deleted_successors[token] = successor
-                    break
-        elif value is not None:
+        present = False
+        if value is None:
+            present = token in self.hash
+            if present:
+                self._remember_deleted_successor(token)
+        else:
             self._deleted_successors.pop(token, None)
         self.version += 1
+        if value is None and present:
+            state = self._deleted_successors[_ITERATION_STATE]
+            self._deleted_successors[_ITERATION_STATE] = (
+                self.version, state[1], state[2]
+            )
         collector = self._gc_owner
         if collector is not None:
             collector.table_write_barrier(self, key, value)

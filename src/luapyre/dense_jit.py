@@ -10,6 +10,7 @@ from .jit_codegen import (
     generated_namespace,
     optimize_generated_ast,
     promote_constant_registers,
+    remove_empty_cell_branches,
     unwrap_scalar_return,
 )
 from .range_analysis import analyze_integer_ranges
@@ -184,10 +185,9 @@ class DenseEmitterJITMixin:
         exec(compile(tree, "<luapyre-dense-jit-leaf>", "exec"), namespace)
         direct_lines = ["def _jit_leaf_direct(vm, closure, args):"]
         direct_lines.append("    consts = closure.proto.constants")
-        if any(item.ins.op is Op.LOCAL for item in sequence):
-            direct_lines.append("    cells = {}")
         direct_lines.extend(lines[4:])
         direct_tree = optimize_generated_ast(ast.parse("\n".join(direct_lines)))
+        direct_tree = remove_empty_cell_branches(direct_tree)
         direct_initial = {
             index: ast.parse(
                 f"args[{index}] if {index} < len(args) else None", mode="eval"
@@ -204,19 +204,23 @@ class DenseEmitterJITMixin:
             namespace,
         )
         scalar_runner = None
-        if (
-            proto.param_count == 1
-            and proto.param_types
-            and proto.param_types[0].name == "integer"
-            and return_ins.ins.b == 1
-        ):
-            scalar_lines = ["def _jit_leaf_scalar(vm, closure, value):"]
+        scalar_types = tuple(item.name for item in proto.param_types)
+        scalar_parameters = (
+            scalar_types in (("integer",), ("float",), ("integer", "integer"))
+        )
+        if scalar_parameters and return_ins.ins.b == 1:
+            names = ("value",) if proto.param_count == 1 else ("left", "right")
+            scalar_lines = [
+                f"def _jit_leaf_scalar(vm, closure, {', '.join(names)}):"
+            ]
             scalar_lines.append("    consts = closure.proto.constants")
-            if any(item.ins.op is Op.LOCAL for item in sequence):
-                scalar_lines.append("    cells = {}")
             scalar_lines.extend(lines[4:])
             scalar_tree = optimize_generated_ast(ast.parse("\n".join(scalar_lines)))
-            scalar_initial = {0: ast.Name(id="value", ctx=ast.Load())}
+            scalar_tree = remove_empty_cell_branches(scalar_tree)
+            scalar_initial = {
+                index: ast.Name(id=name, ctx=ast.Load())
+                for index, name in enumerate(names)
+            }
             if proto.env_reg >= 0:
                 scalar_initial[proto.env_reg] = ast.parse(
                     "closure.env", mode="eval"

@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "revision": "0.37.0a1",
+  "suite": "037",
+  "python": "3.14.7",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "warmups": 7,
+  "profiled_executions": 3,
+  "interpretation": "Diagnostic static code counts and pool slot counts; no elapsed-time or transitive-memory claims",
+  "workloads": [
+    {
+      "name": "python_leaf_local",
+      "hot_generated_functions": [
+        {
+          "file": "<luapyre-dense-jit-leaf-scalar>",
+          "function": "_jit_leaf_scalar",
+          "profiled_calls": 3000,
+          "profiled_executions": 3,
+          "bytecode_bytes": 158,
+          "locals": 12,
+          "names": [
+            "proto",
+            "constants"
+          ],
+          "generic_opcodes": {
+            "BINARY_OP": 4,
+            "LOAD_ATTR": 2,
+            "LOAD_CONST": 6,
+            "LOAD_FAST": 4,
+            "LOAD_FAST_BORROW": 4,
+            "LOAD_FAST_BORROW_LOAD_FAST_BORROW": 2,
+            "LOAD_SMALL_INT": 2,
+            "RESUME": 1,
+            "RETURN_VALUE": 1,
+            "STORE_FAST": 15
+          },
+          "adaptive_opcodes": {
+            "BINARY_OP_ADD_INT": 1,
+            "BINARY_OP_MULTIPLY_INT": 1,
+            "BINARY_OP_SUBSCR_LIST_INT": 2,
+            "INSTRUMENTED_RESUME": 1,
+            "INSTRUMENTED_RETURN_VALUE": 1,
+            "LOAD_ATTR_SLOT": 2,
+            "LOAD_CONST_IMMORTAL": 6,
+            "LOAD_FAST": 4,
+            "LOAD_FAST_BORROW": 4,
+            "LOAD_FAST_BORROW_LOAD_FAST_BORROW": 2,
+            "LOAD_SMALL_INT": 2,
+            "STORE_FAST": 15
+          },
+          "ast_stores": {
+            "_r0": 1,
+            "_r1": 2,
+            "_r2": 2,
+            "_r3": 2,
+            "_r4": 2,
+            "_r5": 2,
+            "_r6": 2,
+            "_v": 1,
+            "consts": 1
+          }
+        }
+      ],
+      "cached_function_entries": 0,
+      "cached_call_entries": 0,
+      "retained_pooled_frames": 0,
+      "retained_register_slots": 0,
+      "retention_note": "Slot counts only; not transitive heap bytes or a leak test"
+    },
+    {
+      "name": "python_leaf_float",
+      "hot_generated_functions": [
+        {
+          "file": "<luapyre-dense-jit-leaf-scalar>",
+          "function": "_jit_leaf_scalar",
+          "profiled_calls": 3000,
+          "profiled_executions": 3,
+          "bytecode_bytes": 122,
+          "locals": 8,
+          "names": [
+            "proto",
+            "constants",
+            "float"
+          ],
+          "generic_opcodes": {
+            "BINARY_OP": 2,
+            "CALL": 1,
+            "LOAD_ATTR": 2,
+            "LOAD_CONST": 3,
+            "LOAD_FAST": 2,
+            "LOAD_FAST_BORROW": 3,
+            "LOAD_FAST_BORROW_LOAD_FAST_BORROW": 1,
+            "LOAD_GLOBAL": 1,
+            "LOAD_SMALL_INT": 1,
+            "RESUME": 1,
+            "RETURN_VALUE": 1,
+            "STORE_FAST": 8
+          },
+          "adaptive_opcodes": {
+            "BINARY_OP_ADD_FLOAT": 1,
+            "BINARY_OP_SUBSCR_LIST_INT": 1,
+            "INSTRUMENTED_CALL": 1,
+            "INSTRUMENTED_RESUME": 1,
+            "INSTRUMENTED_RETURN_VALUE": 1,
+            "LOAD_ATTR_SLOT": 2,
+            "LOAD_CONST_IMMORTAL": 3,
+            "LOAD_FAST": 2,
+            "LOAD_FAST_BORROW": 3,
+            "LOAD_FAST_BORROW_LOAD_FAST_BORROW": 1,
+            "LOAD_GLOBAL_BUILTIN": 1,
+            "LOAD_SMALL_INT": 1,
+            "STORE_FAST": 8
+          },
+          "ast_stores": {
+            "_r0": 1,
+            "_r1": 2,
+            "_r2": 2,
+            "_r3": 2,
+            "consts": 1
+          }
+        }
+      ],
+      "cached_function_entries": 0,
+      "cached_call_entries": 0,
+      "retained_pooled_frames": 0,
+      "retained_register_slots": 0,
+      "retention_note": "Slot counts only; not transitive heap bytes or a leak test"
+    },
+    {
+      "name": "python_leaf_binary",
+      "hot_generated_functions": [
+        {
+          "file": "<luapyre-dense-jit-leaf-scalar>",
+          "function": "_jit_leaf_scalar",
+          "profiled_calls": 3000,
+          "profiled_executions": 3,
+          "bytecode_bytes": 84,
+          "locals": 9,
+          "names": [
+            "proto",
+            "constants"
+          ],
+          "generic_opcodes": {
+            "BINARY_OP": 1,
+            "LOAD_ATTR": 2,
+            "LOAD_CONST": 2,
+            "LOAD_FAST": 2,
+            "LOAD_FAST_BORROW": 2,
+            "LOAD_FAST_BORROW_LOAD_FAST_BORROW": 1,
+            "RESUME": 1,
+            "RETURN_VALUE": 1,
+            "STORE_FAST": 6,
+            "STORE_FAST_LOAD_FAST": 1
+          },
+          "adaptive_opcodes": {
+            "BINARY_OP_ADD_INT": 1,
+            "INSTRUMENTED_RESUME": 1,
+            "INSTRUMENTED_RETURN_VALUE": 1,
+            "LOAD_ATTR_SLOT": 2,
+            "LOAD_CONST_IMMORTAL": 2,
+            "LOAD_FAST": 2,
+            "LOAD_FAST_BORROW": 2,
+            "LOAD_FAST_BORROW_LOAD_FAST_BORROW": 1,
+            "STORE_FAST": 6,
+            "STORE_FAST_LOAD_FAST": 1
+          },
+          "ast_stores": {
+            "_r0": 1,
+            "_r1": 1,
+            "_r2": 2,
+            "_r3": 2,
+            "consts": 1
+          }
+        }
+      ],
+      "cached_function_entries": 0,
+      "cached_call_entries": 0,
+      "retained_pooled_frames": 0,
+      "retained_register_slots": 0,
+      "retention_note": "Slot counts only; not transitive heap bytes or a leak test"
+    }
+  ]
+}

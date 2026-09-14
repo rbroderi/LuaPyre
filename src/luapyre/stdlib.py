@@ -139,16 +139,8 @@ def install_safe_stdlib(globals_table: LuaTable, vm=None):
     def next_fn(table, key=None, *_ignored):
         if not isinstance(table, LuaTable):
             raise LuaRuntimeError("bad argument #1 to 'next' (table expected)")
-        items = list(table.items())
-        if key is None:
-            return MultiValue(items[0]) if items else None
-        for index, (current, value) in enumerate(items):
-            if lua_equal(current, key):
-                return MultiValue(items[index + 1]) if index + 1 < len(items) else None
-        known_deleted, successor = table.successor_after_deleted(key)
-        if known_deleted:
-            return None if successor is None else MultiValue((successor, table.rawget(successor)))
-        raise LuaRuntimeError("invalid key to 'next'")
+        item = table.next_item(key)
+        return None if item is None else MultiValue(item)
 
     next_host = put("next", next_fn)
 

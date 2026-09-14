@@ -29,7 +29,7 @@ from .interop import LuaFunction, LuaInt
 from .jit import DEOPT
 from .typed_parser import TypedParser
 from .typesys import ANY
-from .values import MultiValue, i64, truthy
+from .values import MultiValue, i64, static_value_type, truthy
 from .vm import HostFunction
 
 
@@ -564,7 +564,7 @@ class LuaRuntime:
         return self._from_lua(result, return_type)
 
     def _make_bound_adapter(self, function, leaf_cache):
-        """Create the common fixed one-integer Python entry once per binding."""
+        """Create a fixed scalar Python entry once per typed leaf binding."""
         if (
             not isinstance(function, Closure)
             or not hasattr(self.vm, "call_compiled_leaf")
@@ -574,17 +574,119 @@ class LuaRuntime:
         if (
             not proto.jit_fully_typed
             or proto.is_vararg
-            or proto.param_count != 1
-            or proto.param_types[0].name != "integer"
+            or tuple(item.name for item in proto.param_types)
+            not in (("integer",), ("float",), ("integer", "integer"))
         ):
             return None
 
         vm = self.vm
         minimum = -(1 << 63)
         maximum = (1 << 63) - 1
+        parameter_types = tuple(item.name for item in proto.param_types)
+
+        if parameter_types == ("integer",):
+            def call_integer(args, return_type, fuel):
+                if len(args) != 1 or type(args[0]) is not int:
+                    return self._call_bound(
+                        function,
+                        args,
+                        return_type=return_type,
+                        fuel=fuel,
+                        leaf_cache=leaf_cache,
+                    )
+                value = args[0]
+                if not minimum <= value <= maximum:
+                    raise OverflowError("LuaInt result is outside signed 64-bit range")
+                if (
+                    not vm.jit.enabled
+                    or vm._active_frames is not None
+                    or vm.hooks_active()
+                    or vm.max_frames < 2
+                ):
+                    return self._call_bound(
+                        function,
+                        args,
+                        return_type=return_type,
+                        fuel=fuel,
+                        leaf_cache=leaf_cache,
+                    )
+                cached = leaf_cache[0]
+                if cached is not None and cached[0] is proto:
+                    compiled = cached[1]
+                else:
+                    compiled = vm.jit.get_leaf(proto)
+                    leaf_cache[0] = (proto, compiled)
+                budget = vm.default_fuel if fuel is None else fuel
+                if compiled is None or budget < compiled.instruction_cost + 4:
+                    return self._call_bound(
+                        function,
+                        args,
+                        return_type=return_type,
+                        fuel=fuel,
+                        leaf_cache=leaf_cache,
+                    )
+                scalar_runner = compiled.scalar_runner
+                if scalar_runner is not None:
+                    result = scalar_runner(vm, function, value)
+                    if result is DEOPT:
+                        return self._call_bound(
+                            function,
+                            args,
+                            return_type=return_type,
+                            fuel=fuel,
+                            leaf_cache=leaf_cache,
+                        )
+                    vm.jit.stats.leaf_executions += 1
+                    vm.jit.stats.leaf_frame_elisions += 1
+                    vm.jit.stats.python_direct_entries += 1
+                    vm.gc.safepoint()
+                    if return_type is None and (
+                        result is None or type(result) in (bool, int, float)
+                    ):
+                        return result
+                    if return_type is int and type(result) is int:
+                        return result
+                    return self._from_lua(result, return_type)
+                values = compiled.direct_runner(vm, function, args)
+                if values is DEOPT:
+                    return self._call_bound(
+                        function,
+                        args,
+                        return_type=return_type,
+                        fuel=fuel,
+                        leaf_cache=leaf_cache,
+                    )
+                vm.jit.stats.leaf_executions += 1
+                vm.jit.stats.leaf_frame_elisions += 1
+                vm.jit.stats.python_direct_entries += 1
+                vm.gc.safepoint(values)
+                result = (
+                    None if not values
+                    else values[0] if len(values) == 1
+                    else values
+                )
+                if return_type is None and (
+                    result is None or type(result) in (bool, int, float)
+                ):
+                    return result
+                if return_type is int and type(result) is int:
+                    return result
+                return self._from_lua(result, return_type)
+
+            return call_integer
 
         def call(args, return_type, fuel):
-            if len(args) != 1 or type(args[0]) is not int:
+            valid = len(args) == len(parameter_types)
+            if valid:
+                for index, (value, expected) in enumerate(zip(args, parameter_types)):
+                    if (expected == "integer" and type(value) is not int) or (
+                        expected == "float" and type(value) is not float
+                    ):
+                        raise LuaRuntimeError(
+                            f"argument {index + 1}: expected {expected}, "
+                            f"got {static_value_type(value).name}"
+                        )
+            if not valid:
                 return self._call_bound(
                     function,
                     args,
@@ -592,9 +694,9 @@ class LuaRuntime:
                     fuel=fuel,
                     leaf_cache=leaf_cache,
                 )
-            value = args[0]
-            if not minimum <= value <= maximum:
-                raise OverflowError("LuaInt result is outside signed 64-bit range")
+            for value, expected in zip(args, parameter_types):
+                if expected == "integer" and not minimum <= value <= maximum:
+                    raise OverflowError("LuaInt result is outside signed 64-bit range")
             if (
                 not vm.jit.enabled
                 or vm._active_frames is not None
@@ -625,7 +727,7 @@ class LuaRuntime:
                 )
             scalar_runner = compiled.scalar_runner
             if scalar_runner is not None:
-                result = scalar_runner(vm, function, value)
+                result = scalar_runner(vm, function, *args)
                 if result is DEOPT:
                     return self._call_bound(
                         function,

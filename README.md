@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.35.0a1**
+**Python 3.13+** · **current pre-alpha: 0.37.0a1**
 
 LuaPyre implements Lua 5.5.1 language semantics for its supported sandboxed embedding profile. The runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
@@ -185,15 +185,18 @@ and hook callbacks do not recursively invoke themselves.
 The [0.35 performance record](docs/speed-0.35.md) contains paired measurements,
 code-shape checks, rejected experiments, and correctness gates.
 
+0.37 indexes table iteration/deletion and broadens scalar Python entry to
+strict floats and two integers. See the [0.37 performance record](docs/speed-0.37.md)
+for paired Python 3.13/3.14 results.
+
 The [0.36 performance roadmap](docs/performance-roadmap-0.36.md) adds fresh
 Python-headroom measurements, 11 focused speed probes, and the next ordered
 work on scalar entry, cross-block facts, nested regions, tables, and recursion.
-This planning pass leaves the runtime at 0.35.0a1.
+That planning pass left the runtime at 0.35.0a1; the implemented 0.37 tranche
+below advances the package version.
 
-The [0.37 performance roadmap](docs/performance-roadmap-0.37.md) carries those
-unfinished prerequisites forward and adds table traversal/deletion scaling
-and scalar compiled-call interfaces, with ordered experiments and explicit
-correctness and performance gates. It is a plan, with no runtime version bump.
+The [0.37 roadmap](docs/performance-roadmap-0.37.md) retains the deferred call,
+region, table-proof, and recursion work without representing it as completed.
 
 Pinned tests and workloads from real packages provide an additional
 compatibility gate. Penlight's portable upstream suite is 23/23 green,

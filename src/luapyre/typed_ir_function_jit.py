@@ -409,10 +409,10 @@ class TypedIRFunctionJITMixin:
                     if array_index is None:
                         lines.extend(
                             [
-                                f"{indent}{table_tmp}.version += 1",
                                 f"{indent}if {c} is None:",
-                                f"{indent}    {table_tmp}.hash.pop({token}, None)",
+                                f"{indent}    {table_tmp}.rawset_prehashed({key_expr}, {token}, None)",
                                 f"{indent}else:",
+                                f"{indent}    {table_tmp}.version += 1",
                                 f"{indent}    {table_tmp}.hash[{token}] = ({key_expr}, {c})",
                             ]
                         )

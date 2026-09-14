@@ -110,7 +110,9 @@ def main():
     parser.add_argument("--warmups", type=int, default=7)
     parser.add_argument("--executions", type=int, default=3)
     parser.add_argument("--top", type=int, default=3)
-    parser.add_argument("--suite", choices=("headroom", "036"), default="headroom")
+    parser.add_argument(
+        "--suite", choices=("headroom", "036", "037"), default="headroom"
+    )
     parser.add_argument("--case", action="append")
     parser.add_argument("--include-source", action="store_true")
     args = parser.parse_args()
@@ -120,6 +122,14 @@ def main():
     prepare_case = prepare
     if args.suite == "036":
         from speed_036_ab import CASES, prepare as prepare_probe, validate
+
+        cases = CASES
+
+        def prepare_case(name):
+            runtime, run, _reference = prepare_probe(name)
+            return runtime, run, lambda value: validate(CASES[name], value)
+    elif args.suite == "037":
+        from speed_037_ab import CASES, prepare as prepare_probe, validate
 
         cases = CASES
 
