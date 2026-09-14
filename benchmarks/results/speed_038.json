@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "10abe6061f7c8937e23ab07fc6b9ab5c6cb8d168",
+  "candidate": "codex/038-performance-tranche worktree",
+  "method": "Three paired baseline/candidate processes per Python; alternating Lua/Python timing order; seven warmups and 31 checked samples; fixed affinity; median of process medians",
+  "summary": [
+    {"python":"3.13.15","case":"recursive_balanced","baseline_ms":1.658433,"candidate_ms":1.293257,"python_ms":0.042823,"improvement_percent":22.02},
+    {"python":"3.14.7","case":"recursive_balanced","baseline_ms":1.335740,"candidate_ms":1.086365,"python_ms":0.032768,"improvement_percent":18.67},
+    {"python":"3.13.15","case":"record_continuations","baseline_ms":7.089099,"candidate_ms":6.703220,"python_ms":0.140196,"improvement_percent":5.44},
+    {"python":"3.14.7","case":"record_continuations","baseline_ms":5.950264,"candidate_ms":5.758843,"python_ms":0.136160,"improvement_percent":3.22},
+    {"python":"3.13.15","case":"dense_alias_write","baseline_ms":3.342436,"candidate_ms":3.289446,"python_ms":0.125945,"improvement_percent":1.59},
+    {"python":"3.14.7","case":"dense_alias_write","baseline_ms":2.691030,"candidate_ms":2.580728,"python_ms":0.105475,"improvement_percent":4.10}
+  ],
+  "controls": [
+    {"python":"3.13.15","case":"recursive_linear","change_percent":-0.85},
+    {"python":"3.14.7","case":"recursive_linear","change_percent":-1.54},
+    {"python":"3.13.15","case":"scalar_internal_binary","change_percent":-0.32},
+    {"python":"3.14.7","case":"scalar_internal_binary","change_percent":0.54},
+    {"python":"3.13.15","case":"dense_read","change_percent":-0.08},
+    {"python":"3.14.7","case":"dense_read","change_percent":0.60},
+    {"python":"3.13.15","case":"table_mix_nested","change_percent":-0.42},
+    {"python":"3.14.7","case":"table_mix_nested","change_percent":-2.69}
+  ]
+}

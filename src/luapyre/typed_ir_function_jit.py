@@ -407,14 +407,12 @@ class TypedIRFunctionJITMixin:
                     )
                     lines.append(f"{indent}used += 1")
                     if array_index is None:
-                        lines.extend(
-                            [
-                                f"{indent}if {c} is None:",
-                                f"{indent}    {table_tmp}.rawset_prehashed({key_expr}, {token}, None)",
-                                f"{indent}else:",
-                                f"{indent}    {table_tmp}.version += 1",
-                                f"{indent}    {table_tmp}.hash[{token}] = ({key_expr}, {c})",
-                            ]
+                        setter = (
+                            "rawset_fresh_prehashed" if ins.d
+                            else "rawset_prehashed"
+                        )
+                        lines.append(
+                            f"{indent}{table_tmp}.{setter}({key_expr}, {token}, {c})"
                         )
                     else:
                         lines.append(f"{indent}{table_tmp}.rawset({key_expr}, {c})")

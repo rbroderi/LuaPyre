@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.37.0a1**
+**Python 3.13+** · **current pre-alpha: 0.38.0a1**
 
 LuaPyre implements Lua 5.5.1 language semantics for its supported sandboxed embedding profile. The runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
@@ -188,6 +188,11 @@ code-shape checks, rejected experiments, and correctness gates.
 0.37 indexes table iteration/deletion and broadens scalar Python entry to
 strict floats and two integers. See the [0.37 performance record](docs/speed-0.37.md)
 for paired Python 3.13/3.14 results.
+
+0.38 adds frame-free pure recursive base cases, scalar compiled-call entries,
+proved dense primitive-write regions, and cheaper fresh record construction.
+See the [0.38 performance record](docs/speed-0.38.md) and
+[implementation roadmap](docs/performance-roadmap-0.38.md).
 
 The [0.36 performance roadmap](docs/performance-roadmap-0.36.md) adds fresh
 Python-headroom measurements, 11 focused speed probes, and the next ordered

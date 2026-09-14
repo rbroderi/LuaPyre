@@ -411,7 +411,8 @@ class LuaGC:
                 stack.append(current.metatable)
                 for key, item in current.items():
                     stack.extend((key, item))
-                stack.extend(current._deleted_successors.values())
+                if current._deleted_successors is not None:
+                    stack.extend(current._deleted_successors.values())
             elif isinstance(current, Closure):
                 stack.append(current.env)
                 stack.extend(current.upvalues)
@@ -668,8 +669,9 @@ class LuaGC:
                     for key, item in value.items():
                         mark(key)
                         mark(item)
-                    for successor in value._deleted_successors.values():
-                        mark(successor)
+                    if value._deleted_successors is not None:
+                        for successor in value._deleted_successors.values():
+                            mark(successor)
                 elif mode == b"v":
                     for key, _item in value.items():
                         mark(key)

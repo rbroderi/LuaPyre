@@ -10,7 +10,7 @@ from .errors import LuaRuntimeError
 from .opdispatch import _float_divide, _float_modulo
 from .range_analysis import analyze_integer_ranges
 from .table import LuaTable, _ABSENT, _NUM, _hash_key
-from .typed_ir import TypedIRCompiler, _reads, _writes
+from .typed_ir import IRValueKind, TypedIRCompiler, _reads, _writes
 from .values import lua_equal, static_value_type, type_matches
 
 
@@ -86,6 +86,189 @@ class CompiledCallEntry:
     virtual: bool
     arg_count: int | None
     trusted_args: bool
+    scalar_runner: FunctionType | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PureReturnPrefix:
+    """A typed, side-effect-free entry branch ending in one scalar return."""
+
+    comparison: Op
+    constant: int
+    result_constant: int | None
+    returns_argument: bool
+    instruction_cost: int
+
+
+def _pure_return_prefix(proto: Proto) -> PureReturnPrefix | None:
+    """Recognize a leading integer test whose taken arm immediately returns.
+
+    This is intentionally narrower than general partial evaluation. Only
+    LOADK/MOVE and the comparison/boolean conversion may precede RETURN, so the
+    shortcut cannot skip allocation, mutation, calls, errors, or safepoints.
+    """
+
+    if (
+        proto.param_count != 1
+        or proto.param_types[0].name != "integer"
+        or len(proto.return_types) != 1
+        or proto.return_types[0].name != "integer"
+        or len(proto.code) < 6
+    ):
+        return None
+    load, compare, boolean, branch = proto.code[:4]
+    if not (
+        load.op is Op.LOADK
+        and load.a != 0
+        and type(proto.constants[load.b]) is int
+        and compare.op in (Op.EQ, Op.LT, Op.LE)
+        and compare.b == 0
+        and compare.c == load.a
+        and compare.a != 0
+        and boolean.op is Op.TOBOOL
+        and boolean.a == compare.a
+        and boolean.b == compare.a
+        and branch.op is Op.JMPIFNOT
+        and branch.b == boolean.a
+        and 5 < branch.a <= min(len(proto.code), 12)
+    ):
+        return None
+    values: dict[int, tuple[bool, int | None]] = {0: (True, None)}
+    for pc in range(4, branch.a):
+        ins = proto.code[pc]
+        if ins.op is Op.LOADK and type(proto.constants[ins.b]) is int:
+            values[ins.a] = (False, proto.constants[ins.b])
+        elif ins.op in (Op.MOVE, Op.LOCAL) and ins.b in values:
+            values[ins.a] = values[ins.b]
+        elif ins.op is Op.RETURN and ins.b == 1 and ins.a in values:
+            returns_argument, result_constant = values[ins.a]
+            return PureReturnPrefix(
+                compare.op,
+                proto.constants[load.b],
+                result_constant,
+                returns_argument,
+                pc + 1,
+            )
+        else:
+            return None
+    return None
+
+
+def _scalar_materialized_call_runner(
+    compiled: CompiledAstFunction, *, trusted_args: bool, arg_count: int
+):
+    """Build a fixed-arity scalar entry for a materialized child frame."""
+
+    if arg_count not in (1, 2):
+        return None
+    proto = compiled.proto
+    if (
+        proto.param_count != arg_count
+        or len(proto.return_types) != 1
+        or proto.return_types[0].name == "Any"
+    ):
+        return None
+    pool = compiled.frame_pool
+    compiled_runner = compiled.runner
+    env_reg = proto.env_reg
+    expected = tuple(item.name for item in proto.param_types)
+    prefix = _pure_return_prefix(proto) if arg_count == 1 else None
+    # A scalar recursive entry pays for a dynamic entry selection at every
+    # non-base call.  It amortizes only when a meaningful share of calls can
+    # take the frame-free base arm; a single-chain recursion has one such call.
+    if prefix is not None and sum(ins.op is Op.CALL for ins in proto.code) < 2:
+        return None
+
+    def validate(index, value):
+        if not trusted_args and not type_matches(expected[index], value):
+            raise LuaRuntimeError(
+                f"argument {index + 1}: expected {expected[index]}, "
+                f"got {static_value_type(value).name}"
+            )
+
+    def finish(vm, frames, child, status, values):
+        if status == _FUNC_RETURN:
+            if not frames or frames[-1] is not child:
+                raise RuntimeError("compiled function stack mismatch")
+            frames.pop()
+            vm.jit.function_executions += 1
+            if len(pool) < 128 and len(pool) < vm.max_frames:
+                pool.append(child)
+            return _FUNC_RETURN, values[0] if values else None
+        vm.jit.function_suspends += 1
+        return _FUNC_SUSPEND, None
+
+    if arg_count == 1:
+        def run(vm, frames, closure, arg0, dest, want, budget, meter):
+            if len(frames) >= vm.max_frames:
+                raise LuaRuntimeError("stack overflow")
+            validate(0, arg0)
+            if (
+                prefix is not None
+                and not vm.debug_hooks_enabled
+                and budget - meter[0] >= prefix.instruction_cost
+            ):
+                matched = (
+                    arg0 == prefix.constant if prefix.comparison is Op.EQ
+                    else arg0 < prefix.constant if prefix.comparison is Op.LT
+                    else arg0 <= prefix.constant
+                )
+                if matched:
+                    meter[0] += prefix.instruction_cost
+                    vm.jit.function_executions += 1
+                    return (
+                        _FUNC_RETURN,
+                        arg0 if prefix.returns_argument else prefix.result_constant,
+                    )
+            if pool:
+                child = pool.pop()
+                child.regs[0] = arg0
+                if env_reg >= 0:
+                    child.regs[env_reg] = closure.env
+                child.closure = closure
+                child.pc = 0
+                child.return_reg = dest
+                child.return_want = want
+                if vm.debug_hooks_enabled:
+                    child.hook_call_values = (arg0,)
+            else:
+                child = vm._acquire_compiled_frame(
+                    compiled, closure, (arg0,), dest, want,
+                    validate_args=False,
+                )
+            frames.append(child)
+            status, values = compiled_runner(vm, frames, child, budget, meter)
+            return finish(vm, frames, child, status, values)
+
+        return run
+
+    def run(vm, frames, closure, arg0, arg1, dest, want, budget, meter):
+        if len(frames) >= vm.max_frames:
+            raise LuaRuntimeError("stack overflow")
+        validate(0, arg0)
+        validate(1, arg1)
+        if pool:
+            child = pool.pop()
+            child.regs[0] = arg0
+            child.regs[1] = arg1
+            if env_reg >= 0:
+                child.regs[env_reg] = closure.env
+            child.closure = closure
+            child.pc = 0
+            child.return_reg = dest
+            child.return_want = want
+            if vm.debug_hooks_enabled:
+                child.hook_call_values = (arg0, arg1)
+        else:
+            child = vm._acquire_compiled_frame(
+                compiled, closure, (arg0, arg1), dest, want,
+                validate_args=False,
+            )
+        frames.append(child)
+        status, values = compiled_runner(vm, frames, child, budget, meter)
+        return finish(vm, frames, child, status, values)
+
+    return run
 
 
 def _materialized_call_runner(compiled: CompiledAstFunction, *, trusted_args: bool):
@@ -349,6 +532,11 @@ class TypedFunctionJITMixin:
             runner is not None,
             arg_count,
             trusted_args,
+            None if runner is not None else _scalar_materialized_call_runner(
+                compiled,
+                trusted_args=trusted_args,
+                arg_count=arg_count if arg_count is not None else -1,
+            ),
         )
         self._call_entry_cache[key] = (proto, entry)
         return entry
@@ -697,6 +885,10 @@ class TypedFunctionJITMixin:
                 elif op is Op.GETTABLE:
                     deopt(lines, f"not isinstance({b}, _LuaTable) or {b}.metatable is not None", pc, indent)
                     key = known_constants.get(ins.c, _ABSENT)
+                    if key is _ABSENT:
+                        value = typed_plan.instruction(pc).value_for(ins.c)
+                        if value.kind is IRValueKind.CONSTANT:
+                            key = proto.constants[value.index]
                     if type(key) is float and key.is_integer():
                         key = int(key)
                     if key is _ABSENT:
@@ -723,6 +915,10 @@ class TypedFunctionJITMixin:
                     deopt(lines, f"not isinstance({a}, _LuaTable) or {a}.metatable is not None", pc, indent)
                     deopt(lines, f"{b} is None or (type({b}) is float and _isnan({b}))", pc, indent)
                     key = known_constants.get(ins.b, _ABSENT)
+                    if key is _ABSENT:
+                        value = typed_plan.instruction(pc).value_for(ins.b)
+                        if value.kind is IRValueKind.CONSTANT:
+                            key = proto.constants[value.index]
                     token = _hash_key(key) if key is not _ABSENT else None
                     if key is not _ABSENT and token is not None and not (
                         token[0] is _NUM
@@ -731,12 +927,14 @@ class TypedFunctionJITMixin:
                     ):
                         token_name = f"_key_token_{pc}"
                         constant_tokens[token_name] = token
-                        lines.extend(
-                            [
-                                f"{indent}used += 1",
-                                f"{indent}{a}.rawset_prehashed({b}, {token_name}, {c})",
-                            ]
+                        setter = (
+                            "rawset_fresh_prehashed" if ins.d
+                            else "rawset_prehashed"
                         )
+                        lines.extend([
+                            f"{indent}used += 1",
+                            f"{indent}{a}.{setter}({b}, {token_name}, {c})",
+                        ])
                     else:
                         lines.extend([f"{indent}used += 1", f"{indent}{a}.rawset({b}, {c})"])
                 elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
@@ -860,20 +1058,42 @@ class TypedFunctionJITMixin:
                     ):
                         lines.append(f"{indent}regs[{output_reg}] = None")
                     lines.append(f"{indent}frame.pc = {pc + 1}")
-                    args = ", ".join(f"_r{ins.c + i}" for i in range(ins.d))
-                    if ins.d == 1:
-                        args += ","
-                    lines.append(
-                        f"{indent}_status_{pc}, _values_{pc} = _entry_{pc}.runner(vm, frames, _fn_{pc}, ({args}), {ins.a}, {ins.e}, budget, meter)"
-                    )
+                    if ins.d in (1, 2) and ins.e == 1:
+                        scalar_args = ", ".join(
+                            f"_r{ins.c + i}" for i in range(ins.d)
+                        )
+                        lines.append(f"{indent}if _entry_{pc}.scalar_runner is not None:")
+                        lines.append(
+                            f"{indent}    _status_{pc}, _scalar_{pc} = _entry_{pc}.scalar_runner(vm, frames, _fn_{pc}, {scalar_args}, {ins.a}, {ins.e}, budget, meter)"
+                        )
+                        lines.append(f"{indent}    _values_{pc} = None")
+                        lines.append(f"{indent}else:")
+                        tuple_args = scalar_args + ("," if ins.d == 1 else "")
+                        lines.append(
+                            f"{indent}    _status_{pc}, _values_{pc} = _entry_{pc}.runner(vm, frames, _fn_{pc}, ({tuple_args}), {ins.a}, {ins.e}, budget, meter)"
+                        )
+                    else:
+                        args = ", ".join(
+                            f"_r{ins.c + i}" for i in range(ins.d)
+                        )
+                        if ins.d == 1:
+                            args += ","
+                        lines.append(
+                            f"{indent}_status_{pc}, _values_{pc} = _entry_{pc}.runner(vm, frames, _fn_{pc}, ({args}), {ins.a}, {ins.e}, budget, meter)"
+                        )
                     lines.append(f"{indent}if _status_{pc} == _FUNC_SUSPEND:")
                     lines.append(f"{indent}    return _FUNC_SUSPEND")
                     if ins.e > 0:
                         for value_index in range(ins.e):
                             if ins.e == 1:
-                                lines.append(
-                                    f"{indent}_r{ins.a} = _values_{pc}[0] if _values_{pc} else None"
-                                )
+                                if ins.d in (1, 2):
+                                    lines.append(
+                                        f"{indent}_r{ins.a} = _scalar_{pc} if _entry_{pc}.scalar_runner is not None else (_values_{pc}[0] if _values_{pc} else None)"
+                                    )
+                                else:
+                                    lines.append(
+                                        f"{indent}_r{ins.a} = _values_{pc}[0] if _values_{pc} else None"
+                                    )
                             else:
                                 lines.append(
                                     f"{indent}_r{ins.a + value_index} = _values_{pc}[{value_index}] if {value_index} < len(_values_{pc}) else None"

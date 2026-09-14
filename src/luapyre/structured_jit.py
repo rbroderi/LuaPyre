@@ -522,26 +522,192 @@ class StructuredTypedLoopJITMixin:
             "_type_matches": type_matches,
             "_ABSENT": _ABSENT,
         }
+        typed_plan = TypedIRCompiler(proto).compile((tuple(enumerate(proto.code)),))
+        primitive_types = {"integer", "integer_lua", "float", "boolean", "string"}
+        def stable_table_register(register: int, before_pc: int) -> int | None:
+            """Follow loop-local MOVE/LOCAL aliases to an invariant register."""
+
+            seen: set[tuple[int, int]] = set()
+            while True:
+                marker = (register, before_pc)
+                if marker in seen:
+                    return None
+                seen.add(marker)
+                producer = next(
+                    (
+                        (pc, ins)
+                        for pc, ins in reversed(
+                            list(zip(range(start_pc, before_pc), body[: before_pc - start_pc]))
+                        )
+                        if self._writes_register(ins, register)
+                    ),
+                    None,
+                )
+                if producer is None:
+                    if any(
+                        self._writes_register(ins, register)
+                        for ins in body[before_pc - start_pc :]
+                    ):
+                        return None
+                    return register
+                producer_pc, producer_ins = producer
+                if producer_ins.op not in (Op.MOVE, Op.LOCAL):
+                    return None
+                register = producer_ins.b
+                before_pc = producer_pc
+
+        def loop_index_alias(register: int, before_pc: int) -> bool:
+            """Return whether *register* is a MOVE/LOCAL alias of the index."""
+
+            seen: set[tuple[int, int]] = set()
+            while register != loop_ins.a:
+                marker = (register, before_pc)
+                if marker in seen:
+                    return False
+                seen.add(marker)
+                producer = next(
+                    (
+                        (pc, ins)
+                        for pc, ins in reversed(
+                            list(zip(range(start_pc, before_pc), body[: before_pc - start_pc]))
+                        )
+                        if self._writes_register(ins, register)
+                    ),
+                    None,
+                )
+                if producer is None or producer[1].op not in (Op.MOVE, Op.LOCAL):
+                    return False
+                before_pc, producer_ins = producer
+                register = producer_ins.b
+            return True
+
+        # Typed IR is deliberately conservative at CFG joins.  This loop is a
+        # straight-line region, so replay its local type effects to recover the
+        # type of values written after an in-loop guard.
+        value_types: dict[int, str] = {}
+        set_value_types: dict[int, str | None] = {}
+        for pc, ins in zip(range(start_pc, backedge_pc), body):
+            if ins.op is Op.SETTABLE:
+                set_value_types[pc] = value_types.get(
+                    ins.c, typed_plan.instruction(pc).value_for(ins.c).type_name
+                )
+            if ins.op is Op.LOADK:
+                value_types[ins.a] = static_value_type(proto.constants[ins.b]).name
+            elif ins.op in (Op.MOVE, Op.LOCAL):
+                source_type = value_types.get(
+                    ins.b, typed_plan.instruction(pc).value_for(ins.b).type_name
+                )
+                if source_type == "Any":
+                    value_types.pop(ins.a, None)
+                else:
+                    value_types[ins.a] = source_type
+            elif ins.op is Op.GUARD:
+                value_types[ins.a] = str(proto.constants[ins.b])
+            elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
+                value_types[ins.a] = "integer"
+            elif ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F, Op.DIV):
+                value_types[ins.a] = "float"
+            elif self._writes_register(ins, ins.a):
+                value_types.pop(ins.a, None)
+
+        table_sources: dict[int, int] = {}
+        dense_source_limits: dict[int, int | str] = {}
+        table_accesses = [
+            (pc, ins)
+            for pc, ins in zip(range(start_pc, backedge_pc), body)
+            if ins.op in (Op.GETTABLE, Op.SETTABLE)
+        ]
+        # Existing read-only lowering already has a cheap checked array path;
+        # region binding is admitted here only when it also removes write-side
+        # migration/deletion work and therefore wins the cross-version gate.
+        unsafe_dense_write = bool(calls) or not any(
+            ins.op is Op.SETTABLE for _pc, ins in table_accesses
+        )
+        dynamic_dense_loop = False
+        for pc, ins in table_accesses:
+            table_reg = ins.b if ins.op is Op.GETTABLE else ins.a
+            source_reg = stable_table_register(table_reg, pc)
+            if source_reg is None:
+                unsafe_dense_write = True
+                continue
+            table_sources[table_reg] = source_reg
+            key_reg = ins.c if ins.op is Op.GETTABLE else ins.b
+            key_range = ranges.range_at(pc, key_reg)
+            if key_range is None:
+                if loop_index_alias(key_reg, pc):
+                    dynamic_dense_loop = True
+                else:
+                    unsafe_dense_write = True
+                    continue
+            elif key_range.minimum < 1:
+                unsafe_dense_write = True
+                continue
+            if ins.op is Op.SETTABLE:
+                value_type = set_value_types.get(pc)
+                if value_type not in primitive_types:
+                    unsafe_dense_write = True
+        if not unsafe_dense_write:
+            for pc, ins in table_accesses:
+                table_reg = ins.b if ins.op is Op.GETTABLE else ins.a
+                source_reg = table_sources[table_reg]
+                key_reg = ins.c if ins.op is Op.GETTABLE else ins.b
+                key_range = ranges.range_at(pc, key_reg)
+                maximum: int | str = (
+                    key_range.maximum if key_range is not None else f"_r{loop_ins.b}"
+                )
+                previous = dense_source_limits.get(source_reg)
+                if isinstance(maximum, str) or previous is None:
+                    dense_source_limits[source_reg] = maximum
+                elif isinstance(previous, int):
+                    dense_source_limits[source_reg] = max(previous, maximum)
+        else:
+            # Do not perturb the established checked-table code shape when
+            # the region proof is rejected.
+            table_sources.clear()
+        if dense_source_limits and dynamic_dense_loop:
+            lines.append(
+                f"    if type(_r{loop_ins.a}) is not int or type(_r{loop_ins.b}) is not int "
+                f"or type(_r{loop_ins.c}) is not int or _r{loop_ins.c} <= 0 "
+                f"or _r{loop_ins.a} < 1:"
+            )
+            lines.extend(self._spill_lines(registers, "        "))
+            lines.extend(
+                [f"        frame.pc = {start_pc}", "        return 0, False"]
+            )
+
         table_arrays: dict[int, str] = {}
         for pc, ins in zip(range(start_pc, backedge_pc), body):
             if ins.op not in (Op.GETTABLE, Op.SETTABLE):
                 continue
             table_reg = ins.b if ins.op is Op.GETTABLE else ins.a
-            if any(self._writes_register(other, table_reg) for other in body):
+            source_reg = table_sources.get(table_reg, table_reg)
+            if source_reg == table_reg and any(
+                self._writes_register(other, table_reg) for other in body
+            ):
                 return None
             if table_reg in table_arrays:
                 continue
-            array_name = f"_array_r{table_reg}"
+            existing_array = table_arrays.get(source_reg)
+            if existing_array is not None:
+                table_arrays[table_reg] = existing_array
+                continue
+            array_name = f"_array_r{source_reg}"
             table_arrays[table_reg] = array_name
+            table_arrays[source_reg] = array_name
+            dense_guard = (
+                f" or _r{source_reg}._deleted_successors is not None"
+                f" or len(_r{source_reg}.array) < {dense_source_limits[source_reg]}"
+                if source_reg in dense_source_limits else ""
+            )
             lines.append(
-                f"    if not isinstance(_r{table_reg}, _LuaTable) or _r{table_reg}.metatable is not None:"
+                f"    if not isinstance(_r{source_reg}, _LuaTable) or _r{source_reg}.metatable is not None{dense_guard}:"
             )
             lines.extend(self._spill_lines(registers, "        "))
             lines.extend(
                 [
                     f"        frame.pc = {start_pc}",
                     "        return 0, False",
-                    f"    {array_name} = _r{table_reg}.array",
+                    f"    {array_name} = _r{source_reg}.array",
                 ]
             )
         for pc, (closure, _sequence) in calls.items():
@@ -587,7 +753,7 @@ class StructuredTypedLoopJITMixin:
         invariant_reads = not any(ins.op in (Op.SETTABLE, Op.CALL) for ins in body)
         hoisted_reads: list[str] = []
         loop_entry = len(lines)
-        integer_loop = all(
+        integer_loop = (bool(dense_source_limits) and dynamic_dense_loop) or all(
             ranges.range_at(start_pc, reg) is not None
             for reg in (loop_ins.a, loop_ins.b, loop_ins.c)
         )
@@ -630,7 +796,6 @@ class StructuredTypedLoopJITMixin:
                 f"{indent}    return {completed_cost} + {cost}, False",
             ])
 
-        typed_plan = TypedIRCompiler(proto).compile((tuple(enumerate(proto.code)),))
         known_constants: dict[int, object] = {}
         known_types: dict[int, str] = {}
         numeric_types = {"integer", "integer_lua", "float"}
@@ -663,6 +828,11 @@ class StructuredTypedLoopJITMixin:
                 known_types.pop(ins.a, None)
             elif ins.op is Op.GETTABLE:
                 array_name = table_arrays[ins.b]
+                if table_sources.get(ins.b, ins.b) in dense_source_limits:
+                    lines.append(f"{indent}{a} = {array_name}[{c} - 1]")
+                    known_constants.pop(ins.a, None)
+                    known_types.pop(ins.a, None)
+                    continue
                 key = known_constants.get(ins.c, _ABSENT)
                 if type(key) is float and key.is_integer():
                     key = int(key)
@@ -698,6 +868,10 @@ class StructuredTypedLoopJITMixin:
                 known_constants.pop(ins.a, None)
                 known_types.pop(ins.a, None)
             elif ins.op is Op.SETTABLE:
+                if table_sources.get(ins.a, ins.a) in dense_source_limits:
+                    lines.append(f"{indent}{a}.version += 1")
+                    lines.append(f"{indent}{table_arrays[ins.a]}[{b} - 1] = {c}")
+                    continue
                 guard(f"{b} is None or (type({b}) is float and {b} != {b})", pc, cost)
                 lines.append(f"{indent}{a}.rawset({b}, {c})")
             elif ins.op is Op.GUARD:
@@ -720,7 +894,11 @@ class StructuredTypedLoopJITMixin:
                 left_type = known_types.get(ins.b, site.value_for(ins.b).type_name)
                 right_type = known_types.get(ins.c, site.value_for(ins.c).type_name)
                 if left_type not in numeric_types or right_type not in numeric_types:
-                    return None
+                    guard(
+                        f"type({b}) not in (int, float) or type({c}) not in (int, float)",
+                        pc,
+                        cost,
+                    )
                 symbol = {Op.ADD: "+", Op.SUB: "-", Op.MUL: "*"}[ins.op]
                 expression = f"{b} {symbol} {c}"
                 if left_type in ("integer", "integer_lua") and right_type in ("integer", "integer_lua"):
@@ -729,6 +907,16 @@ class StructuredTypedLoopJITMixin:
                     else:
                         lines.extend(self._i64_lines(a, expression, str(pc), indent))
                     known_types[ins.a] = "integer"
+                elif left_type not in numeric_types or right_type not in numeric_types:
+                    temporary = f"_generic_{pc}"
+                    lines.append(f"{indent}{temporary} = {expression}")
+                    lines.append(f"{indent}if type({b}) is int and type({c}) is int:")
+                    lines.extend(
+                        self._i64_lines(a, temporary, f"generic_{pc}", indent + "    ")
+                    )
+                    lines.append(f"{indent}else:")
+                    lines.append(f"{indent}    {a} = {temporary}")
+                    known_types[ins.a] = "number"
                 else:
                     lines.append(f"{indent}{a} = float({expression})")
                     known_types[ins.a] = "float"

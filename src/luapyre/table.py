@@ -44,18 +44,25 @@ class LuaTable:
         self.version = 0
         self._gc_owner = None
         self._gc_age = 0
-        self._deleted_successors: dict[object, object | None] = {}
+        # Most tables are never traversed with next() and never need deletion
+        # continuation history. Avoid a third container for those hot record
+        # and dense-array allocations.
+        self._deleted_successors: dict[object, object | None] | None = None
         self._reserved_bytes = 0
 
     def _ensure_iteration_index(self) -> None:
-        state = self._deleted_successors.get(_ITERATION_STATE)
+        metadata = self._deleted_successors
+        state = metadata.get(_ITERATION_STATE) if metadata is not None else None
         if state is not None and state[0] == self.version:
             return
         keys = tuple(key for key, _value in self.items())
         positions = {
             _hash_key(key): index for index, key in enumerate(keys)
         }
-        self._deleted_successors[_ITERATION_STATE] = (self.version, keys, positions)
+        if metadata is None:
+            metadata = {}
+            self._deleted_successors = metadata
+        metadata[_ITERATION_STATE] = (self.version, keys, positions)
         collector = self._gc_owner
         if collector is not None and keys:
             collector.account_bytes(40 * len(keys))
@@ -72,16 +79,18 @@ class LuaTable:
     def next_item(self, key=None):
         """Return the next raw entry without rebuilding the key order per call."""
         self._ensure_iteration_index()
+        metadata = self._deleted_successors
+        assert metadata is not None
         if key is None:
             successor = self._next_indexed_key(0)
         else:
             token = _hash_key(key)
-            position = self._deleted_successors[_ITERATION_STATE][2].get(token)
+            position = metadata[_ITERATION_STATE][2].get(token)
             if position is None:
                 known_deleted, successor = self.successor_after_deleted(key)
                 if not known_deleted:
                     raise LuaRuntimeError("invalid key to 'next'")
-            elif self.rawhas(key) or token in self._deleted_successors:
+            elif self.rawhas(key) or token in metadata:
                 successor = self._next_indexed_key(position + 1)
             else:
                 raise LuaRuntimeError("invalid key to 'next'")
@@ -91,9 +100,11 @@ class LuaTable:
 
     def _remember_deleted_successor(self, token) -> None:
         self._ensure_iteration_index()
-        position = self._deleted_successors[_ITERATION_STATE][2].get(token)
+        metadata = self._deleted_successors
+        assert metadata is not None
+        position = metadata[_ITERATION_STATE][2].get(token)
         if position is not None:
-            self._deleted_successors[token] = self._next_indexed_key(position + 1)
+            metadata[token] = self._next_indexed_key(position + 1)
 
     def rawget(self, key):
         if type(key) is int and key >= 1:
@@ -140,7 +151,8 @@ class LuaTable:
             if present:
                 self._remember_deleted_successor(h)
         else:
-            self._deleted_successors.pop(h, None)
+            if self._deleted_successors is not None:
+                self._deleted_successors.pop(h, None)
         self.version += 1
         if value is None and present:
             # Deletion leaves the indexed order usable; missing keys are
@@ -186,7 +198,8 @@ class LuaTable:
             if present:
                 self._remember_deleted_successor(token)
         else:
-            self._deleted_successors.pop(token, None)
+            if self._deleted_successors is not None:
+                self._deleted_successors.pop(token, None)
         self.version += 1
         if value is None and present:
             state = self._deleted_successors[_ITERATION_STATE]
@@ -203,8 +216,21 @@ class LuaTable:
                 collector.account_bytes(32)
             self.hash[token] = (key, value)
 
+    def rawset_fresh_prehashed(self, key, token, value):
+        """Set a proven-new constructor field without deletion bookkeeping."""
+        self.version += 1
+        collector = self._gc_owner
+        if collector is not None:
+            collector.table_write_barrier(self, key, value)
+        if value is not None:
+            if collector is not None:
+                collector.account_bytes(32)
+            self.hash[token] = (key, value)
+
     def successor_after_deleted(self, key):
         """Find a surviving successor for a key deleted during traversal."""
+        if self._deleted_successors is None:
+            return False, None
         seen = set()
         successor = self._deleted_successors.get(_hash_key(key), _ABSENT)
         while successor is not _ABSENT and successor is not None:
