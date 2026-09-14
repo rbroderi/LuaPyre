@@ -107,7 +107,7 @@ class LuaRuntime:
         if value is None or type(value) in (bool, float) or isinstance(value, bytes):
             return value
         if type(value) is int:
-            return i64(value)
+            return value if -(1 << 63) <= value <= (1 << 63) - 1 else i64(value)
         if isinstance(value, str):
             return value.encode("utf-8")
         if isinstance(value, LuaFunction):
@@ -255,18 +255,8 @@ class LuaRuntime:
             expected = None
 
         if expected is not None:
-            origin = get_origin(expected)
-            args = get_args(expected)
-            if origin in (types.UnionType, Union):
-                errors = []
-                for option in args:
-                    try:
-                        return self._from_lua(value, option, _seen=_seen)
-                    except (TypeError, UnicodeDecodeError) as error:
-                        errors.append(str(error))
-                raise TypeError(
-                    f"Lua value does not match {expected!r}: " + "; ".join(errors)
-                )
+            # Common scalar annotations need no typing introspection. Keep the
+            # exact representation checks before the generic container path.
             if expected is type(None):
                 if value is not None:
                     raise TypeError("expected nil")
@@ -301,6 +291,19 @@ class LuaRuntime:
                 if not isinstance(value, (Closure, HostFunction)):
                     raise TypeError("expected function")
                 return LuaFunction(self, value, getattr(value, "name", "?"))
+
+            origin = get_origin(expected)
+            args = get_args(expected)
+            if origin in (types.UnionType, Union):
+                errors = []
+                for option in args:
+                    try:
+                        return self._from_lua(value, option, _seen=_seen)
+                    except (TypeError, UnicodeDecodeError) as error:
+                        errors.append(str(error))
+                raise TypeError(
+                    f"Lua value does not match {expected!r}: " + "; ".join(errors)
+                )
 
             if expected in (list, set, frozenset, dict, tuple):
                 origin = expected
@@ -476,7 +479,8 @@ class LuaRuntime:
         if isinstance(function, Closure) and function.proto.jit_fully_typed:
             for arg, typ in zip(args, function.proto.param_types):
                 if typ.name == "integer" and type(arg) is int:
-                    self._from_lua(arg, LuaInt)
+                    if not -(1 << 63) <= arg <= (1 << 63) - 1:
+                        raise OverflowError("LuaInt result is outside signed 64-bit range")
         lua_args = [self._to_lua(arg) for arg in args]
         direct_call = getattr(self.vm, "call_compiled_leaf", None)
         if direct_call is not None and isinstance(function, Closure):

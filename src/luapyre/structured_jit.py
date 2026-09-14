@@ -10,7 +10,7 @@ from .opdispatch import _float_divide
 from .range_analysis import analyze_integer_ranges
 from .table import LuaTable, _ABSENT, _hash_key
 from .typed_ir import TypedIRCompiler
-from .values import lua_equal, type_matches
+from .values import lua_equal, static_value_type, type_matches
 
 
 _MASK64 = (1 << 64) - 1
@@ -149,14 +149,30 @@ class StructuredTypedLoopJITMixin:
         max_cost = len(prefix) + 1 + max(len(first), len(second)) + 1
         lines.append(f"    while budget - used >= {max_cost}:")
 
-        def emit(sequence, indent: str):
-            for pc, ins in sequence:
+        def deopt(condition, pc, cost, indent):
+            lines.append(f"{indent}if {condition}:")
+            spill(indent + "    ")
+            lines.extend([
+                f"{indent}    frame.pc = {pc}",
+                f"{indent}    return used + {cost}, used + {cost} > 0",
+            ])
+
+        def emit(sequence, indent: str, entry_types, start_cost=0):
+            # Only facts established earlier on this very path are trusted.
+            # No profile or previous iteration can prove a dynamic value type.
+            known_types = dict(entry_types)
+            numeric = {"integer", "integer_lua", "float", "number"}
+            for offset, (pc, ins) in enumerate(sequence):
+                cost = start_cost + offset
                 a, b, c = f"_r{ins.a}", f"_r{ins.b}", f"_r{ins.c}"
-                lines.append(f"{indent}used += 1")
+                left, right = known_types.get(ins.b), known_types.get(ins.c)
+                result_type = None
                 if ins.op is Op.LOADK:
                     lines.append(f"{indent}{a} = consts[{ins.b}]")
+                    result_type = static_value_type(proto.constants[ins.b]).name
                 elif ins.op in (Op.MOVE, Op.LOCAL):
                     lines.append(f"{indent}{a} = {b}")
+                    result_type = left
                 elif ins.op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
                     symbol = {Op.ADD_I: "+", Op.SUB_I: "-", Op.MUL_I: "*"}[ins.op]
                     expression = f"{b} {symbol} {c}"
@@ -164,47 +180,63 @@ class StructuredTypedLoopJITMixin:
                         lines.append(f"{indent}{a} = {expression}")
                     else:
                         lines.extend(self._i64_lines(a, expression, f"cfg_{pc}", indent))
+                    result_type = "integer"
                 elif ins.op in (Op.ADD_F, Op.SUB_F, Op.MUL_F):
                     symbol = {Op.ADD_F: "+", Op.SUB_F: "-", Op.MUL_F: "*"}[ins.op]
                     lines.append(f"{indent}{a} = float({b} {symbol} {c})")
+                    result_type = "float"
                 elif ins.op is Op.MOD:
-                    lines.append(f"{indent}if type({b}) is not int or type({c}) is not int or {c} == 0:")
-                    spill(indent + "    ")
-                    lines.extend([f"{indent}    frame.pc = {pc}", f"{indent}    return used - 1, used > 1"])
+                    checks = []
+                    if left not in ("integer", "integer_lua"):
+                        checks.append(f"type({b}) is not int")
+                    if right not in ("integer", "integer_lua"):
+                        checks.append(f"type({c}) is not int")
+                    checks.append(f"{c} == 0")
+                    deopt(" or ".join(checks), pc, cost, indent)
                     lines.append(f"{indent}{a} = {b} % {c}")
+                    result_type = "integer"
                 elif ins.op is Op.EQ:
-                    lines.append(f"{indent}if isinstance({b}, _LuaTable) and isinstance({c}, _LuaTable) and not _lua_equal({b}, {c}) and ({b}.metatable is not None or {c}.metatable is not None):")
-                    spill(indent + "    ")
-                    lines.extend([f"{indent}    frame.pc = {pc}", f"{indent}    return used - 1, used > 1"])
-                    lines.append(f"{indent}{a} = _lua_equal({b}, {c})")
+                    if left in numeric and right in numeric:
+                        lines.append(f"{indent}{a} = {b} == {c}")
+                    elif left == right == "boolean":
+                        lines.append(f"{indent}{a} = {b} is {c}")
+                    else:
+                        deopt(f"isinstance({b}, _LuaTable) and isinstance({c}, _LuaTable) and {b} is not {c} and ({b}.metatable is not None or {c}.metatable is not None)", pc, cost, indent)
+                        lines.append(f"{indent}{a} = _lua_equal({b}, {c})")
+                    result_type = "boolean"
                 elif ins.op in (Op.LT, Op.LE):
-                    lines.append(f"{indent}if not ((type({b}) in _NUM_TYPES and type({c}) in _NUM_TYPES) or (isinstance({b}, bytes) and isinstance({c}, bytes))):")
-                    spill(indent + "    ")
-                    lines.extend([f"{indent}    frame.pc = {pc}", f"{indent}    return used - 1, used > 1"])
+                    if not (left in numeric and right in numeric or left == right == "string"):
+                        deopt(f"not ((type({b}) in _NUM_TYPES and type({c}) in _NUM_TYPES) or (isinstance({b}, bytes) and isinstance({c}, bytes)))", pc, cost, indent)
                     symbol = "<" if ins.op is Op.LT else "<="
                     lines.append(f"{indent}{a} = {b} {symbol} {c}")
+                    result_type = "boolean"
                 elif ins.op is Op.NOT:
                     lines.append(f"{indent}{a} = ({b} is None or {b} is False)")
+                    result_type = "boolean"
                 elif ins.op is Op.TOBOOL:
                     lines.append(f"{indent}{a} = not ({b} is None or {b} is False)")
+                    result_type = "boolean"
                 elif ins.op is Op.GUARD:
-                    lines.append(f"{indent}if not _type_matches(consts[{ins.b}], {a}):")
-                    spill(indent + "    ")
-                    lines.extend([f"{indent}    frame.pc = {pc}", f"{indent}    return used - 1, used > 1"])
+                    expected = proto.constants[ins.b]
+                    deopt(f"not _type_matches({expected!r}, {a})", pc, cost, indent)
+                    result_type = expected
                 else:
                     raise AssertionError(ins.op)
+                known_types[ins.a] = result_type
+            return known_types
 
-        emit(prefix, "        ")
-        lines.append("        used += 1")
+        prefix_types = emit(prefix, "        ", {})
         condition = f"not (_r{branch.b} is None or _r{branch.b} is False)"
         if branch.op is Op.JMPIFNOT:
             condition = f"not ({condition})"
         lines.append(f"        if {condition}:")
-        emit(second, "            ")
+        emit(second, "            ", prefix_types, len(prefix) + 1)
+        lines.append(f"            used += {len(prefix) + 1 + len(second) + 1}")
         lines.append("        else:")
-        emit(first_body, "            ")
-        lines.append("            used += 1")  # the first arm's JMP
-        lines.append("        used += 1")  # numeric loop backedge
+        emit(first_body, "            ", prefix_types, len(prefix) + 1)
+        # Charge the executed prefix, branch, arm, optional JMP, and backedge
+        # once per path. Side exits above include the exact partial-path cost.
+        lines.append(f"            used += {len(prefix) + 1 + len(first) + 1}")
         idx, limit, step = f"_r{loop_ins.a}", f"_r{loop_ins.b}", f"_r{loop_ins.c}"
         lines.extend([
             f"        _next = {idx} + {step}",
@@ -408,6 +440,12 @@ class StructuredTypedLoopJITMixin:
             )
             namespace[f"_consts_{pc}"] = closure.proto.constants
 
+        # Plain table reads cannot re-enter Lua. Without writes or calls, their
+        # constant fields remain stable for this invocation of the loop runner.
+        # Refresh on every entry; aliases and changes between runs stay visible.
+        invariant_reads = not any(ins.op in (Op.SETTABLE, Op.CALL) for ins in body)
+        hoisted_reads: list[str] = []
+        loop_entry = len(lines)
         integer_loop = all(
             ranges.range_at(start_pc, reg) is not None
             for reg in (loop_ins.a, loop_ins.b, loop_ins.c)
@@ -475,6 +513,10 @@ class StructuredTypedLoopJITMixin:
                 if type(key) is float and key.is_integer():
                     key = int(key)
                 if key is not _ABSENT:
+                    read_start = len(lines)
+                    target = a
+                    if invariant_reads:
+                        a = f"_field_{pc}"
                     token_name = f"_key_token_{pc}"
                     namespace[token_name] = _hash_key(key)
                     if type(key) is int and key >= 1:
@@ -486,6 +528,11 @@ class StructuredTypedLoopJITMixin:
                     else:
                         lines.append(f"{indent}_item_{pc} = {b}.hash.get({token_name}, _ABSENT)")
                         lines.append(f"{indent}{a} = None if _item_{pc} is _ABSENT else _item_{pc}[1]")
+                    if invariant_reads:
+                        hoisted_reads.extend("    " + line[len(indent):] for line in lines[read_start:])
+                        del lines[read_start:]
+                        lines.append(f"{indent}{target} = {a}")
+                    a = target
                 else:
                     lines.append(f"{indent}_key_{pc} = {c}")
                     lines.append(
@@ -648,6 +695,7 @@ class StructuredTypedLoopJITMixin:
             ]
         )
 
+        lines[loop_entry:loop_entry] = hoisted_reads
         tree = ast.parse("\n".join(lines))
         tree = inline_type_guards(tree)
         ast.fix_missing_locations(tree)
