@@ -92,3 +92,6 @@ PYTHONPATH=/path/to/031/src python benchmarks/speed_031_ab.py \
 The next large untouched cost remains recursive compiled-call/frame overhead.
 This tranche does not expand the admitted opcode set or change debug-hook,
 coroutine, or sandbox capabilities.
+
+The ordered implementation plan and fresh profiles are documented in
+[`performance-roadmap-0.32.md`](performance-roadmap-0.32.md).
