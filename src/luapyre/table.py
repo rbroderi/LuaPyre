@@ -9,6 +9,7 @@ _NUM = object()
 _STR = object()
 _OBJ = object()
 _ITERATION_STATE = object()
+_PRIMITIVE_GC_TYPES = (type(None), bool, int, float, bytes, str)
 
 
 def _hash_key(key):
@@ -34,7 +35,7 @@ class LuaTable:
 
     __slots__ = (
         "array", "hash", "metatable", "version", "_gc_owner", "_gc_age",
-        "_deleted_successors", "_reserved_bytes",
+        "_deleted_successors", "_reserved_bytes", "_sparse_int",
     )
 
     def __init__(self):
@@ -49,6 +50,18 @@ class LuaTable:
         # and dense-array allocations.
         self._deleted_successors: dict[object, object | None] | None = None
         self._reserved_bytes = 0
+        # Typed generated regions may keep a proven hash-only integer/primitive
+        # table in an untagged dictionary. Generic mutation materializes it
+        # before applying the full Lua array/hash transition rules.
+        self._sparse_int: dict[int, object] | None = None
+
+    def _materialize_sparse_int(self) -> None:
+        sparse = self._sparse_int
+        if sparse is None:
+            return
+        for key, value in sparse.items():
+            self.hash[(_NUM, key)] = (key, value)
+        self._sparse_int = None
 
     def _ensure_iteration_index(self) -> None:
         metadata = self._deleted_successors
@@ -111,6 +124,9 @@ class LuaTable:
             idx = key - 1
             if idx < len(self.array):
                 return self.array[idx]
+            sparse = self._sparse_int
+            if sparse is not None:
+                return sparse.get(key)
             item = self.hash.get((_NUM, key), _ABSENT)
             return None if item is _ABSENT else item[1]
         h = _hash_key(key)
@@ -120,6 +136,9 @@ class LuaTable:
             idx = h[1] - 1
             if idx < len(self.array):
                 return self.array[idx]
+            sparse = self._sparse_int
+            if sparse is not None:
+                return sparse.get(h[1])
         item = self.hash.get(h, _ABSENT)
         return None if item is _ABSENT else item[1]
 
@@ -129,6 +148,9 @@ class LuaTable:
             idx = key - 1
             if idx < len(self.array) and self.array[idx] is not None:
                 return True
+            sparse = self._sparse_int
+            if sparse is not None:
+                return key in sparse
             return (_NUM, key) in self.hash
         h = _hash_key(key)
         if h is None:
@@ -137,9 +159,13 @@ class LuaTable:
             idx = h[1] - 1
             if idx < len(self.array) and self.array[idx] is not None:
                 return True
+            sparse = self._sparse_int
+            if sparse is not None:
+                return h[1] in sparse
         return h in self.hash
 
     def rawset(self, key, value):
+        self._materialize_sparse_int()
         if type(key) is float and math.isnan(key):
             raise LuaRuntimeError("table index is NaN")
         h = _hash_key(key)
@@ -192,6 +218,7 @@ class LuaTable:
 
     def rawset_prehashed(self, key, token, value):
         """Set a compiler-validated non-array constant key."""
+        self._materialize_sparse_int()
         present = False
         if value is None:
             present = token in self.hash
@@ -218,9 +245,18 @@ class LuaTable:
 
     def rawset_fresh_prehashed(self, key, token, value):
         """Set a proven-new constructor field without deletion bookkeeping."""
+        # Fresh record constructors normally have no sparse region.  Keep the
+        # materialization fallback for callers that use this public internal
+        # helper on an already-specialized table, without paying a Python call
+        # for the overwhelmingly common empty-table case.
+        if self._sparse_int is not None:
+            self._materialize_sparse_int()
         self.version += 1
         collector = self._gc_owner
-        if collector is not None:
+        if collector is not None and not (
+            type(key) in _PRIMITIVE_GC_TYPES
+            and type(value) in _PRIMITIVE_GC_TYPES
+        ):
             collector.table_write_barrier(self, key, value)
         if value is not None:
             if collector is not None:
@@ -252,6 +288,9 @@ class LuaTable:
                 yield i, value
         for original, value in self.hash.values():
             yield original, value
+        sparse = self._sparse_int
+        if sparse is not None:
+            yield from sparse.items()
 
     @classmethod
     def from_sequence(cls, values):

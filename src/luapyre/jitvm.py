@@ -33,7 +33,34 @@ def _jit_forloop(vm, frames, frame, ins, regs, constants):
     vm._jit_backedge(frame, backedge_pc, key, state)
 
 
+def _jit_forprep(vm, frames, frame, ins, regs, constants):
+    """Enter an already-compiled numeric loop before its first body."""
+    source_pc = frame.pc - 1
+    result = OPCODE_HANDLERS[Op.FORPREP](
+        vm, frames, frame, ins, regs, constants
+    )
+    start_pc = source_pc + 1
+    if (
+        result is not None
+        or frame.pc != start_pc
+        or not vm.jit.enabled
+        or vm.hooks_active()
+    ):
+        return result
+    backedge_pc = vm.jit._loop_map(frame.proto).get(start_pc)
+    if backedge_pc is None:
+        return result
+    backedge = frame.proto.code[backedge_pc]
+    if backedge.op is not Op.JFORLOOP:
+        return result
+    state = vm._jit_loop_states.get(id(backedge))
+    if isinstance(state, CompiledLoop):
+        vm._jit_enter_loop(frame, state)
+    return result
+
+
 _JIT_OPCODE_HANDLERS = dict(OPCODE_HANDLERS)
+_JIT_OPCODE_HANDLERS[Op.FORPREP] = _jit_forprep
 _JIT_OPCODE_HANDLERS[Op.JFORLOOP] = _jit_forloop
 
 
@@ -331,6 +358,17 @@ class TieredJITVM(GarbageCollectedVM):
                 self._jit_loop_states[key] = False
                 self.jit.stats.retired_regions += 1
 
+    def _jit_enter_loop(self, frame, compiled: CompiledLoop) -> None:
+        """Run a cached loop after FORPREP has paid and normalized its state."""
+        used, progressed = compiled.runner(self, frame, self._jit_budget())
+        if used:
+            self._jit_consume(used)
+            self.jit.stats.loop_executions += 1
+            self.jit.stats.loop_entry_executions += 1
+            self.jit.stats.loop_iterations += used // compiled.cost_per_iteration
+        if not progressed and used == 0 and frame.pc != compiled.ir.start_pc:
+            self.jit.stats.deopts += 1
+
     def _invoke(self, frames, parent, fn, args, dest, want, tail=False):
         # Synchronous stdlib callbacks intentionally stay on the interpreter:
         # their local fuel accounting and visible-frame prefix are specialized
@@ -405,6 +443,7 @@ class TieredJITVM(GarbageCollectedVM):
 
             handlers[Op.CALL] = synced(handlers[Op.CALL], leaf_allowed=True)
             handlers[Op.CALLV] = synced(handlers[Op.CALLV], leaf_allowed=True)
+            handlers[Op.FORPREP] = synced(handlers[Op.FORPREP])
             handlers[Op.JFORLOOP] = synced(handlers[Op.JFORLOOP])
             if proto.jit_fully_typed:
                 for branch_op in (Op.JMP, Op.JMPIF, Op.JMPIFNOT, Op.JMPIFNIL):

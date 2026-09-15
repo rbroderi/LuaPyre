@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "162193820804911f012976aa85f72cb237375347",
+  "candidate_version": "0.39.0a1",
+  "method": "Median of three pinned-process medians; 7 warmups and 31 checked steady samples per process; PYTHONHASHSEED=0; Python GC disabled only during steady timing",
+  "workload": "sieve_sparse",
+  "results": {
+    "3.13.15": {
+      "baseline_process_medians_ms": [24.07205, 22.90647, 22.10891],
+      "candidate_process_medians_ms": [8.168963, 7.994546, 8.160941],
+      "python_process_medians_ms": [0.573442, 0.611256, 0.569866],
+      "baseline_median_ms": 22.90647,
+      "candidate_median_ms": 8.160941,
+      "python_median_ms": 0.573442,
+      "improvement_percent": 64.37
+    },
+    "3.14.7": {
+      "baseline_process_medians_ms": [18.764374, 18.695744, 19.060318],
+      "candidate_process_medians_ms": [6.126035, 6.138163, 6.166995],
+      "python_process_medians_ms": [0.512472, 0.510018, 0.512472],
+      "baseline_median_ms": 18.764374,
+      "candidate_median_ms": 6.138163,
+      "python_median_ms": 0.512472,
+      "improvement_percent": 67.29
+    }
+  }
+}

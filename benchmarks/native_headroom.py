@@ -103,6 +103,9 @@ def run_worker(names, order, warmups, repeats):
             for key, value in before.items()
             if type(value) is int and after[key] != value
         }
+        row["fast_path_admissions"] = dict(
+            luapyre_runtime.jit_stats.fast_path_admissions
+        )
         results[name] = row
     return {
         "python": platform.python_version(),
@@ -134,7 +137,37 @@ def aggregate(revision, runs, warmups, repeats):
             row["native_lua55"]["median_ms"]
             / row["python_lower_bound"]["median_ms"]
         )
+        row["fast_path_admissions"] = {
+            path: max(
+                run["workloads"][name].get("fast_path_admissions", {}).get(path, 0)
+                for run in runs
+            )
+            for path in sorted({
+                path
+                for run in runs
+                for path in run["workloads"][name].get("fast_path_admissions", {})
+            })
+        }
         results[name] = row
+    coverage = {}
+    paths = sorted({
+        path
+        for run in runs
+        for workload in run["workloads"].values()
+        for path in workload.get("fast_path_admissions", {})
+    })
+    for path in paths:
+        workloads = sorted({
+            name
+            for run in runs
+            for name, row in run["workloads"].items()
+            if row.get("fast_path_admissions", {}).get(path, 0) > 0
+        })
+        coverage[path] = {
+            "workloads": workloads,
+            "workload_count": len(workloads),
+            "status": "established" if len(workloads) >= 3 else "experimental",
+        }
     return {
         "schema_version": 1,
         "revision": revision,
@@ -155,6 +188,7 @@ def aggregate(revision, runs, warmups, repeats):
             "attainable-speed guarantees or mathematical lower bounds."
         ),
         "runs": runs,
+        "fast_path_coverage": coverage,
         "workloads": results,
     }
 

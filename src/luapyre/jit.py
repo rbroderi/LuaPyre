@@ -51,6 +51,7 @@ class IRLoop:
 class JITStats:
     loop_compiles: int = 0
     loop_executions: int = 0
+    loop_entry_executions: int = 0
     loop_iterations: int = 0
     leaf_compiles: int = 0
     leaf_executions: int = 0
@@ -81,6 +82,7 @@ class JITStats:
     coroutine_yields: int = 0
     coroutine_instructions: int = 0
     coroutine_deopts: int = 0
+    fast_path_admissions: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +156,11 @@ class PythonJIT:
         self.stats.compile_failures += 1
         reasons = self.stats.compile_failure_reasons
         reasons[reason] = reasons.get(reason, 0) + 1
+
+    def record_admission(self, path: str) -> None:
+        """Record one static fast-path admission outside generated hot code."""
+        admissions = self.stats.fast_path_admissions
+        admissions[path] = admissions.get(path, 0) + 1
 
     @staticmethod
     def _profile_binary(regs, ins: Ins) -> str | None:

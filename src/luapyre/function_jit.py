@@ -98,6 +98,103 @@ class PureReturnPrefix:
     result_constant: int | None
     returns_argument: bool
     instruction_cost: int
+    reversed_operands: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PureTableNilReturnPrefix:
+    """A constant raw field nil-test whose taken arm returns one integer."""
+
+    key: bytes
+    token: object
+    result: int
+    instruction_cost: int
+
+
+@dataclass(frozen=True, slots=True)
+class FreshNilRecordPrefix:
+    """An integer base case returning a fresh record containing only nils."""
+
+    comparison: Op
+    constant: int
+    version: int
+    instruction_cost: int
+    reversed_operands: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _LeadingIntegerBranch:
+    comparison: Op
+    constant: int
+    reversed_operands: bool
+    branch_pc: int
+    false_pc: int
+    values: dict[int, tuple[str, object]]
+
+
+def _leading_integer_branch(proto: Proto) -> _LeadingIntegerBranch | None:
+    """Find a side-effect-free leading parameter/constant comparison.
+
+    This operates on def-use facts rather than fixed instruction positions, so
+    compiler-generated temporaries, LOCAL copies, and reversed operands do not
+    change admission.  Only a false-target branch is accepted; no observable
+    operation can be skipped before it.
+    """
+
+    values: dict[int, tuple[str, object]] = {0: ("argument", None)}
+    conditions: dict[int, tuple[Op, int, bool]] = {}
+    for pc, ins in enumerate(proto.code[:16]):
+        if ins.op is Op.LOADK:
+            value = proto.constants[ins.b]
+            values[ins.a] = ("constant", value)
+        elif ins.op in (Op.MOVE, Op.LOCAL) and ins.b in values:
+            values[ins.a] = values[ins.b]
+            condition = conditions.get(ins.b)
+            if condition is not None:
+                conditions[ins.a] = condition
+        elif ins.op in (Op.EQ, Op.LT, Op.LE):
+            left, right = values.get(ins.b), values.get(ins.c)
+            if left is None or right is None:
+                return None
+            if left[0] == "argument" and right[0] == "constant" and type(right[1]) is int:
+                conditions[ins.a] = (ins.op, right[1], False)
+            elif right[0] == "argument" and left[0] == "constant" and type(left[1]) is int:
+                conditions[ins.a] = (ins.op, left[1], True)
+            else:
+                return None
+        elif ins.op is Op.TOBOOL and ins.b in conditions:
+            conditions[ins.a] = conditions[ins.b]
+        elif ins.op is Op.JMPIFNOT and ins.b in conditions:
+            comparison, constant, reversed_operands = conditions[ins.b]
+            if not pc + 1 < ins.a <= len(proto.code):
+                return None
+            return _LeadingIntegerBranch(
+                comparison,
+                constant,
+                reversed_operands,
+                pc,
+                ins.a,
+                dict(values),
+            )
+        else:
+            return None
+    return None
+
+
+def _comparison_matches(
+    comparison: Op,
+    reversed_operands: bool,
+    argument: int,
+    constant: int,
+) -> bool:
+    left, right = (
+        (constant, argument) if reversed_operands else (argument, constant)
+    )
+    if comparison is Op.EQ:
+        return left == right
+    if comparison is Op.LT:
+        return left < right
+    return left <= right
 
 
 def _pure_return_prefix(proto: Proto) -> PureReturnPrefix | None:
@@ -113,28 +210,17 @@ def _pure_return_prefix(proto: Proto) -> PureReturnPrefix | None:
         or proto.param_types[0].name != "integer"
         or len(proto.return_types) != 1
         or proto.return_types[0].name != "integer"
-        or len(proto.code) < 6
     ):
         return None
-    load, compare, boolean, branch = proto.code[:4]
-    if not (
-        load.op is Op.LOADK
-        and load.a != 0
-        and type(proto.constants[load.b]) is int
-        and compare.op in (Op.EQ, Op.LT, Op.LE)
-        and compare.b == 0
-        and compare.c == load.a
-        and compare.a != 0
-        and boolean.op is Op.TOBOOL
-        and boolean.a == compare.a
-        and boolean.b == compare.a
-        and branch.op is Op.JMPIFNOT
-        and branch.b == boolean.a
-        and 5 < branch.a <= min(len(proto.code), 12)
-    ):
+    branch = _leading_integer_branch(proto)
+    if branch is None:
         return None
-    values: dict[int, tuple[bool, int | None]] = {0: (True, None)}
-    for pc in range(4, branch.a):
+    values: dict[int, tuple[bool, int | None]] = {
+        reg: (kind == "argument", value if type(value) is int else None)
+        for reg, (kind, value) in branch.values.items()
+        if kind == "argument" or type(value) is int
+    }
+    for pc in range(branch.branch_pc + 1, branch.false_pc):
         ins = proto.code[pc]
         if ins.op is Op.LOADK and type(proto.constants[ins.b]) is int:
             values[ins.a] = (False, proto.constants[ins.b])
@@ -143,15 +229,259 @@ def _pure_return_prefix(proto: Proto) -> PureReturnPrefix | None:
         elif ins.op is Op.RETURN and ins.b == 1 and ins.a in values:
             returns_argument, result_constant = values[ins.a]
             return PureReturnPrefix(
-                compare.op,
-                proto.constants[load.b],
+                branch.comparison,
+                branch.constant,
                 result_constant,
                 returns_argument,
                 pc + 1,
+                branch.reversed_operands,
             )
         else:
             return None
     return None
+
+
+def _pure_table_nil_return_prefix(proto: Proto) -> PureTableNilReturnPrefix | None:
+    """Find a pure leading constant-field nil branch using def-use facts."""
+
+    if (
+        proto.param_count != 1
+        or proto.param_types[0].name != "table"
+        or tuple(item.name for item in proto.return_types) != ("integer",)
+    ):
+        return None
+    values: dict[int, tuple[str, object]] = {0: ("table", None)}
+    conditions: dict[int, bytes] = {}
+    branch_pc = false_pc = -1
+    key: bytes | None = None
+    for pc, ins in enumerate(proto.code[:20]):
+        if ins.op is Op.LOADK:
+            values[ins.a] = ("constant", proto.constants[ins.b])
+        elif ins.op in (Op.MOVE, Op.LOCAL) and ins.b in values:
+            values[ins.a] = values[ins.b]
+            if ins.b in conditions:
+                conditions[ins.a] = conditions[ins.b]
+        elif ins.op is Op.GETTABLE:
+            receiver, field = values.get(ins.b), values.get(ins.c)
+            if receiver == ("table", None) and field is not None and isinstance(field[1], bytes):
+                values[ins.a] = ("field", field[1])
+            else:
+                return None
+        elif ins.op is Op.EQ:
+            left, right = values.get(ins.b), values.get(ins.c)
+            if left is not None and left[0] == "field" and right == ("constant", None):
+                conditions[ins.a] = left[1]
+            elif right is not None and right[0] == "field" and left == ("constant", None):
+                conditions[ins.a] = right[1]
+            else:
+                return None
+        elif ins.op is Op.TOBOOL and ins.b in conditions:
+            conditions[ins.a] = conditions[ins.b]
+        elif ins.op is Op.JMPIFNOT and ins.b in conditions:
+            if not pc + 1 < ins.a <= len(proto.code):
+                return None
+            key = conditions[ins.b]
+            branch_pc, false_pc = pc, ins.a
+            break
+        else:
+            return None
+    if key is None:
+        return None
+    returns: dict[int, int] = {}
+    for pc in range(branch_pc + 1, false_pc):
+        ins = proto.code[pc]
+        if ins.op is Op.LOADK and type(proto.constants[ins.b]) is int:
+            returns[ins.a] = proto.constants[ins.b]
+        elif ins.op in (Op.MOVE, Op.LOCAL) and ins.b in returns:
+            returns[ins.a] = returns[ins.b]
+        elif ins.op is Op.RETURN and ins.b == 1 and ins.a in returns:
+            return PureTableNilReturnPrefix(key, _hash_key(key), returns[ins.a], pc + 1)
+        else:
+            return None
+    return None
+
+
+def _fresh_nil_record_prefix(proto: Proto) -> FreshNilRecordPrefix | None:
+    """Recognize an allocating base arm such as ``return {a=nil,b=nil}``."""
+
+    if (
+        proto.param_count != 1
+        or proto.param_types[0].name != "integer"
+        or tuple(item.name for item in proto.return_types) != ("table",)
+    ):
+        return None
+    branch = _leading_integer_branch(proto)
+    if branch is None:
+        return None
+    pc = branch.branch_pc + 1
+    values = dict(branch.values)
+    aliases: set[int] = set()
+    fields = 0
+    while pc < branch.false_pc:
+        ins = proto.code[pc]
+        if ins.op is Op.LOADK:
+            values[ins.a] = ("constant", proto.constants[ins.b])
+        elif ins.op is Op.NEWTABLE:
+            if aliases:
+                return None
+            aliases.add(ins.a)
+            values[ins.a] = ("table", None)
+        elif ins.op in (Op.MOVE, Op.LOCAL) and ins.b in values:
+            values[ins.a] = values[ins.b]
+            if ins.b in aliases:
+                aliases.add(ins.a)
+        elif (
+            ins.op is Op.SETTABLE
+            and ins.d
+            and ins.a in aliases
+            and values.get(ins.b, (None,))[0] == "constant"
+            and isinstance(values[ins.b][1], bytes)
+            and values.get(ins.c) == ("constant", None)
+        ):
+            fields += 1
+        elif ins.op is Op.RETURN and ins.a in aliases and ins.b == 1:
+            if fields == 0:
+                return None
+            return FreshNilRecordPrefix(
+                branch.comparison,
+                branch.constant,
+                fields,
+                pc + 1,
+                branch.reversed_operands,
+            )
+        else:
+            return None
+        pc += 1
+    return None
+
+
+def _table_nil_scalar_runner(
+    compiled: CompiledAstFunction,
+    *,
+    trusted_args: bool,
+    prefix: PureTableNilReturnPrefix,
+):
+    proto = compiled.proto
+    expected = proto.param_types[0].name
+    pool = compiled.frame_pool
+    compiled_runner = compiled.runner
+    env_reg = proto.env_reg
+
+    def run(vm, frames, closure, arg0, dest, want, budget, meter):
+        if len(frames) >= vm.max_frames:
+            raise LuaRuntimeError("stack overflow")
+        if not trusted_args and not type_matches(expected, arg0):
+            raise LuaRuntimeError(
+                f"argument 1: expected {expected}, "
+                f"got {static_value_type(arg0).name}"
+            )
+        if (
+            not vm.debug_hooks_enabled
+            and budget - meter[0] >= prefix.instruction_cost
+            and isinstance(arg0, LuaTable)
+            and arg0.metatable is None
+        ):
+            item = arg0.hash.get(prefix.token, _ABSENT)
+            if item is _ABSENT or item[1] is None:
+                meter[0] += prefix.instruction_cost
+                vm.jit.function_executions += 1
+                return _FUNC_RETURN, prefix.result
+        if pool:
+            child = pool.pop()
+            child.regs[0] = arg0
+            if env_reg >= 0:
+                child.regs[env_reg] = closure.env
+            child.closure = closure
+            child.pc = 0
+            child.return_reg = dest
+            child.return_want = want
+            if vm.debug_hooks_enabled:
+                child.hook_call_values = (arg0,)
+        else:
+            child = vm._acquire_compiled_frame(
+                compiled, closure, (arg0,), dest, want, validate_args=False,
+            )
+        frames.append(child)
+        status, values = compiled_runner(vm, frames, child, budget, meter)
+        if status == _FUNC_RETURN:
+            if not frames or frames[-1] is not child:
+                raise RuntimeError("compiled function stack mismatch")
+            frames.pop()
+            vm.jit.function_executions += 1
+            if len(pool) < 128 and len(pool) < vm.max_frames:
+                pool.append(child)
+            return _FUNC_RETURN, values[0] if values else None
+        vm.jit.function_suspends += 1
+        return _FUNC_SUSPEND, None
+
+    return run
+
+
+def _fresh_nil_record_scalar_runner(
+    compiled: CompiledAstFunction,
+    *,
+    trusted_args: bool,
+    prefix: FreshNilRecordPrefix,
+):
+    proto = compiled.proto
+    expected = proto.param_types[0].name
+    pool = compiled.frame_pool
+    compiled_runner = compiled.runner
+    env_reg = proto.env_reg
+
+    def run(vm, frames, closure, arg0, dest, want, budget, meter):
+        if len(frames) >= vm.max_frames:
+            raise LuaRuntimeError("stack overflow")
+        if not trusted_args and not type_matches(expected, arg0):
+            raise LuaRuntimeError(
+                f"argument 1: expected {expected}, "
+                f"got {static_value_type(arg0).name}"
+            )
+        if (
+            not vm.debug_hooks_enabled
+            and budget - meter[0] >= prefix.instruction_cost
+        ):
+            matched = _comparison_matches(
+                prefix.comparison,
+                prefix.reversed_operands,
+                arg0,
+                prefix.constant,
+            )
+            if matched:
+                result = vm._new_table(frames)
+                result.version = prefix.version
+                meter[0] += prefix.instruction_cost
+                vm.jit.function_executions += 1
+                return _FUNC_RETURN, result
+        if pool:
+            child = pool.pop()
+            child.regs[0] = arg0
+            if env_reg >= 0:
+                child.regs[env_reg] = closure.env
+            child.closure = closure
+            child.pc = 0
+            child.return_reg = dest
+            child.return_want = want
+            if vm.debug_hooks_enabled:
+                child.hook_call_values = (arg0,)
+        else:
+            child = vm._acquire_compiled_frame(
+                compiled, closure, (arg0,), dest, want, validate_args=False,
+            )
+        frames.append(child)
+        status, values = compiled_runner(vm, frames, child, budget, meter)
+        if status == _FUNC_RETURN:
+            if not frames or frames[-1] is not child:
+                raise RuntimeError("compiled function stack mismatch")
+            frames.pop()
+            vm.jit.function_executions += 1
+            if len(pool) < 128 and len(pool) < vm.max_frames:
+                pool.append(child)
+            return _FUNC_RETURN, values[0] if values else None
+        vm.jit.function_suspends += 1
+        return _FUNC_SUSPEND, None
+
+    return run
 
 
 def _scalar_materialized_call_runner(
@@ -168,50 +498,41 @@ def _scalar_materialized_call_runner(
         or proto.return_types[0].name == "Any"
     ):
         return None
+    if arg_count == 1:
+        table_prefix = _pure_table_nil_return_prefix(proto)
+        if table_prefix is not None:
+            return _table_nil_scalar_runner(
+                compiled, trusted_args=trusted_args, prefix=table_prefix
+            )
+        fresh_prefix = _fresh_nil_record_prefix(proto)
+        if fresh_prefix is not None:
+            return _fresh_nil_record_scalar_runner(
+                compiled, trusted_args=trusted_args, prefix=fresh_prefix
+            )
     pool = compiled.frame_pool
     compiled_runner = compiled.runner
     env_reg = proto.env_reg
     expected = tuple(item.name for item in proto.param_types)
     prefix = _pure_return_prefix(proto) if arg_count == 1 else None
-    # A scalar recursive entry pays for a dynamic entry selection at every
-    # non-base call.  It amortizes only when a meaningful share of calls can
-    # take the frame-free base arm; a single-chain recursion has one such call.
-    if prefix is not None and sum(ins.op is Op.CALL for ins in proto.code) < 2:
-        return None
-
-    def validate(index, value):
-        if not trusted_args and not type_matches(expected[index], value):
-            raise LuaRuntimeError(
-                f"argument {index + 1}: expected {expected[index]}, "
-                f"got {static_value_type(value).name}"
-            )
-
-    def finish(vm, frames, child, status, values):
-        if status == _FUNC_RETURN:
-            if not frames or frames[-1] is not child:
-                raise RuntimeError("compiled function stack mismatch")
-            frames.pop()
-            vm.jit.function_executions += 1
-            if len(pool) < 128 and len(pool) < vm.max_frames:
-                pool.append(child)
-            return _FUNC_RETURN, values[0] if values else None
-        vm.jit.function_suspends += 1
-        return _FUNC_SUSPEND, None
-
     if arg_count == 1:
         def run(vm, frames, closure, arg0, dest, want, budget, meter):
             if len(frames) >= vm.max_frames:
                 raise LuaRuntimeError("stack overflow")
-            validate(0, arg0)
+            if not trusted_args and not type_matches(expected[0], arg0):
+                raise LuaRuntimeError(
+                    f"argument 1: expected {expected[0]}, "
+                    f"got {static_value_type(arg0).name}"
+                )
             if (
                 prefix is not None
                 and not vm.debug_hooks_enabled
                 and budget - meter[0] >= prefix.instruction_cost
             ):
-                matched = (
-                    arg0 == prefix.constant if prefix.comparison is Op.EQ
-                    else arg0 < prefix.constant if prefix.comparison is Op.LT
-                    else arg0 <= prefix.constant
+                matched = _comparison_matches(
+                    prefix.comparison,
+                    prefix.reversed_operands,
+                    arg0,
+                    prefix.constant,
                 )
                 if matched:
                     meter[0] += prefix.instruction_cost
@@ -238,15 +559,32 @@ def _scalar_materialized_call_runner(
                 )
             frames.append(child)
             status, values = compiled_runner(vm, frames, child, budget, meter)
-            return finish(vm, frames, child, status, values)
+            if status == _FUNC_RETURN:
+                if not frames or frames[-1] is not child:
+                    raise RuntimeError("compiled function stack mismatch")
+                frames.pop()
+                vm.jit.function_executions += 1
+                if len(pool) < 128 and len(pool) < vm.max_frames:
+                    pool.append(child)
+                return _FUNC_RETURN, values[0] if values else None
+            vm.jit.function_suspends += 1
+            return _FUNC_SUSPEND, None
 
         return run
 
     def run(vm, frames, closure, arg0, arg1, dest, want, budget, meter):
         if len(frames) >= vm.max_frames:
             raise LuaRuntimeError("stack overflow")
-        validate(0, arg0)
-        validate(1, arg1)
+        if not trusted_args and not type_matches(expected[0], arg0):
+            raise LuaRuntimeError(
+                f"argument 1: expected {expected[0]}, "
+                f"got {static_value_type(arg0).name}"
+            )
+        if not trusted_args and not type_matches(expected[1], arg1):
+            raise LuaRuntimeError(
+                f"argument 2: expected {expected[1]}, "
+                f"got {static_value_type(arg1).name}"
+            )
         if pool:
             child = pool.pop()
             child.regs[0] = arg0
@@ -266,7 +604,16 @@ def _scalar_materialized_call_runner(
             )
         frames.append(child)
         status, values = compiled_runner(vm, frames, child, budget, meter)
-        return finish(vm, frames, child, status, values)
+        if status == _FUNC_RETURN:
+            if not frames or frames[-1] is not child:
+                raise RuntimeError("compiled function stack mismatch")
+            frames.pop()
+            vm.jit.function_executions += 1
+            if len(pool) < 128 and len(pool) < vm.max_frames:
+                pool.append(child)
+            return _FUNC_RETURN, values[0] if values else None
+        vm.jit.function_suspends += 1
+        return _FUNC_SUSPEND, None
 
     return run
 
@@ -469,6 +816,13 @@ class TypedFunctionJITMixin:
         self._function_cache[ident] = (proto, compiled)
         if compiled is not None:
             self.function_compiles += 1
+            self.record_admission("typed_function")
+            if any(ins.op is Op.NEWTABLE for ins in proto.code) and any(
+                ins.op is Op.SETTABLE and ins.d for ins in proto.code
+            ):
+                self.record_admission("fresh_record_layout")
+            if any(ins.op is Op.CALL for ins in proto.code):
+                self.record_admission("generic_compiled_calls")
         return compiled
 
     def maybe_function(self, closure: Closure) -> CompiledAstFunction | None:
@@ -524,6 +878,22 @@ class TypedFunctionJITMixin:
             arg_count=arg_count,
             trusted_args=trusted_args,
         )
+        if runner is not None:
+            self.record_admission("virtual_frame")
+        scalar_runner = None if runner is not None else _scalar_materialized_call_runner(
+            compiled,
+            trusted_args=trusted_args,
+            arg_count=arg_count if arg_count is not None else -1,
+        )
+        if scalar_runner is not None:
+            self.record_admission("scalar_call_entry")
+            if arg_count == 1:
+                if _pure_table_nil_return_prefix(proto) is not None:
+                    self.record_admission("table_nil_base")
+                elif _fresh_nil_record_prefix(proto) is not None:
+                    self.record_admission("fresh_record_base")
+                elif _pure_return_prefix(proto) is not None:
+                    self.record_admission("pure_scalar_base")
         entry = CompiledCallEntry(
             proto,
             runner if runner is not None else _materialized_call_runner(
@@ -532,11 +902,7 @@ class TypedFunctionJITMixin:
             runner is not None,
             arg_count,
             trusted_args,
-            None if runner is not None else _scalar_materialized_call_runner(
-                compiled,
-                trusted_args=trusted_args,
-                arg_count=arg_count if arg_count is not None else -1,
-            ),
+            scalar_runner,
         )
         self._call_entry_cache[key] = (proto, entry)
         return entry
@@ -550,13 +916,14 @@ class TypedFunctionJITMixin:
         if proto.children:
             return None
 
+        compiling_closure = self._compiling_closures.get(id(proto))
+
         registers = tuple(range(max(1, proto.register_count)))
         ranges = analyze_integer_ranges(proto)
         block_index = {block.start: index for index, block in enumerate(blocks)}
         typed_plan = TypedIRCompiler(proto).compile(
             tuple(block.instructions for block in blocks)
         )
-        compiling_closure = self._compiling_closures.get(id(proto))
 
         # Continuation liveness is used only at successful compiled-child
         # boundaries.  All side exits retain the full diagnostic spill.
@@ -927,14 +1294,30 @@ class TypedFunctionJITMixin:
                     ):
                         token_name = f"_key_token_{pc}"
                         constant_tokens[token_name] = token
-                        setter = (
-                            "rawset_fresh_prehashed" if ins.d
-                            else "rawset_prehashed"
-                        )
-                        lines.extend([
-                            f"{indent}used += 1",
-                            f"{indent}{a}.{setter}({b}, {token_name}, {c})",
-                        ])
+                        if ins.d:
+                            # The source compiler has proved this constructor
+                            # key unique.  Keep the exact table/GC operations
+                            # visible to CPython so the record hot path avoids
+                            # a setter call and specializes its attributes.
+                            collector = f"_collector_{pc}"
+                            lines.extend([
+                                f"{indent}used += 1",
+                                f"{indent}if {a}._sparse_int is not None:",
+                                f"{indent}    {a}._materialize_sparse_int()",
+                                f"{indent}{a}.version += 1",
+                                f"{indent}{collector} = {a}._gc_owner",
+                                f"{indent}if {collector} is not None and type({c}) not in _NON_GC_TYPES:",
+                                f"{indent}    {collector}.table_write_barrier({a}, {b}, {c})",
+                                f"{indent}if {c} is not None:",
+                                f"{indent}    if {collector} is not None:",
+                                f"{indent}        {collector}.account_bytes(32)",
+                                f"{indent}    {a}.hash[{token_name}] = ({b}, {c})",
+                            ])
+                        else:
+                            lines.extend([
+                                f"{indent}used += 1",
+                                f"{indent}{a}.rawset_prehashed({b}, {token_name}, {c})",
+                            ])
                     else:
                         lines.extend([f"{indent}used += 1", f"{indent}{a}.rawset({b}, {c})"])
                 elif op in (Op.ADD_I, Op.SUB_I, Op.MUL_I):
@@ -1187,6 +1570,7 @@ class TypedFunctionJITMixin:
             "_SIGN64": 1 << 63,
             "_TWO64": 1 << 64,
             "_NUM_TYPES": (int, float),
+            "_NON_GC_TYPES": (type(None), bool, int, float, bytes, str),
             "_Closure": Closure,
             "_LuaRuntimeError": LuaRuntimeError,
             "_LuaTable": LuaTable,

@@ -185,6 +185,7 @@ def measure(name, warmups, repeats, *, python_first=False):
         "warmup_counters": warm_counters,
         "steady": steady,
         "steady_counters": steady_counters,
+        "fast_path_admissions": dict(runtime.jit_stats.fast_path_admissions),
         "compilation_during_steady": {
             key: value for key, value in steady_counters.items() if "compile" in key
         },
