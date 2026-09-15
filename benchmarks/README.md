@@ -25,6 +25,7 @@ python benchmarks/compare_runtimes.py --warmups 5 --repeats 15 --require-all --j
 python benchmarks/compare_runtimes.py --group micro --require-all
 python benchmarks/compare_runtimes.py --group typed --require-all
 python benchmarks/compare_runtimes.py --group algorithm --require-all
+python benchmarks/compare_runtimes.py --group language --require-all
 ```
 
 Groups may be supplied more than once. With no `--group`, the complete corpus runs.
@@ -33,7 +34,8 @@ Groups may be supplied more than once. With no `--group`, the complete corpus ru
 
 - **micro** keeps the small VM/JIT kernels: arithmetic, tables, calls, branches, and coroutines. These are useful for locating dispatch and specialization overhead.
 - **typed** contains direct typed-vs-dynamic optimization probes. LuaPyre receives a source-equivalent file headed by `-- luapyre: typed`; Lua 5.5 and LuaJIT receive ordinary Lua because LuaPyre's annotations are intentionally a source extension.
-- **algorithm** contains larger end-to-end programs: recursive Fibonacci, Sieve of Eratosthenes, binary trees, a table-mixing kernel, string construction, and spectral norm. Their LuaPyre variants use the fully typed source contract wherever useful, while the reference engines execute equivalent standard Lua.
+- **algorithm** contains the project-specific larger programs: recursive Fibonacci, Sieve of Eratosthenes, a table-mixing kernel, and string construction. Their LuaPyre variants use the fully typed source contract wherever useful, while the reference engines execute equivalent standard Lua.
+- **language** contains bounded, deterministic ports of n-body, Mandelbrot, spectral-norm, fannkuch-redux, binary-trees, FASTA, k-nucleotide, and reverse-complement. Output-heavy cases use in-memory checksums so every backend runs under the same sandbox. See [`docs/language-benchmarks.md`](../docs/language-benchmarks.md) for parameters, adaptations, and the pidigits disposition.
 
 A workload can therefore carry two spellings of the same algorithm: standard Lua for the reference engines and a fully typed LuaPyre spelling for the optimization target. Both must produce the same expected result. Floating-point workloads may declare a tight absolute tolerance; integer/string workloads remain exact.
 
@@ -101,7 +103,7 @@ For performance comparisons, compare runs on the same runner class and Python ve
   timings, raw samples, and per-phase tier counters. The committed baseline
   uses three processes on each Python version; it does not claim a 0.36 speedup.
   See [`performance-roadmap-0.36.md`](../docs/performance-roadmap-0.36.md).
-- `python_headroom.py` compares nine algorithms against reduced-contract direct
+- `python_headroom.py` compares the headroom corpus against reduced-contract direct
   Python implementations. Use `PYTHONPATH=src PYTHONHASHSEED=0`, `--revision`,
   `--json`, and optionally `--python-first` or repeated `--case` selections.
   Every result is checked. Ratios include Lua semantic and representation
@@ -111,7 +113,14 @@ For performance comparisons, compare runs on the same runner class and Python ve
   earlier comparison retained in the 0.34 roadmap.
 - `native_headroom.py` compares that same corpus three ways: LuaPyre, native
   Lua 5.5 through `lupa.lua55`, and the reduced-contract Python lower bounds.
-  It runs isolated processes and rotates implementation order.
+  It runs isolated processes and rotates implementation order. Both headroom
+  tools report per-workload fast-path admission counts; the native aggregate
+  labels paths seen in fewer than three distinct workloads as experimental.
+- `speed_040_ab.py` is the corrected 0.40 generality corpus. It contains three
+  structurally different scalar DAGs, nested reductions, and sparse-set uses.
+  Run the unchanged file on baseline and candidate revisions, then use
+  `check_speed_generality.py`; a group passes only when all three cases admit
+  the intended path and improve over baseline.
 - `inspect_codegen.py` captures final generated AST/source, selects hot
   generated functions using checked profiled executions, and records generic
   and warmed adaptive opcode counts plus pooled frame/register-slot counts.

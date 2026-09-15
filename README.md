@@ -2,7 +2,7 @@
 
 LuaPyre is a clean-slate Lua runtime written in Python. It targets **Lua 5.5.1** semantics, a sandbox-first embedding model, and optional gradual type annotations that feed runtime optimization without creating a second language/runtime.
 
-**Python 3.13+** · **current pre-alpha: 0.38.0a1**
+**Python 3.13+** · **current pre-alpha: 0.40.0a1**
 
 LuaPyre implements Lua 5.5.1 language semantics for its supported sandboxed embedding profile. The runtime is built around a register VM and explicit Lua frames, with a guarded tiered JIT that specializes proven hot paths and deoptimizes back to the same interpreter.
 
@@ -194,6 +194,11 @@ proved dense primitive-write regions, and cheaper fresh record construction.
 See the [0.38 performance record](docs/speed-0.38.md) and
 [implementation roadmap](docs/performance-roadmap-0.38.md).
 
+0.39 enters cached numeric loops immediately after `FORPREP` and specializes
+proved hash-only integer-to-boolean regions without tagged keys or primitive GC
+barriers. The typed Sieve workload is 64–67% faster than 0.38. See the
+[0.39 performance record](docs/speed-0.39.md).
+
 The [0.36 performance roadmap](docs/performance-roadmap-0.36.md) adds fresh
 Python-headroom measurements, 11 focused speed probes, and the next ordered
 work on scalar entry, cross-block facts, nested regions, tables, and recursion.
@@ -363,11 +368,19 @@ It compares:
 - PUC Lua 5.5 through `lupa.lua55`
 - LuaJIT through `lupa.luajit21` (falling back to `lupa.luajit20` when appropriate)
 
-The corpus contains `micro`, `typed`, and `algorithm` groups. Algorithm workloads include recursive Fibonacci, Sieve, binary trees, table mixing, string construction, and spectral norm. Where LuaPyre uses typed annotations, the native engines receive an equivalent standard-Lua spelling and all backends must produce the same result.
+The corpus contains `micro`, `typed`, `algorithm`, and `language` groups. The
+language group adds bounded n-body, Mandelbrot, spectral-norm, fannkuch-redux,
+binary-trees, FASTA, k-nucleotide, and reverse-complement workloads. Output-heavy
+cases use deterministic in-memory checksums. Where LuaPyre uses typed
+annotations, the native engines receive an equivalent standard-Lua spelling
+and all backends must produce the same result. The exact parameters,
+adaptations, and pidigits portability decision are documented in
+[`docs/language-benchmarks.md`](docs/language-benchmarks.md).
 
 ```bash
 python benchmarks/compare_runtimes.py --group typed --require-all
 python benchmarks/compare_runtimes.py --group algorithm --require-all
+python benchmarks/compare_runtimes.py --group language --require-all
 ```
 
 Use `--json PATH` for a versioned machine-readable report. The permanent **Four-way runtime benchmark** Actions workflow records text and JSON artifacts. See [`benchmarks/README.md`](benchmarks/README.md) for methodology and comparison guidance.
@@ -384,6 +397,14 @@ There are no tracked Lua 5.5.1 language-semantic gaps in the supported profile. 
 LuaPyre-native `string.dump` output, cross-runtime PUC emission, and additional typed-language contracts are interoperability or extension choices, not gaps in the supported Lua semantics. See the [official Lua 5.5.1 exclusion audit](docs/official-551-exclusion-audit.md) for the exact test disposition.
 
 ## Performance roadmap
+
+The corrected [0.40 performance roadmap](docs/performance-roadmap-0.40.md)
+removes three whole-algorithm matrix/tree compilers and retains only reusable
+typed-IR, scalar-entry, record, GC/accounting, and sparse-set improvements.
+Published benchmark reports now include admission telemetry and classify paths
+seen in fewer than three workloads as experimental. See the
+[0.40 corrective record](docs/speed-0.40.md) and permanent
+[performance generality policy](docs/performance-generality-policy.md).
 
 0.17 establishes the intended optimizer architecture: **a small statically typed IR compiler targeting optimized Python AST today, with the IR remaining reusable by future backends.**
 

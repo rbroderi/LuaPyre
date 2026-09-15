@@ -1079,4 +1079,6 @@ class StructuredTypedLoopJITMixin:
         ast.fix_missing_locations(tree)
         exec(compile(tree, "<luapyre-structured-loop>", "exec"), namespace)
         runner: FunctionType = namespace["_jit_structured_loop"]
+        if calls:
+            self.record_admission("pure_scalar_expression_dag")
         return CompiledLoop(ir, iteration_cost, runner)

@@ -331,6 +331,15 @@ class LuaGC:
         self._finalizable_ids: set[int] = set()
         self._finalized_ids: set[int] = set()
         self._liveness_cache: dict[int, tuple[Proto, tuple[frozenset[int], ...]]] = {}
+        # Every Lua table is registered while its Python containers are still
+        # empty.  Their shallow sizes are stable for one CPython process, so do
+        # the three getsizeof calls once rather than once per table allocation.
+        empty_table = LuaTable()
+        self._empty_table_size = (
+            sys.getsizeof(empty_table)
+            + sys.getsizeof(empty_table.array)
+            + sys.getsizeof(empty_table.hash)
+        )
 
     @staticmethod
     def _object_size(value) -> int:
@@ -382,7 +391,18 @@ class LuaGC:
         value._gc_owner = self
         value._gc_age = _GC_NEW
         self.stats.allocations += 1
-        self.account_bytes(self._object_size(value))
+        if (
+            type(value) is LuaTable
+            and not value.array
+            and not value.hash
+            and value._sparse_int is None
+            and value._deleted_successors is None
+            and value._reserved_bytes == 0
+        ):
+            size = self._empty_table_size
+        else:
+            size = self._object_size(value)
+        self.account_bytes(size)
 
     def adopt(self, value) -> None:
         """Attach a newly reachable Lua object graph to this collector."""
@@ -450,7 +470,11 @@ class LuaGC:
         for child in (key, value):
             if type(child) in _NON_COLLECTABLE_TYPES:
                 continue
-            self.adopt(child)
+            # A constructor commonly stores freshly registered child tables.
+            # They already belong to this collector, so a graph walk cannot
+            # discover anything or change ownership.
+            if getattr(child, "_gc_owner", None) is not self:
+                self.adopt(child)
             if (
                 parent_is_old
                 and self._is_collectable(child)
